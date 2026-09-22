@@ -6,6 +6,7 @@ import type { FeedbackDecision } from './briefing-insight-card';
 import { sourceRequest } from './live-client';
 import { refreshBriefingSummary } from './briefing-analysis-client';
 import { matchesSavedPaper, paperLabels, type SavedPaper } from './paper-library-index';
+import { paperBibtexFileName, paperLibraryBibtex } from './paper-library-bibtex';
 import { paperTagKey } from './paper-tags';
 import { PaperTagFilter } from './paper-tag-filter';
 import { PAPER_CATEGORIES } from './paper-classification';
@@ -27,6 +28,7 @@ export function SavedPaperSummaries({ routineId }: { routineId: string }) {
   const [selection, setSelection] = useState<string[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [exportNotice, setExportNotice] = useState<{ failed: boolean; text: string } | null>(null);
   const paperKey = (p: SavedPaper) => JSON.stringify([p.historyId, p.item.id]);
   const [dates, setDates] = useState(emptyPaperDates);
   const [query, setQuery] = useState(''),
@@ -63,6 +65,7 @@ export function SavedPaperSummaries({ routineId }: { routineId: string }) {
     setPapers([]);
     setSelection([]);
     setConfirmDelete(false);
+    setExportNotice(null);
     const c = new AbortController();
     const reload = () => {
       void load(c.signal).catch(() => {
@@ -109,6 +112,33 @@ export function SavedPaperSummaries({ routineId }: { routineId: string }) {
   const changeTags = (tags: string[]) => {
     setSelectedTags(tags);
     setLimit(30);
+  };
+  const exportTargets = selection.length
+    ? papers.filter((p) => selection.includes(paperKey(p)))
+    : visible;
+  /** Export never calls a source or a model: the saved text alone becomes the .bib file. */
+  const exportBibtex = () => {
+    try {
+      const { text, entryCount, incompleteCount } = paperLibraryBibtex(exportTargets);
+      const blob = new Blob([text], { type: 'application/x-bibtex' }),
+        url = URL.createObjectURL(blob),
+        a = document.createElement('a');
+      a.href = url;
+      a.download = paperBibtexFileName(new Date());
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setExportNotice({
+        failed: false,
+        text: `${entryCount}편을 BibTeX 파일로 내보냈습니다.${
+          incompleteCount ? ` 이 중 ${incompleteCount}편은 저자나 연도 정보가 없습니다.` : ''
+        }`,
+      });
+    } catch (error) {
+      setExportNotice({
+        failed: true,
+        text: `BibTeX 파일을 만들지 못했습니다. ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
   };
   return (
     <section className="briefing-saved-papers" aria-label="저장된 논문 요약">
@@ -228,7 +258,20 @@ export function SavedPaperSummaries({ routineId }: { routineId: string }) {
         >
           선택 삭제 ({selection.length})
         </button>
+        {exportTargets.length > 0 && (
+          <button type="button" disabled={deleting} onClick={exportBibtex}>
+            BibTeX 내보내기 ({exportTargets.length})
+          </button>
+        )}
       </div>
+      {exportNotice && (
+        <p
+          role={exportNotice.failed ? 'alert' : 'status'}
+          className={exportNotice.failed ? 'briefing-alert' : 'briefing-muted'}
+        >
+          {exportNotice.text}
+        </p>
+      )}
       {confirmDelete && (
         <div role="alertdialog" aria-label="선택 논문 삭제 확인" className="briefing-alert">
           <strong>선택한 {selection.length}개 항목을 보관함에서 삭제할까요?</strong>
@@ -329,6 +372,7 @@ export function SavedPaperSummaries({ routineId }: { routineId: string }) {
                         { routineId, historyId: p.historyId, itemId: p.item.id },
                         new AbortController().signal,
                         progress,
+                        'papers',
                       );
                       if (!refreshed.historyId)
                         throw new Error('새 요약을 저장하지 못해 이전 요약을 유지합니다.');

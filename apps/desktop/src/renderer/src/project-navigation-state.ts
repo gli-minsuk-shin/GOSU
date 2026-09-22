@@ -2,6 +2,7 @@ export type ProjectNavigationState = Readonly<{
   schemaVersion: 1;
   expandedProjectIds: readonly string[];
   hiddenProjectIds: readonly string[];
+  projectOrder?: readonly string[];
   activeGroupExpanded: boolean;
   hiddenGroupExpanded: boolean;
   archivedGroupExpanded: boolean;
@@ -52,6 +53,9 @@ export function parseProjectNavigationState(value: unknown): ProjectNavigationSt
     schemaVersion: 1,
     expandedProjectIds: uniqueStrings(value.expandedProjectIds),
     hiddenProjectIds: uniqueStrings(value.hiddenProjectIds),
+    ...(Array.isArray(value.projectOrder)
+      ? { projectOrder: uniqueStrings(value.projectOrder) }
+      : {}),
     activeGroupExpanded:
       typeof value.activeGroupExpanded === 'boolean' ? value.activeGroupExpanded : true,
     hiddenGroupExpanded:
@@ -98,6 +102,9 @@ export function pruneProjectNavigationState(
     ...parsed,
     expandedProjectIds: parsed.expandedProjectIds.filter((id) => activeProjectIds.has(id)),
     hiddenProjectIds: parsed.hiddenProjectIds.filter((id) => activeProjectIds.has(id)),
+    ...(parsed.projectOrder
+      ? { projectOrder: parsed.projectOrder.filter((id) => activeProjectIds.has(id)) }
+      : {}),
   };
 }
 
@@ -156,4 +163,33 @@ function defaultProjectNavigationState(): ProjectNavigationState {
     expandedProjectIds: [],
     hiddenProjectIds: [],
   };
+}
+
+export function orderedSidebarProjects<T extends { id: string }>(
+  projects: readonly T[],
+  state: ProjectNavigationState,
+): T[] {
+  const order = state.projectOrder ?? [];
+  const ranks = new Map(order.map((id, index) => [id, index]));
+  return [...projects].sort(
+    (a, b) => (ranks.get(a.id) ?? order.length) - (ranks.get(b.id) ?? order.length),
+  );
+}
+
+export function reorderSidebarProject(
+  state: ProjectNavigationState,
+  projectIds: readonly string[],
+  source: string,
+  target: string,
+  position: 'before' | 'after',
+): ProjectNavigationState {
+  if (source === target || !projectIds.includes(source) || !projectIds.includes(target))
+    return state;
+  const ordered = orderedSidebarProjects(
+    [...new Set(projectIds)].map((id) => ({ id })),
+    state,
+  ).map((p) => p.id);
+  const next = ordered.filter((id) => id !== source);
+  next.splice(next.indexOf(target) + (position === 'after' ? 1 : 0), 0, source);
+  return ordered.every((id, i) => next[i] === id) ? state : { ...state, projectOrder: next };
 }

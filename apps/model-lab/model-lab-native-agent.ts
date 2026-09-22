@@ -27,6 +27,9 @@ import {
 import type { ModelLabQuestionRequest } from './src/model-lab-runtime-adapter';
 import { codexTokenUsage, claudeTokenUsage } from '../briefing-lab/briefing-token-usage';
 import type { NativeTokenUsage } from '../briefing-lab/src/context-usage';
+import { ModelInvocationSchema, type ModelInvocation } from '@gosu/contracts';
+import { observeNativeUsage, withNativeUsageScope } from '../briefing-lab/native-usage-observer';
+import { modelLabBackendContext } from './model-lab-backend-context';
 
 export const MODEL_LAB_NATIVE_FINAL_SCHEMA = {
   type: 'object',
@@ -245,6 +248,20 @@ export async function runNativeModelLabAgent(
   let finalText: string | undefined;
   let usage: ModelLabAgentUsage | undefined;
   let nativeUsage: NativeTokenUsage | undefined;
+  let observedInvocation: ModelInvocation | undefined;
+  const captureInvocation = (raw: unknown) => {
+    if (
+      !raw ||
+      typeof raw !== 'object' ||
+      !('threadId' in raw) ||
+      raw.threadId !== threadId ||
+      !('invocation' in raw)
+    )
+      return;
+    const parsed = ModelInvocationSchema.safeParse(raw.invocation);
+    if (parsed.success) observedInvocation = parsed.data;
+  };
+  let usageSuccessful = false;
   let finished = false;
   let terminalReceived = false;
   let toolSequence = 0;
@@ -404,6 +421,7 @@ export async function runNativeModelLabAgent(
   };
   transport.on('notification', onNotification);
   transport.on('usage', onUsage);
+  transport.on('invocation', captureInvocation);
   try {
     if (input.signal.aborted) throw new Error('model_copilot_aborted');
     input.onProgress?.({ step: 1, phase: 'thinking' });
@@ -446,6 +464,7 @@ export async function runNativeModelLabAgent(
       }),
     );
     turnId = turn.turnId;
+    observedInvocation = turn.invocation;
     for (const event of earlyNotifications) onNotification(event);
     for (const event of earlyUsage) onUsage(event);
     await bounded(terminal);
@@ -453,6 +472,7 @@ export async function runNativeModelLabAgent(
     const result = parseFinal(finalText);
     input.onProgress?.({ step: toolSequence + 1, phase: 'final' });
     trace.push(`Native agent final · ${toolSequence} tool calls`);
+    usageSuccessful = true;
     return {
       ...result,
       provider:
@@ -467,10 +487,25 @@ export async function runNativeModelLabAgent(
     };
   } finally {
     finished = true;
+    if (observedInvocation)
+      await withNativeUsageScope(
+        {
+          workloadKind: 'model_lab',
+          projectId: modelLabBackendContext.getStore()?.projectId ?? null,
+        },
+        () =>
+          observeNativeUsage({
+            invocation: observedInvocation!,
+            usage: nativeUsage,
+            completedAt: new Date().toISOString(),
+            successful: usageSuccessful,
+          }),
+      );
     clearTimeout(timer);
     input.signal.removeEventListener('abort', cancel);
     transport.off('notification', onNotification);
     transport.off('usage', onUsage);
+    transport.off('invocation', captureInvocation);
     if (threadId) {
       transport.revokeDynamicTools(threadId);
       if (turnId && !terminalReceived)

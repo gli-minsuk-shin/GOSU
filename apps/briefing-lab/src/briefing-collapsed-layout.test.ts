@@ -16,6 +16,28 @@ it('anchors collapse to the generation button row rather than centering on multi
   expect(rule('.briefing-collapse-all')).toContain('height: 34px');
   expect(rule('.briefing-collapse-all')).toContain('flex: 0 0 34px');
 });
+it('reserves a responsive progress column instead of letting expanded text resize the toolbar', () => {
+  // The column is reserved whenever a progress box or an alert sits inside the controls; progress
+  // shown beside the title (0.58.106) floats its detail and leaves the buttons their natural width.
+  const flat = css.replace(/\s+/g, ' ');
+  const reserved = flat
+    .split(
+      ".briefing-main-header > .briefing-main-actions:has( .briefing-generation-controls > .briefing-generation-progress, .briefing-generation-controls > [role='alert'], .briefing-generation-controls > .briefing-generation-alert ) {",
+    )[1]
+    ?.split('}')[0];
+  expect(reserved).toContain('width: min(420px, 100%)');
+  const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+  expect(styles.split('.briefing-generation-controls {')[1]!.split('}')[0]).toContain(
+    'grid-template-columns: minmax(0, 1fr)',
+  );
+  expect(
+    styles
+      .split(
+        '.briefing-generation-controls:has(.briefing-generation-progress) .briefing-generation-buttons {',
+      )[1]!
+      .split('}')[0],
+  ).toContain('justify-self: end');
+});
 const bodySelector =
   '.briefing-history-run > :is(.briefing-history-weather, .briefing-history-calendar) > .briefing-live-source-body';
 it('uses one compact bottom inset for both weather and agenda, without stacking footer gaps', () => {

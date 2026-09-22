@@ -62,8 +62,9 @@ it('generates seven email fields, then restores the existing insight shape witho
       items: { items: { properties: object; required: string[]; additionalProperties: boolean } };
     };
   };
-  expect(Object.keys(schema.properties.items.items.properties)).toHaveLength(7);
-  expect(schema.properties.items.items.required).toHaveLength(7);
+  expect(Object.keys(schema.properties.items.items.properties)).toHaveLength(8);
+  expect(schema.properties.items.items.required).toHaveLength(8);
+  expect(schema.properties.items.items.required).toContain('preparedActions');
   expect(schema.properties.items.items.additionalProperties).toBe(false);
   expect(options.structuredJob.instructions).not.toContain('PAPERS:');
   expect(result.items[0]).toMatchObject({
@@ -131,4 +132,65 @@ it('corrects a priority-only answer into actual content while allowing importanc
   expect(run).toHaveBeenCalledTimes(2);
   expect(result.items[0]?.summary).toContain('회신을 요청');
   expect(result.items[0]?.importance).toBe('uncertain');
+});
+it('realigns a prepared event to the weekday in its evidence and gives the model the local weekday', async () => {
+  const saturday: LiveItem = {
+    ...mail,
+    id: 'dinner',
+    title: 'Dinner',
+    text: 'Pilsung and Joseph will join us. See you soon on Saturday.',
+    publishedAt: '2026-09-17T21:51:25Z',
+  };
+  const run = vi.fn(async () => ({
+    answer: JSON.stringify({
+      overview: 'Dinner on Saturday',
+      items: [
+        {
+          id: 'dinner',
+          summary: 'Dinner with Pilsung and Joseph on Saturday.',
+          importance: 'medium',
+          importanceReason: 'Social plan',
+          action: 'Confirm the time.',
+          evidenceQuote: 'See you soon on Saturday.',
+          memorySuggestion: null,
+          preparedActions: {
+            event: {
+              title: '저녁 식사',
+              start: '2026-09-20T19:00:00+09:00',
+              end: '2026-09-20T21:00:00+09:00',
+              allDay: false,
+              timeZone: 'Asia/Seoul',
+              location: '',
+              notes: '',
+              alarmMinutes: null,
+              evidenceQuote: 'See you soon on Saturday.',
+              notice: '시간 확인 필요',
+            },
+            task: null,
+          },
+        },
+      ],
+    }),
+    proposal: null,
+    providerId: 'codex',
+    model: 'test',
+    reasoning: 'medium',
+    nextDates: [],
+  }));
+  const result = await analyzeBriefing(
+    { ...request, itemIds: ['dinner'] },
+    [saturday],
+    { keywords: [], excluded: [] },
+    new AbortController().signal,
+    () => undefined,
+    run,
+  );
+  const event = result.items[0]!.preparedActions!.event!;
+  expect(event.start).toBe('2026-09-19T10:00:00Z');
+  expect(event.notice).toContain('토요일');
+  const prompt = JSON.parse(
+    ((run.mock.calls as unknown[][])[0]![3] as { structuredJob: { prompt: string } }).structuredJob
+      .prompt,
+  );
+  expect(prompt.items[0].receivedLocal).toBe('2026-09-18 (Fri) 06:51');
 });

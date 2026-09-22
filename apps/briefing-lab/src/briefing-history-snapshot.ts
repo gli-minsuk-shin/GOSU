@@ -12,6 +12,21 @@ export const BriefingSnapshotSchema = z.object({
     .object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), updatedAt: z.string().datetime() })
     .optional(),
   calendarReferenceAt: z.string().datetime().optional(),
+  // Metadata-only first briefing written before the detailed summaries; replaced by each later run.
+  quickBriefing: z
+    .object({
+      createdAt: z.string().datetime(),
+      model: z.string().max(200),
+      headline: z.string().max(300),
+      points: z.array(z.string().max(300)).max(8),
+      emailCount: z.number().int().nonnegative(),
+      paperCount: z.number().int().nonnegative(),
+      // A later run on the same day continues the earlier briefing instead of replacing it: the
+      // first `newPoints` lines are new since `previousAt`, the rest are carried over from it.
+      previousAt: z.string().datetime().optional(),
+      newPoints: z.number().int().nonnegative().max(8).optional(),
+    })
+    .optional(),
   todos: BriefingTodosSchema.optional(),
   todoError: z.string().max(1000).optional(),
   // Legacy discovery-only display hint. Accepted on read, never used to hide saved content.

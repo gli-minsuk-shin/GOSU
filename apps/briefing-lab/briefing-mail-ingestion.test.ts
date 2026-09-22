@@ -1,6 +1,11 @@
 import { expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mailSummaryKey, nativeMailHash, planMailRead } from './briefing-mail-ingestion';
+import {
+  mailReadNotice,
+  mailSummaryKey,
+  nativeMailHash,
+  planMailRead,
+} from './briefing-mail-ingestion';
 const scope = {
   accountId: 'a',
   mailboxId: 'inbox-a',
@@ -40,4 +45,8 @@ it('never identifies a summarized email by subject alone or across reused source
   expect(key).not.toBe(mailSummaryKey('id-b', '2026-09-10T00:00:00Z', 'Same title'));
   expect(key).not.toBe(mailSummaryKey('id-a', '2026-09-11T00:00:00Z', 'Same title'));
   expect(key).not.toBe(mailSummaryKey('id-a', '2026-09-10T00:00:00Z', 'Changed title'));
+});
+it('writes a read notice only for a first connection or a newly added account', () => {
+  expect(mailReadNotice(planMailRead(scope, ['a']), scope, 74)).toBe('');
+  expect(mailReadNotice(planMailRead(scope, []), scope, 0)).toContain('첫 연결에서는');
 });

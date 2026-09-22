@@ -27,40 +27,48 @@ const result = {
     },
   ],
 };
-function Fixture() {
+function Fixture({ clear = false }: { clear?: boolean }) {
   const feedback = useLiveFeedback('r', [result]);
   return (
-    <button data-choice={feedback.choices.m} onClick={() => feedback.saved('m', 'not-interested')}>
+    <button
+      data-choice={feedback.choices.m}
+      onClick={() => feedback.saved('m', clear ? null : 'not-interested')}
+    >
       {feedback.warning}
     </button>
   );
 }
-it('restores server-owned votes on remount and does not let a late lookup overwrite a newly saved vote', async () => {
-  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
-  let reply!: (value: unknown) => void;
-  vi.mocked(sourceRequest).mockImplementationOnce(
-    () =>
-      new Promise((resolve) => {
-        reply = resolve;
-      }),
-  );
-  await act(() => {
-    ui = create(<Fixture />);
-  });
-  await act(() => ui!.root.findByType('button').props.onClick());
-  await act(async () => reply({ choices: { m: 'important' } }));
-  expect(ui!.root.findByType('button').props['data-choice']).toBe('not-interested');
-  await act(() => ui!.unmount());
-  vi.mocked(sourceRequest).mockResolvedValueOnce({ choices: { m: 'not-interested' } });
-  await act(() => {
-    ui = create(<Fixture />);
-  });
-  expect(ui!.root.findByType('button').props['data-choice']).toBe('not-interested');
-  expect(vi.mocked(sourceRequest).mock.calls[0]!.slice(0, 2)).toEqual([
-    '/memory/feedback/choices',
-    { routineId: 'r', receiptId: result.receiptId },
-  ]);
-});
+it.each([false, true])(
+  'does not let a late lookup overwrite a saved vote or clear (clear=%s)',
+  async (clear) => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    let reply!: (value: unknown) => void;
+    vi.mocked(sourceRequest).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          reply = resolve;
+        }),
+    );
+    await act(() => {
+      ui = create(<Fixture clear={clear} />);
+    });
+    await act(() => ui!.root.findByType('button').props.onClick());
+    await act(async () => reply({ choices: { m: 'important' } }));
+    expect(ui!.root.findByType('button').props['data-choice']).toBe(
+      clear ? null : 'not-interested',
+    );
+    await act(() => ui!.unmount());
+    vi.mocked(sourceRequest).mockResolvedValueOnce({ choices: { m: 'not-interested' } });
+    await act(() => {
+      ui = create(<Fixture />);
+    });
+    expect(ui!.root.findByType('button').props['data-choice']).toBe('not-interested');
+    expect(vi.mocked(sourceRequest).mock.calls[0]!.slice(0, 2)).toEqual([
+      '/memory/feedback/choices',
+      { routineId: 'r', receiptId: result.receiptId },
+    ]);
+  },
+);
 it('shows a restoration warning instead of claiming an unverified selection was saved', async () => {
   vi.mocked(sourceRequest).mockRejectedValueOnce(new Error('offline'));
   await act(() => {

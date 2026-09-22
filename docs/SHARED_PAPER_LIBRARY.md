@@ -1,5 +1,23 @@
 # Explicitly approved paper-analysis library
 
+2026-09-22: [0.58.141](releases/0.58.141.md). One rule decides which links the library can read:
+`verifiablePaperLink` in `src/paper-summary-contract.ts` (arXiv, DOI, OpenReview, PMLR), used by the
+confirmation card and by ingestion. The card offers only such links, saves one paper per call (own
+time budget, own commit, per-paper failure reasons, retry of the failed ones only) and, when the
+assistant offered the library without any such link, explains which links are needed instead of
+failing on click. Before, one report or search link in an answer failed the save of every real paper
+beside it. Project Chat's policy tells the model to link each discussed paper in an accepted form
+from a tool result or web search and never to invent one. The saved-papers view exports BibTeX
+(`src/paper-library-bibtex.ts`, browser download, verbatim `doi`/`url`/`eprint`). The desktop
+Literature view lists the verified papers through `gosu:paper-summary:list` and imports chosen ones
+through `gosu:paper-summary:import-to-literature`; Main reads the sealed library again, so the
+renderer names papers by id only. The library still has no project field.
+
+2026-09-14: [0.58.78](releases/0.58.78.md) adds a source-link icon beside each live/saved paper title,
+including collapsed cards. It opens the exact saved HTTPS URL separately without toggling the card
+or invoking AI. Missing links stay explicitly unavailable; multi-paper legacy records are not assigned
+an arbitrary first paper URL. Paper summaries has its own desktop sidebar row below Briefing Lab.
+
 ## Assistant conversational save — 2026-09-14, installed 0.58.40
 
 Binary installation is complete; native UI/live user-paper saves are still unverified because GOSU

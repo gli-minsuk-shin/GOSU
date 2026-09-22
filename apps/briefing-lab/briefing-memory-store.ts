@@ -1,3 +1,4 @@
+import { isCredentialMail } from './briefing-credential-mail';
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, lstat, readFile, writeFile, rename, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -12,6 +13,29 @@ import {
 import type { LiveItem } from './src/live-types';
 import { systemBriefingKey } from './briefing-system-key';
 import { assignPaperTags, buildPaperTagCatalog, paperTagKey } from './src/paper-tags';
+import { senderAddress } from './src/briefing-guidance';
+/** Preferred and avoided keywords, senders and sender domains each keep this many entries. */
+export const FEEDBACK_PROFILE_LIMIT = 24;
+/** Personal webmail: a shared domain says nothing about an institution. */
+const PERSONAL_MAIL_DOMAINS = new Set([
+  'gmail.com',
+  'googlemail.com',
+  'naver.com',
+  'daum.net',
+  'hanmail.net',
+  'kakao.com',
+  'nate.com',
+  'outlook.com',
+  'hotmail.com',
+  'live.com',
+  'msn.com',
+  'yahoo.com',
+  'icloud.com',
+  'me.com',
+  'mac.com',
+  'proton.me',
+  'protonmail.com',
+]);
 export const StoredMemoryEntrySchema = BriefingMemoryEntrySchema.extend({
   origin: z.enum(['automatic', 'feedback', 'reviewed']),
   private: z.boolean(),
@@ -211,7 +235,15 @@ export class BriefingMemoryStore {
       query,
     ) as StoredMemoryEntry[];
   }
-  async feedbackProfile(routineId: string, includePrivate = true) {
+  /**
+   * `senderOf` finds the sender of a rated email by its item id in the saved briefings, so ratings
+   * (including ones saved before senders were used) teach which people and institutions matter.
+   */
+  async feedbackProfile(
+    routineId: string,
+    includePrivate = true,
+    senderOf?: (itemId: string) => string | undefined,
+  ) {
     await this.queue;
     const state = await this.read();
     const entries = state.entries
@@ -226,6 +258,8 @@ export class BriefingMemoryStore {
         } => Boolean(entry.feedbackDecision && entry.feedbackItemKind),
       );
     const keywordScores = new Map<string, { term: string; score: number; count: number }>();
+    const senderScores = new Map<string, number>();
+    const domainScores = new Map<string, number>();
     const kindScores = { papers: 0, email: 0 };
     const tagCatalog = buildPaperTagCatalog(
       entries
@@ -235,6 +269,15 @@ export class BriefingMemoryStore {
     for (const entry of entries) {
       const sign = entry.feedbackDecision === 'important' ? 1 : -1;
       kindScores[entry.feedbackItemKind] += sign;
+      if (entry.feedbackItemKind === 'email' && senderOf) {
+        const address = senderAddress(senderOf(entry.sourceId.slice('feedback:'.length)));
+        if (address) {
+          senderScores.set(address, (senderScores.get(address) ?? 0) + sign);
+          const domain = address.slice(address.lastIndexOf('@') + 1);
+          if (!PERSONAL_MAIL_DOMAINS.has(domain))
+            domainScores.set(domain, (domainScores.get(domain) ?? 0) + sign);
+        }
+      }
       const seen = new Set<string>();
       for (const raw of entry.feedbackKeywords ?? []) {
         const term =
@@ -255,6 +298,12 @@ export class BriefingMemoryStore {
     const keywords = [...keywordScores.values()].sort(
       (a, b) => b.score - a.score || b.count - a.count || a.term.localeCompare(b.term),
     );
+    const ranked = (scores: Map<string, number>, sign: 1 | -1) =>
+      [...scores]
+        .filter(([, score]) => score * sign > 0)
+        .sort(([a, x], [b, y]) => (y - x) * sign || a.localeCompare(b))
+        .slice(0, FEEDBACK_PROFILE_LIMIT)
+        .map(([term, score]) => ({ term, score }));
     return {
       feedbackProfileRevision: state.feedbackProfileRevisions[routineId] ?? 0,
       total: entries.length,
@@ -264,12 +313,16 @@ export class BriefingMemoryStore {
       kindScores,
       preferredKeywords: keywords
         .filter((entry) => entry.score > 0)
-        .slice(0, 12)
+        .slice(0, FEEDBACK_PROFILE_LIMIT)
         .map(({ term, score }) => ({ term, score })),
       avoidedKeywords: keywords
         .filter((entry) => entry.score < 0)
-        .slice(0, 12)
+        .slice(0, FEEDBACK_PROFILE_LIMIT)
         .map(({ term, score }) => ({ term, score })),
+      preferredSenders: ranked(senderScores, 1),
+      avoidedSenders: ranked(senderScores, -1),
+      preferredSenderDomains: ranked(domainScores, 1),
+      avoidedSenderDomains: ranked(domainScores, -1),
     };
   }
   async review(routineId: string) {
@@ -333,14 +386,7 @@ export class BriefingMemoryStore {
               0,
               4000,
             );
-          if (
-            secretPattern.test(text) ||
-            ((item.kind === 'email' || item.privateOrigin === 'mail') &&
-              /verification code|one[- ]time|인증번호|보안\s*코드|\botp\b|password reset/i.test(
-                `${item.title}\n${item.text}`,
-              ))
-          )
-            continue;
+          if (secretPattern.test(text) || isCredentialMail(item)) continue;
           candidates.push({
             id: randomUUID(),
             routineId,
@@ -381,7 +427,7 @@ export class BriefingMemoryStore {
   async feedback(
     routineId: string,
     item: LiveItem,
-    decision: FeedbackDecision,
+    decision: FeedbackDecision | null,
     signal: AbortSignal,
     beforeCommit?: () => void | Promise<void>,
     keywords: readonly string[] = item.matchedKeywords ?? [],
@@ -396,6 +442,7 @@ export class BriefingMemoryStore {
         state.entries = state.entries.filter(
           (e) => !(e.routineId === routineId && e.sourceId === sourceId),
         );
+        if (decision === null) return;
         state.entries.push({
           id: previous?.id ?? randomUUID(),
           routineId,

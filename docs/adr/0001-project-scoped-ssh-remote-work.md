@@ -1,5 +1,15 @@
 # ADR 0001: Project-scoped SSH remote work
 
+2026-09-14: [chat execution continuity](../CHAT_EXECUTION_CONTINUITY.md) removes navigation as a
+cancellation event. A running question keeps its original scope, and the global approval center
+shows the owning project/chat even when another view is selected. Stop, expiry, grant/connection
+revocation and shutdown still cancel. This is not unattended command execution or cross-project access.
+
+2026-09-14 follow-up: [approved scope reuse](../APPROVED_SCOPE_REUSE.md) supersedes the original
+every-command approval requirement for currently approved standard-user workspace grants when the
+app policy is enabled. Root/unknown privilege, revocation, typed policy, audit and execution-time
+binding checks remain. Refer to its release record for installation status.
+
 - Status: Accepted
 - Date: 2026-08-05
 - Owners: AI Gateway, Integration Hub, Project Portfolio
@@ -85,10 +95,11 @@ sandbox가 아니다.
 - 대표 direct command와 trailing loopback `-L`이 raw 실행 없이 정규화되고 재등록은 idempotent하다.
 - shell syntax, remote command, dangerous option, non-loopback forwarding과 synthetic secret-shaped fixture가
   거절된다.
-- project A grant가 project B tool·UI·approval에서 보이지 않으며 grant/profile version race가 fail closed한다.
+- project A grant는 project B 도구에 노출되지 않는다. 전역 승인창은 실제 소유 project/chat을
+  표시하며 grant/profile version race는 fail closed한다.
 - root workspace opt-in과 HIGH-RISK approval이 없으면 workspace command가 실행되지 않는다.
 - exact target/root/command를 승인한 뒤에만 bounded command가 실행되고 raw output은 저장되지 않는다.
-- cancel, timeout, navigation, connection/grant deletion과 app shutdown이 pending/active local transport를
+- cancel, timeout, connection/grant deletion과 app shutdown이 pending/active local transport를
   정리한다.
 - SQLCipher reopen, IPC sender/input validation과 Project Chat tool binding 자동 검증을 통과한다. 생성된
   DMG의 codesign 검증·mount·설치·launch는 수동 release smoke로 확인한다.

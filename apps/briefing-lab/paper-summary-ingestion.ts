@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { defaultLiveSettings } from '@gosu/briefing-core';
+import { defaultAssistantPreferences, defaultLiveSettings } from '@gosu/briefing-core';
 import type { ModelRouting } from '@gosu/contracts';
 import { publicSourceText } from './live-public-http';
 import { parseArxiv } from './live-public-sources';
@@ -9,17 +9,16 @@ import { assistantModel } from './briefing-assistant';
 import { routedBriefingPreferences } from './briefing-model-routing';
 import { BriefingWorkspaceStore } from './briefing-workspace-store';
 import { PAPER_TEMPLATE_FIELDS } from './src/briefing-intelligence';
-import type { PaperSummaryCandidate, PaperSummaryRecord } from './src/paper-summary-contract';
+import {
+  arxivSaveId,
+  verifiablePaperLink,
+  type PaperSummaryCandidate,
+  type PaperSummaryRecord,
+} from './src/paper-summary-contract';
 import type { LiveItem } from './src/live-types';
 
 export type PreparedPaper = PaperSummaryCandidate & Pick<PaperSummaryRecord, 'paper'>;
-export function arxivSaveId(value: string) {
-  return (
-    value.match(
-      /^https:\/\/(?:www\.)?arxiv\.org\/(?:abs|html|pdf)\/((?:\d{4}\.\d{4,5}|[a-zA-Z.-]+\/\d{7})(?:v\d+)?)(?:\.pdf)?(?:[?#].*)?$/,
-    )?.[1] ?? null
-  );
-}
+export { arxivSaveId };
 export async function preparePaperSummaries(
   candidate: PaperSummaryCandidate,
   existing: PaperSummaryRecord[],
@@ -27,16 +26,7 @@ export async function preparePaperSummaries(
   outerSignal?: AbortSignal,
 ): Promise<PreparedPaper[]> {
   const urls = [...new Set(candidate.sourceUrls)];
-  if (
-    !urls.length ||
-    urls.some(
-      (url) =>
-        !arxivSaveId(url) &&
-        !/^https:\/\/(?:doi\.org\/10\.\d{4,9}\/[^\s?#]+|proceedings\.mlr\.press\/v\d+\/[\w-]+\.html|openreview\.net\/forum\?id=[\w-]+)$/.test(
-          url,
-        ),
-    )
-  )
+  if (!urls.length || urls.some((url) => !verifiablePaperLink(url)))
     throw new Error(
       '확인 가능한 논문 링크가 필요합니다. 일반 대화나 검색 결과 페이지는 저장하지 않습니다.',
     );
@@ -100,12 +90,12 @@ export async function preparePaperSummaries(
     const item = resolved ?? (await enrichPaper(source, signal));
     const config = await new BriefingWorkspaceStore().desktopConfiguration();
     const routine = config.routines.find((r) => r.id === config.selectedRoutineId);
-    if (!routine?.live?.assistant)
-      throw new Error('Briefing Lab에서 논문 요약 모델을 설정해주세요.');
+    if (!routine) throw new Error('Briefing Lab에 루틴이 없어 논문 요약을 저장할 수 없습니다.');
     const preferences = routedBriefingPreferences(
-      routine.live.assistant,
+      routine.live?.assistant ?? defaultAssistantPreferences(),
       await routing?.(),
-      'briefing',
+      // Its own role in Settings → Agent; unset, it follows Briefing, which ran it before.
+      'paperSummary',
     );
     const model = await assistantModel(preferences);
     const result = await analyzeBriefing(

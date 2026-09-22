@@ -3,6 +3,7 @@ import { access, readdir, stat } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 
 import { verifyHermesRuntimeArchive } from './hermes-runtime-bundle.mjs';
+import { verifyPackagedLabBundles } from './lab-bundles.mjs';
 
 const readyMarker = 'GOSU_PACKAGED_STARTUP_READY';
 const outputLimitBytes = 64 * 1024;
@@ -122,5 +123,7 @@ if (process.argv.includes('--require-hermes')) {
     `packaged Hermes ${verified.manifest.hermesVersion} runtime verified: ${runtimePath}`,
   );
 }
+await verifyPackagedLabBundles(join(appPath, 'Contents', 'Resources', 'app.asar'));
+console.log(`packaged Model Lab and Briefing Lab bundles hold only referenced assets: ${appPath}`);
 await verifyPackagedStartup(appPath);
 console.log(`packaged GOSU startup smoke passed: ${appPath}`);

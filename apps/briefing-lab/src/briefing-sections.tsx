@@ -1,4 +1,5 @@
 import { useRef, useState, type ReactNode } from 'react';
+import { BriefingSectionRail } from './briefing-disclosure-collapse';
 import {
   briefingSectionOrder,
   moveBriefingSection,
@@ -197,6 +198,7 @@ export function BriefingSections({
                 {hiddenCount > 0 && <small>숨김 {hiddenCount}건</small>}
               </div>
             </summary>
+            <BriefingSectionRail label={`${labels[kind]} 섹션 접기`} />
             <div className="briefing-cards">{items.map(renderItem)}</div>
           </details>
         ))}

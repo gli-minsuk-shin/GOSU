@@ -4,18 +4,22 @@ import {
   type ModelLabReader,
 } from '../../../model-lab/model-reference-contracts';
 import {
+  explicitlyAuthorizesModelLabWrite,
+  type ModelLabWriter,
+} from '../../../model-lab/model-lab-chat-write';
+import {
+  compactProjectContextNow,
   prepareProjectContext,
   projectContextScope,
+  resolveProjectContextWindow,
   type ProjectContextCheckpoint,
 } from './project-chat-context';
 import { historyPlan } from '../../../briefing-lab/briefing-context';
+import { isMinimalConversationRequest } from '../../../briefing-lab/request-context-selection';
 import { projectTranscript } from './project-chat-context';
 import { codexTokenUsage, claudeTokenUsage } from '../../../briefing-lab/briefing-token-usage';
 import type { ContextUsage, NativeTokenUsage } from '../../../briefing-lab/src/context-usage';
-import {
-  contextCapacityMetadata,
-  contextConfigurationMatches,
-} from '../../../briefing-lab/src/context-usage';
+import { contextCapacityMetadata } from '../../../briefing-lab/src/context-usage';
 import type { ConversationMessage } from '../../../briefing-lab/src/briefing-conversation';
 import {
   applicationLanguageContext,
@@ -51,6 +55,7 @@ import {
   ProjectChatQueuedTurnSchema,
   ProjectChatQueuedTurnInputSchema,
   RenameProjectChatSessionInputSchema,
+  CompactProjectChatSessionInputSchema,
   ProjectChatSessionInputSchema,
   ProjectChatSnapshotInputSchema,
   ProjectChatSnapshotSchema,
@@ -83,6 +88,8 @@ import {
   type ConfirmProjectChatResearchNoteSaveInput,
   type MarkProjectChatResearchNoteSaveUncertainInput,
   type RenameProjectChatSessionInput,
+  type CompactProjectChatSessionInput,
+  type ProjectChatCompactionReceipt,
   type ProjectChatSession,
   type ProjectChatSessionInput,
   type ProjectChatSnapshot,
@@ -109,6 +116,7 @@ import {
   type ProjectAgentExperiments,
   type ProjectAgentHermes,
   type ProjectAgentLiterature,
+  type ProjectAgentBriefingReads,
   type ProjectAgentManuscripts,
   type ProjectAgentSsh,
   type ProjectAgentVault,
@@ -314,6 +322,8 @@ export interface ProjectChatCodex {
     dynamicToolHandler?: CodexDynamicToolHandler;
     dynamicToolTimeouts?: readonly CodexDynamicToolTimeoutOverride[];
     webSearchMode?: CodexWebSearchMode;
+    /** Claude Code only: per-turn CLI limit; other providers ignore it. */
+    turnTimeoutMs?: number;
   }): Promise<{ threadId: string; providerId?: string }>;
   runTurn(input: {
     threadId: string;
@@ -327,6 +337,12 @@ export interface ProjectChatCodex {
     collaborationModeId?: string | null;
     expectedCollaborationModeCatalogVersion?: string | null;
     personality?: CodexPersonality | null;
+    /**
+     * Claude Code only: run without extended thinking, for small metadata-only jobs where thinking
+     * is most of the latency (43.6s -> 4.8s measured for a 30-email quick briefing on Haiku).
+     * Other providers ignore it.
+     */
+    thinking?: 'disabled';
   }): Promise<{
     turnId: string;
     invocation: ModelInvocation;
@@ -414,7 +430,7 @@ type ActiveTurn = {
   invocation: ModelInvocation;
   finalResponseText: string | null;
   agentTools: ProjectAgentToolSession;
-  terminalErrorCode: 'attachment_model_modality_unsupported' | null;
+  terminalErrorCode: 'attachment_model_modality_unsupported' | 'claude_code_auth_required' | null;
   terminal: boolean;
 };
 
@@ -434,6 +450,8 @@ const FAILURE_COPY = {
     'The selected model cannot accept image attachments. Choose an image-capable model, attach the image again, and resend this message.',
   invalid:
     'The selected Project Chat provider returned an invalid project response. Please try again.',
+  claudeCodeAuthRequired:
+    'Claude Code sign-in has expired. Run `claude auth login` in Terminal to sign in with your Claude subscription again, then retry this turn.',
   interrupted: 'This Project Chat turn was stopped.',
   persistence:
     'GOSU recovered this turn after its first completion receipt could not be saved. Retry when ready.',
@@ -464,13 +482,26 @@ function nativeExecutionKind(
 }
 
 const LITERATURE_SUBJECT_PATTERN =
-  /(?:\bliterature\b|\bpapers?\b|\bpublications?\b|\breferences?\b|\bbibliograph(?:y|ies|ic)\b|논문|문헌|참고문헌|레퍼런스)/giu;
+  /(?:\bliterature\b|\bpapers?\b|\bpublications?\b|\breferences?\b|\bbibliograph(?:y|ies|ic)\b|\bpreprints?\b|\b(?:related|prior)\s+work\b|논문|문헌|참고문헌|레퍼런스|(?:선행|관련|기존|최신)\s*연구|연구\s*동향)/giu;
 const LITERATURE_ENGLISH_ACTION_PATTERN =
-  /(?:^|\bplease\s+|\b(?:can|could|would|will)\s+you\s+|\bi\s+(?:want|need)\s+you\s+to\s+|\b(?:let['’]?s|help\s+me|go\s+ahead\s+and|then)\s+)(?<verb>search|find|look\s+up|discover|add|insert)\b/giu;
-const LITERATURE_KOREAN_ACTION_PATTERN =
-  /(?<verb>\b(?:search|find|add|insert)(?:해서|하고|하여|해줘|해주세요)|(?:검색|발굴)(?:해서|하고|하여|해줘|해주세요|해라|하라|하십시오|할래|해줄래|해)|찾(?:아서|아줘|아라|으세요|아)|추가(?:해서|하고|하여|해줘|해주세요|하라|하십시오|해)|넣(?:어서|어줘|어라|으세요|어))(?=$|[\s,.!?])/giu;
+  /(?:^|\bplease\s+|\b(?:can|could|would|will)\s+you\s+|\bi\s+(?:want|need)\s+you\s+to\s+|\bi(?:['’]d|\s+would)\s+like\s+you\s+to\s+|\bwe\s+(?:should|need\s+to|have\s+to)\s+|\b(?:let['’]?s|help\s+me|go\s+ahead\s+and|then)\s+)(?<verb>search|find|look\s+for|look\s+up|discover|survey|add|insert)\b/giu;
+// How a Korean request ends after the verb stem: "검색해봐", "찾아줄래?", "조사해 주세요". A past or
+// conditional form ("찾아봤는데", "검색했어", "검색하면") is a remark, not a request, and has no match.
+const LITERATURE_KOREAN_REQUEST_ENDING =
+  '(?:서|봐(?:줘|요|라)?|보(?:자|세요|실래요)|볼래(?:요)?|\\s*줘(?:요|봐)?|\\s*주(?:세요|라|실래요|시겠어요)|줄래(?:요)?|라|요)?';
+const LITERATURE_KOREAN_ACTION_PATTERN = new RegExp(
+  '(?<verb>\\b(?:search|find|add|insert)(?:해서|하고|하여|해줘|해주세요)' +
+    `|(?:검색|서치|탐색|조사|서베이|리서치|발굴|수집)(?:을|를)?\\s*(?:(?:해|하여|하고)${LITERATURE_KOREAN_REQUEST_ENDING}|하라|하자|하십시오|할래|부탁(?:해요|해|드려요|드립니다|드려|합니다)?)` +
+    `|찾(?:아${LITERATURE_KOREAN_REQUEST_ENDING}|으세요|자)` +
+    '|추가(?:해서|하고|하여|해줘|해주세요|하라|하십시오|해)' +
+    '|넣(?:어서|어줘|어라|으세요|어))(?=$|[\\s,.!?~])',
+  'giu',
+);
+/** The whole message is the command itself: "논문 검색", "관련 논문 검색", "literature search". */
+const LITERATURE_BARE_COMMAND_PATTERN =
+  /^(?:관련\s*)?(?:논문|문헌|literature|papers?)\s*(?:검색|서치|조사|search)\s*[.!]?$/iu;
 const LITERATURE_DENIAL_PATTERN =
-  /(?:\bdo\s+not\b|\bdon't\b|\bwithout\s+(?:searching|finding|adding|saving|importing)\b|검색\s*(?:하지\s*마|하지\s*말|없이)|찾지\s*마|추가하지\s*마|넣지\s*마)/iu;
+  /(?:\bdo\s+not\b|\bdon't\b|\bwithout\s+(?:searching|finding|adding|saving|importing)\b|검색\s*(?:하지\s*마|하지\s*말|없이|하면\s*안)|찾지\s*마|찾으면\s*안|추가하지\s*마|넣지\s*마)/iu;
 const LITERATURE_INTERVENING_TARGET_PATTERN =
   /(?:\b(?:board|tasks?|notes?|settings?)\b|보드|태스크|작업|노트|설정)/iu;
 const LITERATURE_LOCAL_SUBJECT_SUFFIX_PATTERN =
@@ -540,6 +571,20 @@ function actionDirectlyTargetsLiterature(message: string, action: LiteratureComm
   return false;
 }
 
+/**
+ * "문헌에서 … 논문 검색해줘" names the Literature screen as the place and new papers as the object: that
+ * is an external search. "문헌에서 찾아줘", or anything that says saved or existing, is a lookup in the
+ * saved table and stays one.
+ */
+function searchesTheSavedCollection(message: string) {
+  const match = LITERATURE_EXISTING_COLLECTION_SCOPE_PATTERN.exec(message);
+  if (!match) return false;
+  const place = /^(?:논문|문헌|참고문헌|레퍼런스)(?:에서|안에서|내에서|중에서)/u.exec(match[0]);
+  if (!place) return true;
+  const rest = match[0].slice(place[0].length);
+  return !/(?:논문|\bpapers?\b|\bliterature\b|(?:선행|관련|기존|최신)\s*연구)/iu.test(rest);
+}
+
 export function explicitlyAuthorizesLiteratureSearch(message: string) {
   const normalized = message.normalize('NFKC').trim();
   return (
@@ -547,10 +592,11 @@ export function explicitlyAuthorizesLiteratureSearch(message: string) {
     !LITERATURE_DENIAL_PATTERN.test(normalized) &&
     !LITERATURE_LOCAL_DOCUMENT_SCOPE_PATTERN.test(normalized) &&
     !LITERATURE_LOCAL_WORKSPACE_SCOPE_PATTERN.test(normalized) &&
-    !LITERATURE_EXISTING_COLLECTION_SCOPE_PATTERN.test(normalized) &&
-    literatureCommandActions(normalized).some((action) =>
-      actionDirectlyTargetsLiterature(normalized, action),
-    )
+    !searchesTheSavedCollection(normalized) &&
+    (LITERATURE_BARE_COMMAND_PATTERN.test(normalized) ||
+      literatureCommandActions(normalized).some((action) =>
+        actionDirectlyTargetsLiterature(normalized, action),
+      ))
   );
 }
 
@@ -713,6 +759,20 @@ function parseProjectChatBranchTitle(value: string | null, fallback: string) {
   }
 }
 
+const PROJECT_CHAT_TURN_BASE_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * The hard per-turn deadline for a provider that runs a whole turn as one process (Claude Code; the
+ * others ignore it). Its default of five minutes is shorter than one SSH tool call may wait for the
+ * user's Allow once plus the command itself, so remote work ended in a killed turn on Claude and
+ * only ever finished on Codex. Room for two of the longest tool waits plus model time; the adapter
+ * caps the result at its own maximum.
+ */
+export function projectChatTurnTimeoutMs(toolTimeouts: readonly Readonly<{ timeoutMs: number }>[]) {
+  const longestToolWait = Math.max(0, ...toolTimeouts.map(({ timeoutMs }) => timeoutMs));
+  return PROJECT_CHAT_TURN_BASE_TIMEOUT_MS + 2 * longestToolWait;
+}
+
 export class ProjectChatService extends EventEmitter {
   private readonly activeByTransport = new Map<string, ActiveTurn>();
   private readonly activeTransportBySession = new Map<string, string>();
@@ -755,9 +815,15 @@ export class ProjectChatService extends EventEmitter {
       manuscripts?: ProjectAgentManuscripts;
       hermes?: ProjectAgentHermes;
       ssh?: ProjectAgentSsh;
+      /** The user's notes per registered SSH server (connection id to text). */
+      sshAgentNotes?: Readonly<{ get(): Promise<Readonly<Record<string, string>>> }>;
       experiments?: ProjectAgentExperiments;
       researchPlans?: ProjectResearchPlanService;
       modelLab?: ModelLabReader;
+      /** Adds a chat-written model to the project's Model Lab (only when the user asks for it). */
+      modelLabWrite?: ModelLabWriter;
+      /** Calendar, mail, saved briefings and paper summaries, under the Briefing Lab settings. */
+      briefingReads?: () => Promise<ProjectAgentBriefingReads | null>;
       attachments?: ProjectChatAttachmentClaimer;
       usage?: Pick<ModelUsageService, 'bindThread' | 'releaseThread'>;
       titleJobTimeoutMs?: number;
@@ -1020,6 +1086,196 @@ export class ProjectChatService extends EventEmitter {
     });
   }
 
+  /**
+   * `/compact`: summarize this session's earlier turns now. The engine, summarizer, usage scope and
+   * checkpoint are the ones a turn uses under pressure, so the next turn simply finds the
+   * checkpoint. No attempt or message is created, and the transcript is never shortened.
+   */
+  async compactSession(
+    input: CompactProjectChatSessionInput,
+  ): Promise<ProjectChatCompactionReceipt> {
+    const command = CompactProjectChatSessionInputSchema.parse(input);
+    const sessionKey = sessionIdentity(command.projectId, command.sessionId);
+    return this.runWhenProjectChatSessionIdle(command.projectId, command.sessionId, async () => {
+      await this.requireActiveProject(command.projectId);
+      let chat: ProjectChatSnapshot;
+      try {
+        chat = await this.dependencies.storage.snapshot(command.projectId, command.sessionId);
+      } catch (error) {
+        throw mapSessionStorageError(error);
+      }
+      const session = chat.session;
+      if (!session) throw new ProjectChatServiceError('chat_session_not_found');
+      const unavailable = (
+        reason: NonNullable<ProjectChatCompactionReceipt['reason']>,
+      ): ProjectChatCompactionReceipt => ({
+        outcome: 'unavailable',
+        reason,
+        summarizedMessages: 0,
+      });
+      const compactHistory = this.dependencies.compactHistory;
+      const saveCheckpoint = this.dependencies.storage.saveProjectChatCheckpoint;
+      if (!compactHistory || !saveCheckpoint) return unavailable('engine_unavailable');
+      const [workspaceSnapshot, profile] = await Promise.all([
+        this.dependencies.workspace.snapshot(),
+        this.dependencies.storage.getProjectChatProfile(command.projectId),
+      ]);
+      let modelCatalog: ModelCatalog | null = null;
+      try {
+        modelCatalog = await this.dependencies.codex.listModelCatalog();
+      } catch {
+        // Without the catalog the window is a guess, which is reported below as its own reason.
+      }
+      const contextModel = command.requestedModelId
+        ? modelCatalog?.models.find((candidate) => candidate.modelId === command.requestedModelId)
+        : modelCatalog?.models.find((candidate) => candidate.isDefault);
+      const contextState = await this.dependencies.storage.getProjectChatContextState?.(
+        command.projectId,
+        session.id,
+      );
+      const { contextWindowTokens, contextWindowSource } = resolveProjectContextWindow(
+        contextModel,
+        contextState,
+        CODEX_CONTEXT_WINDOW_TOKENS,
+      );
+      if (!contextModel || contextWindowSource === 'fallback')
+        return unavailable('context_window_unknown');
+      if (contextModel.providerId !== 'codex' && contextModel.providerId !== 'claude-code')
+        return unavailable('provider_unsupported');
+      const model = {
+        ...contextModel,
+        contextWindowTokens,
+        metadata: { ...contextModel.metadata, contextWindowSource },
+      };
+      // What a turn sends besides the conversation, from the saved agent profile. It only sizes the
+      // plan; the next turn plans again with its own question, tools and memory.
+      const legacyReviewer =
+        Boolean(session.criticalReviewMode) || profile.harnessMode === 'reviewer';
+      const collaborationModeId = legacyReviewer ? null : profile.collaborationModeId;
+      const fixed = assembleProjectChatPrompt({
+        ...(session.modelLabReference ? { modelLabReference: session.modelLabReference } : {}),
+        ...(session.criticalReviewMode ? { criticalReviewMode: session.criticalReviewMode } : {}),
+        snapshot:
+          session.criticalReviewMode === 'manuscript'
+            ? { ...workspaceSnapshot, tasks: [], objectives: [] }
+            : workspaceSnapshot,
+        projectId: command.projectId,
+        message: '/compact',
+        priorMessages: [],
+        allowContextSelection: false,
+        harnessMode: session.criticalReviewMode ? 'reviewer' : profile.harnessMode,
+        responseDepth: profile.responseDepth,
+        contextScope: profile.contextScope,
+        profileVersion: profile.version,
+        instructionRevisionId: profile.instructionRevision?.id ?? null,
+        customInstructions: profile.customInstructions,
+        policyRules: profile.policyRules,
+        nativeCollaborationModeId: collaborationModeId,
+        nativeExecutionKind: nativeExecutionKind(collaborationModeId, legacyReviewer),
+        nativeCollaborationCatalogSha256: '0'.repeat(64),
+        nativePersonality: profile.personality,
+        nativeResponseVerbosity: profile.responseVerbosity,
+        effectiveReasoningOptionId: null,
+        workingMemory: chat.agentMemory ?? null,
+        contextWindowTokens,
+        contextWindowSource,
+      });
+      const contextHistory = this.dependencies.storage.readProjectChatContextHistory
+        ? await this.dependencies.storage.readProjectChatContextHistory(
+            command.projectId,
+            session.id,
+          )
+        : completedAttemptHistory(chat);
+      const scope = projectContextScope(
+        command.projectId,
+        session.id,
+        model.providerId,
+        profile.version,
+      );
+      const checkpoint =
+        contextState?.checkpoint?.scope === scope ? contextState.checkpoint : undefined;
+      // The meter has no attempt to belong to; the renderer keys context reports by session.
+      const reportId = randomUUID();
+      const controller = new AbortController();
+      // Registered where a turn's own preparation is, so the Stop button cancels this too.
+      this.contextControllers.set(sessionKey, { controller, providerId: model.providerId });
+      const maintenance = {
+        calls: 0,
+        inputTokens: 0 as number | null,
+        outputTokens: 0 as number | null,
+      };
+      try {
+        const result = await compactProjectContextNow({
+          projectId: command.projectId,
+          model,
+          messages: contextHistory,
+          fixedText: fixed.developerInstructions + fixed.prompt,
+          scope,
+          ...(checkpoint ? { checkpoint } : {}),
+          compact: (messages, summary) =>
+            compactHistory(model, messages, summary, controller.signal, (usage) => {
+              maintenance.calls++;
+              maintenance.inputTokens =
+                maintenance.inputTokens === null || usage?.inputTokens == null
+                  ? null
+                  : maintenance.inputTokens + usage.inputTokens;
+              maintenance.outputTokens =
+                maintenance.outputTokens === null || usage?.outputTokens == null
+                  ? null
+                  : maintenance.outputTokens + usage.outputTokens;
+            }),
+          save: async (next) => {
+            if (
+              controller.signal.aborted ||
+              (await this.dependencies.storage.getProjectChatProfile(command.projectId)).version !==
+                profile.version
+            )
+              throw new Error('project_chat_context_changed');
+            await this.requireActiveProject(command.projectId);
+            await saveCheckpoint.call(
+              this.dependencies.storage,
+              command.projectId,
+              session.id,
+              next,
+            );
+          },
+        });
+        const contextUsage: ContextUsage = {
+          ...result.report,
+          ...(maintenance.calls ? { maintenance } : {}),
+        };
+        this.publishContext(command.projectId, session.id, reportId, model.modelId, contextUsage);
+        return {
+          outcome: result.compacted ? 'compacted' : 'nothing_to_compact',
+          summarizedMessages: result.summarizedMessages,
+          contextUsage,
+        };
+      } catch (error) {
+        if (error instanceof ProjectChatServiceError) throw error;
+        if (controller.signal.aborted) return { outcome: 'cancelled', summarizedMessages: 0 };
+        const code = error instanceof Error ? error.message : '';
+        return {
+          outcome: 'failed',
+          summarizedMessages: 0,
+          reason:
+            code === 'project_chat_context_changed'
+              ? 'context_changed'
+              : code === 'assistant_compaction_invalid'
+                ? 'summary_invalid'
+                : code === 'assistant_context_too_large' ||
+                    code === 'assistant_compaction_too_large'
+                  ? 'context_too_large'
+                  : code === 'project_context_provider_unsupported'
+                    ? 'provider_unsupported'
+                    : 'model_failed',
+        };
+      } finally {
+        if (this.contextControllers.get(sessionKey)?.controller === controller)
+          this.contextControllers.delete(sessionKey);
+      }
+    });
+  }
+
   async updateProfile(input: UpdateProjectChatProfileInput) {
     const command = UpdateProjectChatProfileInputSchema.parse(input);
     if (this.hasProjectActivity(command.projectId)) {
@@ -1238,22 +1494,11 @@ export class ProjectChatService extends EventEmitter {
         command.projectId,
         session.id,
       );
-      const observedWindow =
-        contextState?.modelId === contextModel?.modelId &&
-        contextConfigurationMatches(contextModel, contextState?.usage)
-          ? contextState?.usage?.native?.contextWindowTokens
-          : null;
-      const contextWindowTokens = Math.min(
-        observedWindow ?? contextModel?.contextWindowTokens ?? CODEX_CONTEXT_WINDOW_TOKENS ?? 32000,
-        2_000_000,
+      const { contextWindowTokens, contextWindowSource } = resolveProjectContextWindow(
+        contextModel,
+        contextState,
+        CODEX_CONTEXT_WINDOW_TOKENS,
       );
-      const contextWindowSource = observedWindow
-        ? ('provider' as const)
-        : contextModel?.metadata?.contextWindowSource === 'configured'
-          ? ('configured' as const)
-          : contextModel?.metadata?.contextWindowSource === 'fallback' || !contextModel
-            ? ('fallback' as const)
-            : ('provider' as const);
       const contextBudget = planAgentContextBudget(
         contextWindowTokens === undefined ? {} : { contextWindowTokens },
       );
@@ -1296,8 +1541,20 @@ export class ProjectChatService extends EventEmitter {
         command.projectId,
         profile.localNotesVault,
       );
+      // Briefing reads are offered when Briefing Lab is available; each read still checks its own
+      // saved permission and asks first under the "ask every time" policy.
+      const briefingReads = session.criticalReviewMode
+        ? null
+        : ((await this.dependencies.briefingReads?.().catch(() => null)) ?? null);
       const agentTools = new ProjectAgentToolSession({
         ...(this.dependencies.modelLab ? { modelLab: this.dependencies.modelLab } : {}),
+        // Writing a model is offered only for a turn whose own message asks for it.
+        ...(this.dependencies.modelLabWrite &&
+        executionKind !== 'legacy-reviewer' &&
+        !session.criticalReviewMode &&
+        explicitlyAuthorizesModelLabWrite(command.message)
+          ? { modelLabWrite: this.dependencies.modelLabWrite }
+          : {}),
         ...(session.modelLabReference ? { modelLabReference: session.modelLabReference } : {}),
         ...(session.criticalReviewMode ? { criticalReview: session.criticalReviewMode } : {}),
         projectId: command.projectId,
@@ -1332,10 +1589,14 @@ export class ProjectChatService extends EventEmitter {
           ? { literature: this.dependencies.literature }
           : {}),
         ...(this.dependencies.manuscripts ? { manuscripts: this.dependencies.manuscripts } : {}),
+        ...(briefingReads ? { briefingReads } : {}),
         ...(hermesDelegationRequested && this.dependencies.hermes
           ? { hermes: this.dependencies.hermes, resolveProjectCwd }
           : {}),
         ...(this.dependencies.ssh ? { ssh: this.dependencies.ssh } : {}),
+        ...(this.dependencies.sshAgentNotes
+          ? { sshAgentNotes: this.dependencies.sshAgentNotes }
+          : {}),
         ...(this.dependencies.experiments ? { experiments: this.dependencies.experiments } : {}),
         ...(this.dependencies.researchPlans
           ? {
@@ -1416,6 +1677,8 @@ export class ProjectChatService extends EventEmitter {
         projectId: command.projectId,
         message: command.message,
         priorMessages: contextHistory,
+        allowContextSelection:
+          !attachments && !session.modelLabReference && !session.criticalReviewMode,
         harnessMode,
         responseDepth,
         contextScope,
@@ -1440,6 +1703,14 @@ export class ProjectChatService extends EventEmitter {
         hermesAgentStatus: projectAgentHermesConnected(this.dependencies.hermes)
           ? 'connected'
           : 'not_connected',
+        literatureSearchCapability:
+          executionKind === 'legacy-reviewer'
+            ? 'reviewer-mode'
+            : !this.dependencies.literature
+              ? 'unavailable'
+              : explicitlyAuthorizesLiteratureSearch(command.message)
+                ? 'granted'
+                : 'not-requested',
         workingMemory: priorChat.agentMemory ?? null,
         permanentMemory,
         ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
@@ -1472,6 +1743,7 @@ export class ProjectChatService extends EventEmitter {
           projectTranscript(contextHistory),
           fixedText,
           checkpoint,
+          promptInput.allowContextSelection ? command.message : undefined,
         ).report;
         this.publishContext(command.projectId, session.id, attemptId, model.modelId, contextUsage);
         const contextController = new AbortController();
@@ -1491,6 +1763,7 @@ export class ProjectChatService extends EventEmitter {
             messages: contextHistory,
             fixedText,
             scope,
+            ...(promptInput.allowContextSelection ? { query: command.message } : {}),
             ...(checkpoint ? { checkpoint } : {}),
             compact: (messages, summary) =>
               this.dependencies.compactHistory!(
@@ -1530,7 +1803,15 @@ export class ProjectChatService extends EventEmitter {
             },
           });
           if (contextController.signal.aborted) throw new Error('project_chat_context_cancelled');
-          promptInput = { ...promptInput, priorMessages: prepared.messages };
+          promptInput = {
+            ...promptInput,
+            priorMessages: prepared.messages,
+            contextSelection: {
+              totalMessages: prepared.report.totalMessages,
+              omittedMessages: prepared.report.omittedMessages,
+              mode: prepared.report.selectionMode ?? 'full',
+            },
+          };
           contextUsage = { ...prepared.report, ...(maintenance.calls ? { maintenance } : {}) };
         } catch (error) {
           if (contextController.signal.aborted && queueContext) {
@@ -1571,6 +1852,10 @@ export class ProjectChatService extends EventEmitter {
       contextUsage.estimatedInputTokens =
         (assembled.contextPlan.estimatedPromptTokens ?? 0) +
         (assembled.contextPlan.developerInstructionTokens ?? 0);
+      if (promptInput.allowContextSelection && isMinimalConversationRequest(command.message)) {
+        contextUsage.selectionMode = 'minimal';
+        contextUsage.omittedMessages = contextHistory.length;
+      }
       if (contextUsage.compressedMessages)
         Object.assign(assembled.contextPlan, {
           candidateMessageCount: contextUsage.totalMessages,
@@ -2484,6 +2769,7 @@ export class ProjectChatService extends EventEmitter {
       dynamicTools: agentTools.dynamicTools,
       dynamicToolHandler: agentTools.handler,
       dynamicToolTimeouts: agentTools.dynamicToolTimeouts,
+      turnTimeoutMs: projectChatTurnTimeoutMs(agentTools.dynamicToolTimeouts),
     });
     if (this.threadSessions.has(started.threadId)) {
       throw new Error('codex_thread_id_collision');
@@ -2864,6 +3150,16 @@ export class ProjectChatService extends EventEmitter {
     if (notification.params.gosuErrorCode === 'attachment_model_modality_unsupported') {
       active.terminalErrorCode = 'attachment_model_modality_unsupported';
       active.agentTools.rejectNativeImageDelivery();
+    } else if (
+      status === 'failed' &&
+      isRecord(turn) &&
+      isRecord(turn.error) &&
+      turn.error.message === 'claude_code_auth_required'
+    ) {
+      // `claude auth status` does not validate token expiry, so an expired
+      // subscription login is first observed here. Surface it instead of the
+      // generic provider failure.
+      active.terminalErrorCode = 'claude_code_auth_required';
     }
     this.beginFinalize(
       active,
@@ -2994,7 +3290,9 @@ export class ProjectChatService extends EventEmitter {
       appendSourceProvenance(
         modalityUnsupported
           ? FAILURE_COPY.attachmentModelModalityUnsupported
-          : FAILURE_COPY.unavailable,
+          : active.terminalErrorCode === 'claude_code_auth_required'
+            ? FAILURE_COPY.claudeCodeAuthRequired
+            : FAILURE_COPY.unavailable,
         sourceAppendix,
       ),
       [],

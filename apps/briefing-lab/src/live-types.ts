@@ -1,6 +1,7 @@
 import type { MailAccountContext } from './mail-account';
 import type { PaperBibliography } from './paper-bibliography';
 import type { DuplicateMail } from './mail-duplicates';
+import type { MailTargetCoverage } from '../briefing-mail-ingestion';
 export type LiveKind = 'weather' | 'papers' | 'email';
 export type WeatherSeries = {
   city: string;
@@ -33,6 +34,8 @@ export type LiveItem = {
   mailAccount?: MailAccountContext;
   mailUnread?: boolean;
   mailMarkedReadAt?: string;
+  /** Web links from the raw HTML source, for Scholar alert papers; not saved with summaries. */
+  mailLinks?: { text: string; href: string }[];
   publishedAt?: string;
   bibliography?: PaperBibliography;
   readScope: 'forecast' | 'abstract' | 'paper-metadata' | 'mail-metadata' | 'mail-preview';
@@ -52,8 +55,12 @@ export type LiveItem = {
   };
 };
 export type LiveSourceResult = {
+  /** Mail runs only: what each mailbox read examined, committed after summaries are saved. */
+  mailCoverage?: MailTargetCoverage[];
   notice?: string;
   historyWarning?: string;
+  /** A source-level problem the user should see even though items were read. */
+  warning?: string;
   receiptId?: string;
   kind: LiveKind;
   status: 'ready' | 'empty' | 'failed';

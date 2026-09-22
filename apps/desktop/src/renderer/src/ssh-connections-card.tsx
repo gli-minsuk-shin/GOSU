@@ -11,6 +11,7 @@ import type {
 } from '../../shared/ssh-contracts';
 import type { ProjectRecord } from '../../shared/workspace-contracts';
 import { SshResourceSummary, type SshResourceUiState } from './ssh-resource-summary';
+import { SshAgentNoteEditor } from './ssh-agent-note-editor';
 
 type MaybePromise<T> = T | Promise<T>;
 const EMPTY_LINKED_CONNECTION_IDS: ReadonlySet<string> = new Set();
@@ -467,6 +468,11 @@ export function SshConnectionsCard({
                         {uiText('Remove')}
                       </button>
                     </div>
+                    <SshAgentNoteEditor
+                      connectionId={connection.id}
+                      serverLabel={connection.label}
+                      disabled={busy}
+                    />
                   </>
                 )}
               </section>

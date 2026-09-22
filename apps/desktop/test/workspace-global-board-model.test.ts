@@ -1,4 +1,19 @@
 import { describe, expect, it } from 'vitest';
+it('shows personal tasks in the global board without adding a real project', () => {
+  const task = {
+    id: 'personal-task',
+    projectId: null,
+    title: 'Review',
+    status: 'planned' as const,
+    version: 1,
+    createdAt: '2026-09-14T00:00:00Z',
+    updatedAt: '2026-09-14T00:00:00Z',
+  };
+  const joined = joinWorkspaceGlobalBoardTasks([], [task]);
+  expect(joined).toHaveLength(1);
+  expect(joined[0]?.project.name).toBe('개인 할 일');
+  expect(joined[0]?.task.projectId).toBeNull();
+});
 
 import {
   DEFAULT_WORKSPACE_BOARD_SETTINGS,

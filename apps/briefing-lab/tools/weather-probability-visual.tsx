@@ -49,12 +49,13 @@ function weather(values: (number | null)[]): WeatherSeries {
 }
 const narrow = new URLSearchParams(location.search).has('narrow');
 const compact = new URLSearchParams(location.search).has('compact');
+const dry = new URLSearchParams(location.search).has('dry');
 createRoot(document.getElementById('root')!).render(
   <main style={{ padding: 16, maxWidth: narrow ? 380 : 1200, margin: 'auto' }}>
     <h2>시간별 날씨 · 합성 화면 검증</h2>
     {!narrow && (
       <div className={compact ? 'briefing-history-run' : undefined}>
-        <WeatherCard weather={weather(probabilities)} />
+        <WeatherCard weather={weather(dry ? Array(24).fill(0) : probabilities)} />
       </div>
     )}
     <div style={{ maxWidth: 380, marginTop: 20 }}>

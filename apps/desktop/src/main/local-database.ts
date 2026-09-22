@@ -4226,10 +4226,23 @@ export class LocalDatabase {
         throw error;
       }
     }
+    this.openWithKey(key);
+  }
+
+  /**
+   * Opens the encrypted database with a key the caller resolved (local-database-key.ts). The key
+   * buffer is zeroed afterwards; a wrong key fails here, before any data is written.
+   */
+  openWithKey(key: Buffer) {
+    if (this.database) {
+      key.fill(0);
+      return;
+    }
     if (key.length !== 32) {
       key.fill(0);
       throw new Error('invalid_local_database_key');
     }
+    const userData = app.getPath('userData');
     let database: Database.Database | undefined;
     try {
       database = new Database(join(userData, 'gosu.db'));
@@ -6088,6 +6101,9 @@ export class LocalDatabase {
           expectedRevision,
         );
       if (stateCommit.changes !== 1) throw new Error('workspace_revision_conflict');
+      // Personal tasks are local workspace data, not commands for the project-only Sync API.
+      // Keep the existing outbox and its pending-only revision summary unchanged.
+      if (operation.entityType === 'task' && operation.projectId === undefined) return;
       if (trashPurgeReceipt) {
         for (const project of trashPurgeReceipt.removedProjects) {
           database

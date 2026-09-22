@@ -1,12 +1,13 @@
 import { uiText, useUiText } from '@gosu/ui/language';
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
 import { Formula, formulaDisplayRows } from './formula';
-import { formatModuleInputContract, formatModuleOutputContract } from './model-lab-domain';
+import { compactGraphShape, englishGraphName, graphCardSummary } from './graph-presentation';
 import type { GraphNavigationKey } from './model-graph';
 import type { GradientHealth, ModelModule } from './model-lab-schema';
 
 export type ModuleNodeData = Readonly<{
   module: ModelModule;
+  stageLabel?: string;
   changeKind: 'added' | 'changed' | null;
   health: GradientHealth;
   signalMode: 'forward' | 'backward';
@@ -14,6 +15,8 @@ export type ModuleNodeData = Readonly<{
   selectionTargetId: string;
   detailExpanded: boolean;
   detailDialogId: string;
+  /** A Model Assistant discussion of this module (or of a step inside it) is saved. */
+  explained?: boolean;
   navigationTargets: Readonly<Partial<Record<GraphNavigationKey, string>>>;
   compositeBlock: Readonly<{
     label: string;
@@ -106,6 +109,7 @@ export function ModuleNodeView({ data, selected }: NodeProps<ModuleFlowNode>) {
     health,
     detailDialogId,
     detailExpanded,
+    explained,
     navigationTargets,
     compositeBlock,
     subgraph,
@@ -115,8 +119,15 @@ export function ModuleNodeView({ data, selected }: NodeProps<ModuleFlowNode>) {
     orderFlowDirection,
   } = data;
   const formulaRows = formulaDisplayRows(module.formula);
-  const formulaAccessibilityLabel = moduleFormulaAccessibilityLabel(formulaRows);
   const repeat = moduleRepeatPresentation(module);
+  const input = compactGraphShape(module.inputShape),
+    output = compactGraphShape(module.outputShape);
+  const label = englishGraphName(
+    compositeBlock?.label ?? module.name,
+    module.id,
+    'Processing Block',
+  );
+  const repeats = repeat?.count ?? compositeBlock?.repeatCount;
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     if (isModuleActivationKey(event.key)) {
@@ -160,6 +171,7 @@ export function ModuleNodeView({ data, selected }: NodeProps<ModuleFlowNode>) {
         <Handle
           id={port.name}
           key={`${handleType}:${port.name}`}
+          title={port.name}
           type={handleType}
           position={position}
           style={{ top: `${((index + 1) / (ports.length + 1)) * 100}%` }}
@@ -170,7 +182,7 @@ export function ModuleNodeView({ data, selected }: NodeProps<ModuleFlowNode>) {
   };
   return (
     <article
-      className={`module-node module-node--${health}${selected ? ' module-node--selected' : ''}${repeat ? ' module-node--stacked' : ''}${compositeBlock ? ' module-node--composite' : ''}${changeKind ? ` module-node--change-${changeKind}` : ''}`}
+      className={`module-node module-node--story module-node--${signalMode} module-node--${health}${selected ? ' module-node--selected' : ''}${compositeBlock ? ' module-node--composite' : ''}${explained ? ' module-node--explained' : ''}${changeKind ? ` module-node--change-${changeKind}` : ''}`}
       data-model-node-id={module.id}
       data-repeat-count={repeat?.count}
       data-change-kind={changeKind ?? undefined}
@@ -195,7 +207,7 @@ export function ModuleNodeView({ data, selected }: NodeProps<ModuleFlowNode>) {
         aria-expanded={compositeBlock ? undefined : detailExpanded}
         aria-controls={compositeBlock ? undefined : detailDialogId}
         aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown Enter Space"
-        aria-label={`${module.name}. ${repeat ? `Repeated stack of ${repeat.count} ${repeat.label}. ` : ''}${healthLabel[health]}. ${module.transform}. ${formulaAccessibilityLabel}`}
+        aria-label={`${label}. ${repeats ? `Repeated ${repeats} times. ` : ''}${signalMode === 'backward' ? healthLabel[health] : 'Architecture block'}. ${explained ? 'AI explanation saved. ' : ''}Open details for full equations and ports.`}
         onClick={(event) => {
           event.stopPropagation();
           if (compositeBlock) compositeBlock.onOpen();
@@ -204,80 +216,83 @@ export function ModuleNodeView({ data, selected }: NodeProps<ModuleFlowNode>) {
         onKeyDown={handleKeyDown}
       >
         <div className="module-node__topline">
-          <span>{module.group}</span>
-          <span className="module-node__health" aria-label={uiText(healthLabel[health])}>
-            <span aria-hidden="true" />
-            {health === 'healthy'
-              ? uiText('flowing')
-              : health === 'not-applicable'
-                ? uiText('not applicable')
-                : uiText(health)}
+          <span>
+            <b className="module-node__stage">{data.stageLabel ?? `S${module.stage + 1}`}</b>{' '}
+            {module.kind.toUpperCase()}
+          </span>
+          <span className="module-node__topline-end">
+            {explained ? (
+              <span
+                className="module-node__ai-badge"
+                title={uiText(
+                  'Model Assistant explained this module in detail. Open details to read it.',
+                )}
+              >
+                <span aria-hidden="true">✦</span>
+                {uiText('AI explained')}
+              </span>
+            ) : null}
+            {repeats ? (
+              <b className="module-node__loop">×{repeats}</b>
+            ) : signalMode === 'backward' ? (
+              <span className="module-node__health" aria-label={uiText(healthLabel[health])}>
+                {uiText(health)}
+              </span>
+            ) : null}
           </span>
         </div>
-        {repeat ? (
-          <div
-            className="module-node__repeat"
-            aria-label={uiText('{value0} repeated {value1}', {
-              value0: repeat.count,
-              value1: repeat.label,
-            })}
-          >
-            <span className="module-node__repeat-layers" aria-hidden="true">
-              {moduleRepeatStackLayers(repeat).map((layer) => (
-                <i key={layer} data-repeat-layer={layer}>
-                  <span>{uiText('BLOCK')}</span>
-                </i>
-              ))}
-            </span>
-            <span className="module-node__repeat-copy">
-              <strong>{repeat.label}</strong>
-              <small>{uiText('same block composed')}</small>
-            </span>
-            <strong className="module-node__repeat-count">×{repeat.count}</strong>
-          </div>
-        ) : null}
-        {compositeBlock ? (
-          <div className="module-node__composite-summary">
-            <strong>{compositeBlock.label}</strong>
-            <code>
-              {formatModuleInputContract(module)} → {formatModuleOutputContract(module)}
-            </code>
-            <span>
-              {uiText('One iteration · ')}
-              {compositeBlock.moduleCount}
-              {uiText(' internal ')}
-              {compositeBlock.detailKind}
-            </span>
-            <b>{uiText('Open block details →')}</b>
-          </div>
-        ) : (
-          <>
-            <strong>{module.name}</strong>
-            <code>
-              {formatModuleInputContract(module)} → {formatModuleOutputContract(module)}
-            </code>
-            <div className="module-node__operation">{module.transform}</div>
-            <div className="module-node__activation">
-              {module.activation ?? uiText('No activation')}
-            </div>
+        <strong className="module-node__story-title" title={label}>
+          {label}
+        </strong>
+        <div className="module-node__reasoning">
+          <p className="module-node__purpose" title={graphCardSummary(module)}>
+            {compositeBlock
+              ? `${uiText('One iteration · ')}${compositeBlock.moduleCount} ${uiText('internal stages')}`
+              : graphCardSummary(module)}
+          </p>
+          {!compositeBlock && (
             <div
-              className="module-node__formula"
-              title={module.formula}
-              aria-label={formulaAccessibilityLabel}
+              className="module-node__key-equation"
+              title={uiText('Stored design equation · not runtime verification')}
             >
-              <div className="module-node__formula-list">
-                {formulaRows.map((row, index) => (
-                  <div
-                    className={`module-node__formula-row nowheel nodrag${row.length > 110 ? ' module-node__formula-row--very-long' : row.length > 72 ? ' module-node__formula-row--long' : ''}`}
-                    key={`${index}:${row}`}
-                  >
-                    <Formula latex={row} displayMode={row.includes('\\begin{')} />
-                  </div>
-                ))}
-              </div>
+              <Formula
+                latex={module.presentation?.keyEquation ?? formulaRows[0] ?? module.formula}
+              />
             </div>
-          </>
-        )}
+          )}
+          {module.presentation?.shapeNotes && (
+            <small className="module-node__shape-notes" title={module.presentation.shapeNotes}>
+              {module.presentation.shapeNotes}
+            </small>
+          )}
+        </div>
+        <div className="module-node__io">
+          <span>
+            <small>
+              IN{(module.inputPorts?.length ?? 0) > 1 ? ` · ${module.inputPorts!.length}` : ''}
+            </small>
+            <code>{input.text}</code>
+          </span>
+          <span>
+            <small>
+              OUT{(module.outputPorts?.length ?? 0) > 1 ? ` · ${module.outputPorts!.length}` : ''}
+            </small>
+            <code>{output.text}</code>
+          </span>
+        </div>
+        <div className="module-node__story-footer">
+          <small
+            className={input.uncertain || output.uncertain ? 'module-node__dimension-warning' : ''}
+            title={module.presentation?.uncertainties.join('\n')}
+          >
+            {input.uncertain || output.uncertain
+              ? uiText('Stored shape invalid · see equations')
+              : module.presentation?.uncertainties.length
+                ? module.presentation.uncertainties[0]
+                : `${formulaRows.length} ${uiText('equations in details')}`}
+          </small>
+          <b>{compositeBlock ? uiText('Open block →') : uiText('Details →')}</b>
+        </div>
       </button>
       {subgraph ? (
         <button

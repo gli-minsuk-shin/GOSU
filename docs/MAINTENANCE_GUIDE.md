@@ -1,5 +1,640 @@
 # GOSU 유지보수 가이드와 개발 기억
 
+[0.58.147 설치](releases/0.58.147.md): 저장된 허가가 업데이트마다 풀린다면 무엇을 키로 썼는지 볼 것. inode는 macOS가 스스로 바꾼다. 반복되는 AI 출력도 모델이 아니라 우리 쪽 고정 입력을 먼저 의심할 것
+
+[0.58.146 설치](releases/0.58.146.md): 화면이 버벅인다는 신고는 먼저 재어 볼 것. 정적 HTML로 뽑아 브라우저에서 프레임을 재면 그리기 비용인지 React 비용인지 바로 갈린다
+(브리핑 피드는 36,909개 요소에서도 중앙값 13.3ms였다). 이 화면의 진짜 비용은 `BriefingHistoryFeed`가 보관된 브리핑을 전부 그리는 것이었고, `react-test-renderer`로 mount와
+재렌더 시간을 직접 재어 확인했다(30개 394ms, 60개 857ms). 대책은 `BRIEFING_FEED_PAGE`(8개) 창과 `useMemo(groupBriefingHistory)`이며, 창 밖의 브리핑은
+IntersectionObserver 감시자가 화면에 닿을 때 8개씩 들어온다. 창을 도입할 때 알림 점프가 깨지지 않게 `runsToShow`가 알림이 가리키는 run을 포함하도록 창을 넓힌다.
+`loadAllHistory`는 여전히 전부 불러오므로, 목록이 더 길어지면 다음 단계는 불러오기 자체를 페이지로 나누는 것이다.
+
+[0.58.145 설치](releases/0.58.145.md): 제목 표시줄의 AI 줄은 사이드바 별과 **같은 상태**(`useSidebarAiActivity`의 `AiActivityState`)를 읽는다. 새 AI 작업을 만들면
+그 scope를 `aiWorkItems`의 `describe`에도 추가해야 줄에 이름이 뜬다(이름을 못 붙이면 조용히 빠진다). scope 형식은 `assistant`·`briefing`·`papers`·`lecture`와
+`project:<uuid>:<chat|review|experiments|literature>`이고, 확인 표시는 해당 탭을 열 때 기존 effect가 처리하므로 클릭 처리기는 이동만 하면 된다. 제목 표시줄 안의
+상호작용 요소는 `<button>`이어야 `-webkit-app-region: no-drag`가 걸린다. `AiActivityStar`는 `<span>`을 그리므로 테스트에서 `findByType('span')`으로 라벨을 찾지 말고
+클래스로 찾는다. 오늘의 격언 프롬프트는 "연구자용"이라는 서술 자체가 편향을 만들었다: 주제 목록(`DAILY_QUOTE_SUBJECTS`)을 날짜로 돌리고 연구·마감에 상한을 두는
+방식으로 고쳤다. 내장 격언 목록을 늘릴 때 저자를 붙이려면 널리 확인된 인용만 쓰고, 아니면 author를 null로 둔다. 사이드바는 굵은 글씨 없이 12px 제목과 11px 항목
+두 단계만 쓴다(`sidebar-density.test.ts`가 고정).
+
+[0.58.144 설치](releases/0.58.144.md): 오늘의 격언 파일은 이제 하루에 여러 줄을 담는다. 현재 줄은 (날짜, 언어)에서 `createdAt`이 가장 최근인 항목이고,
+`createdAt`이 없는 옛 항목은 그 날짜의 자정으로 친다(`writtenAt`). 손으로 요청한 횟수는 항목 수가 아니라 파일의 `refreshes` 배열에 날짜별로 센다: 실패한 시도도
+세야 고장난 모델을 반복 호출하지 않기 때문이다. 새로고침 실패는 그 날의 다른 줄을 지우면 안 되므로 `save(entry, append=false)`를 쓰지 말고 보여 주고 있는 줄의
+`failure`만 바꾼다(`save`의 비-append 경로는 같은 날짜·언어의 항목을 모두 지운다). 모델에 넘기는 `recent`에는 오늘 쓴 줄도 포함해야 새로고침이 같은 문장을 다시
+쓰지 않는다. 이 파일에 키를 더하면 예전 build는 strict parse에 실패해 내장 격언을 보여 주지만 파일을 덮어쓰지는 않는다(되돌리기 안전). 제목 표시줄의 팝오버는
+`popover="auto"` + 호출 버튼으로 top layer에 띄운다(헤더가 잘라내지 못함). 제목 표시줄 안의 상호작용 요소는 `<button>`이어야 `-webkit-app-region: no-drag`가
+적용된다. 데스크톱 `tsconfig.json`의 include는 `test/**/*.ts`뿐이라 `test/**/*.tsx`는 `tsc`가 검사하지 않는다: .tsx 테스트의 타입 오류는 vitest 실행에서만 드러난다.
+사용량 그래프의 빗금처럼 거의 모든 값에 붙는 표시는 정보가 아니라 잡음이다; 같은 사실을 문장·접근성 라벨·표의 열에 남기고 그림에서는 뺀다.
+
+[0.58.143 설치](releases/0.58.143.md): 채팅 명령은 `@gosu/ui/chat-slash-commands` 하나로 해석한다(메시지 전체가 명령일 때만, NFKC·대소문자 무시).
+새 명령을 더할 때도 세 채팅이 이 목록을 함께 쓴다. `/compact`의 엔진은 `compactConversationNow`(briefing-context.ts)이며 `prepareConversationContext`와
+같은 checkpoint 규칙을 쓴다: 유효한 checkpoint는 이어 붙이고, 저장은 호출자가 넘긴 `save`만 한다. 세 채팅 모두 자동 요약과 같은 요약 모델·사용량 종류
+(`context_compaction`)·checkpoint 저장소를 쓰므로 다음 턴은 checkpoint를 그대로 찾는다. AI 비서의 `/new`는 대화 레코드의 `contextStartsAt`/`contextStartedAt`이고
+(`briefing-workspace-store.ts`의 `modelFacingMessages`), checkpoint의 `through`와 digest는 그 시작점부터 센다: `conversation()`과
+`saveConversationCheckpoint`가 같은 목록을 봐야 한다. 대화 객체는 strict가 아니어서 예전 build는 이 필드를 버리고 읽는다. 화면의 구분선은
+`conversationDisplay`가 돌려주는 시각으로 그리며 문자열이 아니라 시각으로 비교한다(밀리초 유무가 섞여 있다). Model Lab은 `model-chat-context.ts`의
+`contextStartsAt`(index)이고 reset 때 checkpoints를 비운다. 두 곳 모두 `/new` 이후 `search_conversation`은 현재 문맥만 읽는다. Project Chat의
+`compactSession`은 `runWhenProjectChatSessionIdle` 안에서 돌고 `contextControllers`에 등록되므로 기존 `cancel`이 중단시킨다. 예상되는 실패는 throw하지 않고
+receipt의 `outcome`/`reason`(`PROJECT_CHAT_COMPACTION_REASONS`)으로 돌려준다: IPC 오류 코드 목록은 bounded라 늘리지 않는다. 문맥 창 계산은
+`resolveProjectContextWindow` 하나를 `send`와 함께 쓴다. `context.updated` 이벤트의 `attemptId`는 renderer가 쓰지 않으므로 `/compact`는 새 UUID를 넣는다.
+AI 비서 서버의 두 경로(`/assistant/conversation/new`, `/assistant/conversation/compact`)는 `BriefingChatQueue.begin`으로 루틴당 실행 하나를 잡는다.
+
+[0.58.142 설치](releases/0.58.142.md): "Codex에서만 된다"는 증상은 provider 검사보다 실행 한도를 먼저 의심할 것. Claude Code는 한 턴이 CLI 프로세스
+하나이고 마감이 절대 시간이다(`turnTimeoutMs`, 기본 5분, 최대 30분). Project Chat은 `projectChatTurnTimeoutMs`로 가장 긴 도구 대기의 두 배 + 10분을 넘긴다.
+도구 대기 시간을 늘리면 이 값도 함께 본다(`project-chat-service.test.ts`가 고정). SSH 연결 profile의 version은 trusted-access 승인에 묶여 있으므로, 접속 정체성과
+무관한 사용자 설정(서버별 AI 지침 등)은 profile에 넣지 말 것: `ssh-agent-notes.v1.json`처럼 따로 둔다. 채팅 스크롤: `scrollTop`을 첫 commit에 한 번만 쓰면
+수식·글꼴·도구 패널이 자라기 전 높이에 잘린다. `@gosu/ui/scroll-settle`의 `holdScrollTarget`으로 잡고 있는 동안에는 그 값을 읽던 위치로 저장하지 않는다.
+숨겨진 iframe 안의 스크롤 위치는 브라우저가 0으로 되돌리며 React는 다시 그려지지 않으므로 `restoreScrollWhenShown`(ResizeObserver)으로 복원한다. 제목
+표시줄의 격언은 모델이 쓴 글이므로 `uiText`에 넣지 않고, 실패해도 chrome에 오류를 띄우지 않는다(사유는 tooltip). 새 사용량 종류는 세 enum과
+`WORKLOAD_LABELS`를 함께 고친다(`daily_quote`). Model Lab의 화면 문구는 "Model Assistant"이고 식별자·경로·저장 키의 `copilot`은 그대로다
+(`packages/ui/src/language.test.ts`가 화면 문구를 고정).
+
+[0.58.141 설치](releases/0.58.141.md): 문헌 검색의 관련성은 이제 두 겹이다. provider의 순위 위치와, 논문 자체 텍스트가 검색어의 주제어를
+언급하는지(`shared/literature-query.ts`, `rankLiteratureCandidates`의 `queryTerms`). 새 provider나 lane을 붙일 때 이 gate를 우회하지 말 것: gate가 없던 때에는
+읽지 못하는 문장에도 50편이 저장됐다. 순위 정책 버전을 올릴 때는 `BALANCED_LITERATURE_CORE_GATES_SINCE_VERSION`도 판단한다(Core·Rising 기준이 그대로면 예전
+label을 legacy로 만들지 않는다). 저장되는 degradation enum에는 값을 더하지 말 것: run은 엄격하게 parse되어 downgrade한 build가 library를 못 연다. 세부 원인은
+receipt의 `providerFailures`로만 보낸다. 문헌 AI의 모든 turn은 `LiteratureAiService.runStructuredTurn` 하나를 거치고 실패는 `start_failed`·`turn_failed`·
+`timeout`으로 나뉜다. 한 turn에 초록 50편은 120초 안에 끝나지 않으므로 화면이 10편씩 나눠 부른다. Literature의 SQLite 계층에는 테스트가 없으므로 새 SQL을 쓰지
+말고 기존 storage method를 조합한다(`undoSearchAdditions`가 그렇게 한다). storage는 `import` 후보를 검토 파일로 보고 일치한 record의 수동 메모를 덮어쓴다:
+논문을 "추가"하는 경로는 반드시 `addImportedCandidates`(이미 표에 있는 논문은 건드리지 않음)를 거친다. 논문 요약 보관함이 읽을 수 있는 링크의 규칙은
+`verifiablePaperLink` 하나이며 카드와 ingestion이 함께 쓴다. 카드는 논문마다 따로 저장한다. Project Chat의 고정 정책 문구는 fallback 문맥 창을 대화 기록과
+나눠 쓰므로, 문구를 늘리면 `project-chat-prompt.test.ts`의 raw turn 수가 줄어든다(이번에 8 → 7). 사이드바의 1단계 행(도구, 그룹 머리줄, 프로젝트, 아카이브
+이름)은 22px 아이콘 칸 + 8px 간격의 한 grid를 쓴다(`sidebar-density.test.ts`가 고정). 알림 줄(`.notice`)의 버튼은 `flex: none; white-space: nowrap`이어야
+한국어 라벨이 글자마다 꺾이지 않는다.
+
+[0.58.140 설치](releases/0.58.140.md): 메일 한 통에 대한 읽음 처리·상태 확인·발신자 복구는 `LiveSourceService.mailItemAction` 하나이고,
+`/mail/mark-read-all`은 확인을 한 번만 받은 뒤 이 메서드를 메일마다 부른다. 여러 통을 한 스크립트로 처리하도록 바꾸려면 검증 단계(대상 확인, 쓰기 뒤 재확인)를 그대로
+옮겨야 한다. 메일 검색 기간: 저장된 `days`는 브리핑 수집과 기본값에만 쓰인다(`resolveMailSearch`). 브리핑 기간보다 넓은 검색은 `collectTarget`에서 색인이 있을 때만
+실행되고(`mail_search_index_required`, `mail_search_too_broad`), 색인은 `terms`로 `subjects`·`addresses`를 조인해 후보를 좁힌다. 이 필터는 반드시 "실제 일치의
+상위 집합"이어야 한다: SQLite LIKE는 ASCII만 대소문자를 접으므로 대소문자가 있는 비ASCII 글자가 든 단어는 SQL에 넣지 않는다(`foldable`). Envelope Index 구조는
+`sqlite3 -readonly … ".schema messages"`처럼 표 정의만 읽어 확인한다(내용은 읽지 않는다). 사용량: 모델 행의 입력·출력 금액은 `estimateUsageCostPartsUsd`에서 나오며
+합이 행의 금액과 같아야 한다. 새 기능 종류를 더할 때는 세 곳(`native-usage-observer.ts`, `native-usage-ledger.ts`, `model-usage-contracts.ts`)과
+`usage-view.tsx`의 `WORKLOAD_LABELS`를 함께 고친다. `byDayWorkloadModel`은 `MODEL_USAGE_DETAIL_WORKLOADS`(브리핑, 논문 요약)만 담는다.
+
+[0.58.139 설치](releases/0.58.139.md): `ContextUsageMeter`(Briefing 대화, AI 비서, Project Chat, Model Lab이 함께 씀)의 상세는 `popover="auto"`이고
+`contextDetailPlacement`가 칩의 `getBoundingClientRect()`로 자리를 정한다. 호스트 CSS에 기대는 절대 위치로 되돌리지 말 것: AI 비서 입력 상자와 Project Chat
+상자는 `overflow: hidden`이라 패널이 통째로 잘린다. 칩은 popover의 선언된 호출자(`popoverTarget`)라서 열고 닫기·바깥 클릭·Escape는 브라우저가 처리한다
+(스크립트로 `showPopover()`를 부르면 칩을 다시 누를 때 닫혔다가 바로 다시 열린다). popover는 시스템 글자색을 쓰므로 색을 직접 준다. 겹쳐 뜨는 UI는 테스트 렌더러로
+잘림을 알 수 없으니 실제 부모 구조와 실제 CSS로 브라우저에서 `elementFromPoint`로 확인한다. 사용 분포의 기능별 모델 구간은 `buildUsageDistribution`이 기능 행에
+붙이는 `parts`와 `splitUsageParts`에서 나오고, 모델의 색(`tone`)은 지표가 아니라 리포트의 모델 순서를 따른다. "안 읽은 메일만"은 `mailStillUnread`
+(`mailUnread` + `mailMarkedReadAt`)로 거르는 표시 필터다: Mail을 다시 읽지 않으며, 강조 목록과 섹션 개수에도 같은 필터를 적용해 숨은 카드로 가는 링크를 만들지 않는다.
+
+[0.58.138 설치](releases/0.58.138.md): 사용량 화면의 금액은 모두 `renderer/src/usage-distribution-model.ts`의 `buildUsageDistribution(report, prices)`에서
+나온다. 새 금액 표시를 만들 때 `byModel`이나 `byWorkload`를 따로 가격 계산하지 말 것: `aggregate()`는 보고된 턴 하나라도 캐시 수가 없으면 묶음의 캐시 수를
+null로 만들어 정가로 계산되므로, 묶는 방식이 다르면 합이 어긋난다. 기준은 서비스가 만드는 `byWorkloadModel`(키: 기능·연결·제공자·upstream·모델, `byModel`과 같은
+단위, `GLOBAL_USAGE_OWNER` 행 포함)이고, `usageCostParts`가 부분의 턴 합 = `totals.turnCount`일 때만 쓴다(1000행 절단·예전 리포트 대비). 금액 상태는
+`known`/`unpriced`/`unreported`/`no_breakdown` 네 가지이며 0으로 뭉개지 않는다. `UsageDistribution`은 표시 전용(라벨과 기준을 props로 받음)이고 전환 상태는
+`UsageView`에 둔다(`UsageReport`는 기간·필터마다 다시 마운트됨). `usage-view.test.tsx`는 가격표 없는 화면에 'API-equivalent'·'Cost' 문자열이 없을 것,
+`— <small>Not reported</small>` 개수, `role="tab"` 3개를 확인하므로 새 구역은 다른 마크업과 `aria-pressed` 버튼을 쓴다. 실제 원장으로 확인하려면
+`native-usage-ledger.v1.json`과 `model-prices.v1.json`의 사본을 임시 vitest에서 `NativeUsageLedger` + `ModelUsageService`로 돌린다(숫자만 출력).
+
+[0.58.137 설치](releases/0.58.137.md): `LiveSourceService.keepUnsummarizedMail`은 요약 루프의 `finally`에서 저장되지 않은 선택 메일을 빈 요약으로
+`saveBriefing`한다(15개씩, 실패해도 던지지 않음, 취소된 실행은 건너뜀). 빈 이메일 요약을 "미요약"으로 취급하는 곳(`isPriorityOnlyEmailSummary('')`는
+true, `mailReadPlan`의 `!item.summary.trim()`, `dailyItemKeys`, 알림 집계, `summaryHistory`)을 바꾸면 재요약이 깨지니 함께 확인할 것. 단축키는
+`shared/app-shortcuts.ts`의 `APP_SHORTCUT_TARGETS`에 `briefingRun`을 더했고(`.default()`로 예전 설정 파일 호환), `AssistantShortcutSchema`가 Enter 키를
+허용한다. GOSU 안에서는 Briefing 프레임이 키를 직접 듣지 않는다: 메인의 `before-input-event` → `openSurface('briefingRun')` → `runRequest` →
+`gosu-briefing-run-now`. 전체 디스크 접근 권한은 `main/full-disk-access.ts`(`~/Library/Mail` 목록 조회)와 `full-disk-access-notice.tsx`,
+`permissions-helper.tsx`(둘 다 localStorage 플래그)로 안내만 한다. 권한이 업데이트 후 풀렸다는 보고가 오면 `codesign -d -r- /Applications/GOSU.app`의
+designated requirement가 이전 빌드와 같은지 먼저 본다. 라이브러리 질문 버튼은 `asksPaperLibraryQuestion`(서버의 `approvedPaperSaveScope`와 같은 문구)이
+기준이며 `PaperSummarySaveOffer`는 데스크톱 Project Chat과 Model Lab도 함께 쓴다.
+
+[0.58.136 설치](releases/0.58.136.md)는 구독 한도 표시를 더했다. `shared/usage-limit-contracts.ts`(스키마, IPC 채널, `parseCodexRateLimits`,
+`parseClaudeUsage`, `headlineWindow`), `main/usage-limit-service.ts`(`UsageLimitService`: `<userData>/usage-limits.v1.json`, 주기 갱신, 창이 보일 때만,
+단일 실행, 실패 시 마지막 값 유지 + 코드 + 대기 시간 증가, Codex `account/rateLimits/updated` 수신), `main/claude-usage-probe.ts`(`get_usage` 제어 요청,
+1분 미만 주기에서만 CLI 유지), `CodexAppServer.rateLimits()`. 규칙: 자격 증명을 읽지 않고 모델 요청을 보내지 않는다. Claude의 `get_usage`는 SDK에서
+실험적이라고 표시된 호출이므로 형식이 바뀌면 `usage_limits_format`/`usage_limits_unsupported`가 뜬다: 그때는 실제 응답을 다시 받아(저장소의 테스트 러너로
+`ClaudeUsageProbe`를 한 번 돌리면 된다. `tsx`는 `@gosu/contracts` exports 때문에 이 모듈을 못 읽는다) `parseClaudeUsage`와 `test/usage-limit-fixtures.ts`를
+고친다. Codex 구간은 `primary`/`secondary` 위치가 아니라 `windowDurationMins`로 이름을 정한다(Pro는 주간만 `primary`로 온다). 타이틀 바 안에 `<strong>`을
+쓰면 `.titlebar strong`(GOSU 로고 글자 스타일)을 물려받는다. 프로젝트 사이드바의 우클릭은 같은 줄의 `details.project-folder-menu`를 여는 것뿐이다.
+Briefing Lab 단축키는 `desktop-bridge.ts`의 `isBriefingRunShortcut`과 `gosu-briefing-run-now` 메시지(데스크톱 → 프레임)로 동작한다.
+Briefing 헤더(`.briefing-main-header`) 안에 그리는 것은 `<p>`를 쓰지 않는다: `workspace.css`가 헤더의 모든 `<p>`를 숨기며, 실행 경고의 상세 문구가
+이 때문에 펼쳐도 보이지 않았다(단위 테스트는 통과한다. 실제 CSS를 넣은 페이지에서 `getBoundingClientRect`로 확인할 것).
+
+[0.58.135 설치](releases/0.58.135.md)의 첫 부분: Briefing의 모델은 설정 → Agent 한 곳에서만 정한다. `briefing-model-routing.ts`의
+`routedBriefingPreferences(preferences, policy, usage)`가 유일한 규칙이다: 사용처(`briefing`·`briefingAssistant`·`lightweightTasks`)의 역할에
+모델이 있으면 제공자·모델·추론 수준을 모두 거기서 가져오고, 없을 때만 루틴에 저장된 선택(`preferences.providerId/modelId/reasoning`, 이제 UI에서
+바꿀 수 없는 예전 값)을 쓴다. 새 AI 호출 경로를 만들 때는 `profile.preferences`를 직접 쓰지 말고 이 함수를 거친다(다시 요약·논문 분야 분류가
+빠져 있었다). 개인 자료 검사 `canPrivateAi(id, provider)`·`assertMail(..., provider)`는 저장된 제공자이거나 `briefingRoutedProviders(policy)`에
+있는 제공자만 통과시키며, 정책은 `LiveSourceService` 생성자가 `workspace.modelRouting`에 연결한다(정책 없이 만든 저장소는 저장된 제공자만 허용).
+`scopeDigest`에는 저장된 제공자가 그대로 들어 있다: 이 값을 고치거나 digest에서 빼면 모든 루틴의 승인과 대화 기록 키가 바뀌므로 건드리지 않는다.
+화면은 `/assistant/model/current`의 `usages`(사용처별 제공자·모델·`assigned`·`available`)를 `BriefingAgentModels`(설정)와
+`BriefingModelBadge`(채팅 머리글)가 읽기 전용으로 보여 주고, `gosu-open-agent-settings` 메시지로 데스크톱의 설정 → Agent를 연다.
+"브리핑이 설정과 다른 모델로 돌았다"는 보고가 오면 먼저 `model-routing.v1.json`의 그 사용처 역할에 모델이 지정돼 있는지 본다.
+둘째 부분: `scripts/lab-bundles.mjs`를 더한다(타입은 `lab-bundles.d.mts`, 테스트는 `lab-bundles.test.mjs`).
+`replaceLabBundle(source, target)`은 `source/index.html`을 확인한 뒤 대상 폴더를 지우고 복사하며, `electron.vite.config.ts`의
+`bundle-model-lab` 플러그인이 두 Lab에 쓴다. 예전의 `mkdir` + `cp(recursive)`는 기존 폴더에 합쳐 넣기만 해서 해시 이름의 번들이 빌드마다
+`out/model-lab/assets`·`out/briefing-lab/assets`에 쌓였다(Vite는 Lab의 `dist`를, electron-vite는 `out/main|preload|renderer`만 비운다).
+`verifyPackagedLabBundles(asarPath)`는 `verify-packaged-app-startup.mjs`가 기동 smoke 앞에서 부르며, ASAR 헤더를 직접 읽어(`@electron/asar`는
+pnpm에서 `scripts/`로 풀리지 않는다) `index.html`에서 시작해 파일 이름으로 도달 가능한 번들을 따라가고, 도달하지 못한 `.js`·`.mjs`·`.css`가 있으면
+개수와 앞 12개 경로로 실패한다. 번들 점검에서 "지운 코드가 패키지에 남아 있다"가 나오면 먼저 이 검사가 통과했는지 본다. Turbo는 여전히 `out/**`를
+캐시하고 복원은 지우지 않고 덮어쓰므로 디스크의 `out/`에는 예전 파일이 돌아올 수 있지만, `package:mac:*`는 Turbo를 거치지 않고 데스크톱 `build`를
+직접 실행한다. 설정 파일에서 `scripts/*.mjs`를 가져올 때는 `allowJs: false`라서 옆에 `.d.mts` 선언이 있어야 타입 검사를 통과하고, Turbo는
+패키지 안의 파일만 해시하므로 그 두 파일을 `turbo.json`의 `globalDependencies`에 넣어야 한다(`turbo-cache-policy.test.mjs`가
+`electron.vite.config.ts`의 `../../` import마다 확인한다. 빠뜨리면 헬퍼를 고쳐도 캐시된 데스크톱 빌드가 재생된다). 이 Mac의
+셸에는 `pnpm`이 PATH에 없을 수 있다: 저장소 안에서 `corepack pnpm`(11.19.0)을 쓴다(저장소 밖에서는 최신 pnpm을 내려받는다).
+
+[0.58.134 설치](releases/0.58.134.md)는 `shared/model-price-contracts.ts`(스키마, `extractLitellmPrices`, `modelPriceKey`,
+`estimateUsageCostUsd`, `summarizeUsageCost`, IPC 채널)와 `main/model-price-catalog.ts`(`ModelPriceCatalogStore`: `<userData>/model-prices.v1.json`,
+ETag, 24시간 경과 시 갱신 + 1시간마다 확인, 단일 요청, 30초·16MB 제한, 실패 코드 6종)를 더했다. 가격을 소스에 적지 않는 것이 규칙이다: 새 모델이나
+가격 변경은 목록이 갱신되면 따라오고, 목록에 없는 모델은 "가격 미확인"이다. GOSU 기록에서 캐시 읽기·쓰기는 입력 토큰의 일부, 추론은 출력 토큰의
+일부이므로 비용은 부분별로 한 번씩만 곱한다. 구간별(200k/272k 초과)·batch·flex·priority 단가는 기간 합계로는 구분할 수 없어 쓰지 않는다.
+`UsageView`는 `adapter.prices`/`refreshPrices`가 있을 때만 비용을 보이고 `initialPriceStatus`로 정적 렌더 테스트를 한다. 출처를 바꾸려면
+`MODEL_PRICE_SOURCE_URL`과 `extractLitellmPrices`만 바꾸면 된다. 실제 목록 확인: `tsx`로 `ModelPriceCatalogStore`를 임시 폴더에 만들어
+`refresh()`를 한 번 돌리면 된다(공개 GET).
+
+[0.58.133 설치](releases/0.58.133.md)는 `briefing-model-routing.ts`의 `routedBriefingPreferences`가 제공자가 다를 때 던지지 않고 루틴의
+설정을 그대로 돌려주며, 새 `roleRoutingNotice`가 그 이유 문장을 만들어 `generateDaily`의 warnings에 한 번 들어간다(어시스턴트 채팅의 자체 제공자
+가드 `briefing-assistant.ts:309`는 그대로). 진단법: 실행이 메일 읽기 직후 요약 호출 없이 끝났으면(봉인 저장소 mtime이 마지막 osascript 종료
+1초 뒤, 사용량 원장에 호출 없음) 묶음 루프의 재던지기 목록(`/cancel|abort|settings_changed|…|permission|…/`)에 걸리는 오류를 의심한다.
+`BriefingGenerationControls`는 `job.error`가 있으면 상태와 무관하게 접힌 줄을 렌더링한다(`emailSourceState === 'failed'` → "이메일 조회
+실패"). Model Lab: `--model-ai`(보라)와 `module-node--explained`(테두리·고리), 설명 상자 `module-detail-notes__ai`(저장된 항목의 user 메시지는
+후속 질문 본문, 첫 설명 요청은 저장되지 않음), 사이드바 하단은 `panel-resizer--session-footer`(가로 구분선, `footerHeightAfterPointerMove`/
+`footerHeightAfterSeparatorKey`, 저장 키 `gosu.model-lab.session-footer-height.v1`)와 `<details class="model-session-section">` 두 개
+(`gosu.model-lab.session-sections.v1`; 가져오기가 시작되면 상태 섹션이 열린다). 사이드바 격자는 4행(`auto minmax(0,1fr) auto auto`)이고 접힌
+사이드바는 구분선도 숨긴다. 날씨 카드는 `.weather-hit-layer`가 포인터 x를 `nearestHourIndex`로 시각에 매핑한다. 미리보기: 내장 브라우저
+뷰포트가 사용자가 고른 768px이면 사이드바가 위에 쌓이는 모바일 배치로 보인다. 논문 저장 제안은 `answersFromSavedPapers`(답변의 paper 출처가 모두 `saved: true`면 제안 생략)로 걸러지며 `saved`는 `search_saved_papers`/`read_saved_paper`가 만든 출처에만 붙는다. `briefing-generation.test.ts`의 `ROLE_MODELS` 매트릭스는 새 모델을 역할에 쓰게 되면 한 줄 추가한다(같은 제공자면 역할 모델·reasoning 사용, 다르면 루틴 모델 + 안내). 채팅 입력은 `.briefing-chat-input-box`(테두리) 안에 textarea(`field-sizing: content`)와 `.briefing-chat-input-toolbar`(왼쪽 shortcuts, 오른쪽 `.briefing-chat-composer-actions`)가 흐름대로 놓인다(예전의 절대 위치 아이콘과 96px 고정 높이는 없다). 조용한 상태("답변 완료")는 `data-quiet`로 시각적으로만 숨긴다. 표 스크롤러에는 `overscroll-behavior: contain`을 쓰지 않는다(세로 휠을 삼킨다): `usage-view.css`는 x만 contain이다. 브리핑 시각 픽스처(`tools/*-visual.html`)는 dev 서버 전용이라 `vite build` 입력으로는 풀리지 않는다.
+
+[0.58.132 설치](releases/0.58.132.md)는 `task-compact.tsx`(`compactTaskDue`·`TaskDue`·`TaskIcon`)를 더하고 `workspace-tasks-view.tsx`와
+`board-view.tsx`의 헤더·필터·빠른 추가·행·카드 마크업을 재구성했다. 규칙: 필터/빠른 추가의 라벨은 `<span className="field-label">`로 감싸고
+`.board-filter-bar .field-label, .task-composer > label > .field-label`에서만 시각적으로 숨긴다(상세 입력의 라벨은 보인다). 행은
+`.todo-task-row`(flex, min-height 34px, `> .priority-badge`는 62px 고정 열, 우선순위가 없으면 `.none` 빈 칸), 제목은 `.todo-task-title`.
+카드는 `.task-card-heading`(제목 h3, 2줄 clamp) + `.task-card-meta`(그 안의 `.task-labels`는 `display: contents`). 동작 버튼은 DOM에 남긴 채
+`.todo-task-actions, .task-actions { opacity: 0 }`이고 `:hover`·`:focus-within`에서 1이 되며, 카드에서는 `position: absolute` 모서리 띠다.
+테스트는 버튼 글자가 아니라 `aria-label`과 `<svg class="task-icon"`로 확인한다. 전체 보기의 단계 이름은 공용 열 이름과 다를 때만
+`WorkspaceOwnStage`가 보여준다. 미리보기 방법: 컴포넌트를 `renderToStaticMarkup`으로 HTML에 쓰고 **`packages/ui/src/typography.css`를 함께
+넣어야** 앱과 같은 글자 크기(본문 12px)가 된다. `styles.css`의 `@import '@gosu/ui/typography.css'`는 정적 HTML에서 풀리지 않아, 빠뜨리면
+모든 수치가 크게 나온다(이번에 제안 단계 수치가 그렇게 부풀었다). 새로 쓴 실행 파일은 macOS가 먼저 검사하므로(이 Mac에서 0.26~0.54초)
+스크립트를 만들어 바로 실행하는 테스트는 시작 대기를 500ms보다 넉넉히 준다.
+
+[0.58.131 설치](releases/0.58.131.md)는 `mail-directory-store.ts`(봉인 파일 `mail-directory.v1.enc.json`: 승인 범위 메일함의 Mail 계정 id와
+메일함 경로만, 최대 64개)를 더하고 `AppleMailConnection`이 `restorePolicyGrant`·`resolveMailbox` 앞에서 이를 복원한다. 지문은 저장값에서
+다시 계산하므로 항목은 자기가 가리키는 메일함만 대신할 수 있다. 복원만 된 위치는 `unconfirmed`이고, 읽기가
+`mail_account_missing|mail_mailbox_missing`(이제 `readerFailure`가 stderr에서 그대로 전달)으로 실패하면 `locationFailure`가 `discover`로
+확인해 없어진 위치는 `mail_account_refresh_required`로 보고하고 잊는다(계정 목록이 limited/unavailable이면 잊지 않는다). 생성자 5번째
+인자가 저장소이며 주입한 테스트 리더는 기본값이 null이라 `~/Library`를 건드리지 않는다. `runAppleMail` 감독: 스크립트가 `mail.accounts()`
+직후 `{type:'answered'}`를 내보내고 `MailReadStream.answered`가 선다. 그 전에는 `APPLE_MAIL_FIRST_RESPONSE_MS`(300초)만 돌며 15초마다
+`waitedSeconds` 진행을 보낸다. 첫 응답 후 read는 기존 160초 총 제한(부분 결과 유지), discover/mailboxes는 메일함마다 progress를 내고
+160초 무응답 또는 총 `APPLE_MAIL_DISCOVERY_DEADLINE_MS`(420초)에서 멈춘다. `collect`는 `mail_timeout_account` 뒤 남은 계정을 Mail에 보내지
+않고 `delayedAccounts`를 돌려준다. `LiveSourceService.collect`의 7번째 인자 `mailRecovery {retry,onDelayed}`는 `generateDaily`만 넘기며,
+응답하다 끊긴 실패(`mailDelayed`이면서 `_account`가 아님)에 `mailRetryPauseMs`(20초) 뒤 한 번 재시도하고, 끝까지 무응답이면 Scholar 검색을
+건너뛴다. `generateDaily`는 `retryMailInMs`(`MAIL_FOLLOW_UP_MS` 10분)를 돌려주고 `BriefingGeneration.followUpMail`이 `nextDueAt`을 당긴다:
+루틴당 연속 1회(`mailFollowUps`), 자동 실행이 없거나 `nextDueAt`이 null(설정 변경으로 일시 중지)이면 예약하지 않는다. 진단법: 재시작 직후
+"조회 미완료"면 `log show --predicate 'process == "osascript"'`로 리더 수명이 제한 시간과 같은지, Mail의 `com.apple.appleevents … dead:1`
+줄이 있는지 본다(이 Mac에서는 `log show` 자체가 부하 중 5분 이상 걸리니 구간을 10분 이내로). 봉인 저장소의 mtime으로 마지막 실행 종료
+시각을 알 수 있다. Mail에 AppleScript를 보내 시험하지 않는다.
+
+[0.58.130 설치](releases/0.58.130.md)는 `briefing-credential-mail.ts`의 `isCredentialMail`(제목과 본문 앞 600자, "one time" 단독은
+제외)을 더하고, `automaticSummaryPlan`이 그런 메일을 요약 대상에서 빼며(그래서 handled로 남는다), `saveBriefing`은 항목 단위로만
+보류하고, `analyze`의 `historySaveFailed`가 "저장소 실패"와 "저장할 것이 없음"을 구분한다. 실행 루프는 전자일 때만
+`briefing_memory_unavailable`로 멈춘다. 진단법: 사용량 원장에서 실패 호출들이 첫 묶음 완료 0.3초 뒤 동시에 끝났으면 제공자가 아니라
+`runBatchesConcurrently`의 앱 측 중단이다. 실행 가드는 `generationScheduled`를 쓴다(루틴 시각만 예약된 경우). `restorePolicyGrant`는
+같은 범위의 유효한 grant를 revoke하지 않고 연장한다. 채팅 모델 선택 레코드는 `origin: 'user'`가 있을 때만 `stored`, 없으면
+`inherited`(설정을 따름)이고 기본값은 더 이상 저장하지 않는다. 화면 단축키는 `shared/app-shortcuts.ts`·`app-shortcut-store.ts`
+(`app-shortcuts.v1.json`)·`installAppShortcutInput`·`openSurface` 채널이며 preload 표면 고정 테스트(`preload-navigation.test.ts`)에
+새 메서드를 추가해야 한다. 빠른 1차 브리핑은 같은 날 기록의 이전 것을 `previousBriefing`으로 받아 `newPoints`/`carriedPoints`로
+갱신하고 `mergeQuickBriefingUpdate`가 이전 줄을 보존한다. 부하가 높을 때(load 100+) 전체 검사는 5초 제한으로 실패할 수 있으니 실패
+테스트를 단독·긴 제한으로 재실행해 구분한다.
+
+[0.58.129 설치](releases/0.58.129.md)는 `codex-runtime-discovery.ts`가 프리릴리스를 semver 순서로 인정하게 하고(주 버전 가드는
+유지), macOS에서 `/opt/homebrew/bin/codex`와 `/usr/local/bin/codex`를 후보에 넣는다. 그런 런타임은 node 스크립트라
+`codexRuntimeEnvironment`가 그 디렉터리를 PATH 앞에 붙여 probe·spawn한다(데스크톱 app server, Model Lab 모두). `CodexAppServer`는
+설치된 런타임이 initialize 전에 죽으면 `resolveCodexCommand({ bundledOnly: true })`로 한 번 되돌아간다(`GOSU_CODEX_BIN`은 대체하지
+않음). 모델이 목록에서 빠지면 `@gosu/desktop/codex-project-chat/models_cache.json`의 `client_version`부터 본다. `VaultAccess.restore`는
+single-flight이고 실패 사유(`restoreError`)를 남기며, `ResearchNotesService.current`가 미연결 시 재연결한다. 저장된 볼트를 못 열면
+`research_notes_vault_missing|permission_denied|unreadable`을 던지고, 아무것도 저장되지 않았을 때만 `null`(첫 선택 화면)이다. 볼트
+루트는 암호화된 `gosu.db`의 `cache_records`에 있어 직접 열지 않는다. 볼트 안 `.gosu-project.json`의 `vaultId`로 확인한다.
+
+[0.58.128 설치](releases/0.58.128.md)는 Model Lab 채팅 메시지에 `moduleRef`(모듈 id·key·이름·위치·한 줄 요약·kind)를
+더한다. 모듈 상세의 질문은 별도 스레드가 아니라 같은 Copilot 대화의 메시지이고, 본문은 질문만, 모델에는 `prompt`(모듈 문맥 포함)가
+간다. 이후 턴의 history는 `moduleConversationBody`가 모듈 출처를 붙인다. 0.58.125~127이 저장한 원시 프롬프트는
+`legacyModuleQuestion`으로 읽는다. `findGraphModule`은 반복 블록 안 단계까지 찾아 표시에서 상세를 연다. 모듈별 저장소
+(`module-explanations`)는 카드 표시(`explainedKeys`)와 대화가 지워졌을 때의 대체 표시에만 쓴다. 기본 설명은
+`module-explanation-text.ts`의 `moduleReading`(규칙 기반, 문장 단위 읽기는 `pseudocodeStatementSummary`)이다. 런타임 어댑터는
+`modelLabRuntimeErrorDetail`로 서버 실패 코드를 보존한다(코드 형태가 아니면 버린다). Model Lab 상태는
+`@gosu/desktop/model-lab/projects/<id>/workspace.json`에 있으므로 Copilot 턴 실패는 그 파일의 chat-sessions에서 먼저 확인한다.
+Briefing 채팅의 "최신" 버튼은 `isNearLatestMessage`(96px)와 `.briefing-chat-log-region`이다.
+
+[0.58.127 설치](releases/0.58.127.md)는 자동 실행 기록에 `routineSchedule`을 더하고 `nextGenerationDueAt`가 루틴 시각과
+간격 중 이른 쪽을 고른다(`generationScheduled`가 둘 중 하나라도 켜졌는지 본다). 루틴 스케줄은 서버 프로필이 아니라 이 기록에
+스냅샷으로 저장되며, 화면에서 시각이 바뀌면 컨트롤이 한 번 다시 저장한다. Model Lab 모듈 설명 저장소는 대화 배열
+(`messages`)로 바뀌었고 예전 단일 답변은 첫 assistant 메시지로 읽는다. 후속 질문은 `moduleFollowUpQuestion`이 모듈 문맥과
+직전 대화를 붙여 같은 Copilot 턴으로 보낸다(편집 제안은 반영하지 않음).
+
+[0.58.126 설치](releases/0.58.126.md)는 `BriefingWorkspaceStore.hostReadProfile`/`assertHostRead`/`hostPrivateAllowed`와
+`briefing-host-reads.ts`를 더한다. Briefing 읽기는 원래 브라우저 client token(`owns`)을 요구해서 Main이 통과할 수 없었다.
+앱 자신이 사용자를 대신해 읽을 때만 `owns`를 앱의 신뢰 경계로 대체하고, 승인·범위 digest·권한 플래그는 그대로 검사한다.
+`LiveSourceService.hostReads()` → `BriefingDesktopHost.reads()` → `ProjectChatService.briefingReads` → 프로젝트 도구
+네 개로 이어지며, 확인 창은 호출한 프로젝트 채팅 이름을 표시한다. 정책 버전은 42이고 `project-chat-prompt.test.ts`가 고정한다.
+
+[0.58.125 설치](releases/0.58.125.md)는 AI 비서 연구 작업 공간 도구(`briefing-assistant-workspace.ts`: 명시 요청
+판별 `explicitAssistantWrites`, 턴별 제한과 재시도 안전 id, `assistantTodoCreator`)와 데스크톱 `global-assistant-workspace.ts`
+(노트·서재·원고·실험 동작, 쓰기 전 권한 재확인), `LiteratureService.addFromAssistant`를 더한다. 쓰기 확인 창은
+`confirmingAssistantWrites`가 담당한다. Model Lab 상세의 이동·흐름은 `module-detail-flow.ts`, AI 설명 저장은
+`module-explanations.ts`(`gosu.model-lab.module-explanations.v1`)이며 설명 요청은 편집 제안을 반영하지 않는다(`explanationOnly`).
+
+[0.58.124 설치](releases/0.58.124.md)는 `apps/model-lab/src/repeat-step-description.ts`(의사코드 한 줄의 문자 그대로
+LaTeX 변환, 단계 이름, 언어별 설명)와 `repeatedModuleStepEntries`(들여쓰기로 if/with 문맥 추적)를 더한다. 정확한 연산 패턴이
+먼저이고, 코드가 아닌 문장만 기존 대체 문구를 쓴다. 그래프는 `MODEL_GRAPH_POINTER_OPTIONS`로 상자 선택을 끈다(React Flow는
+Shift를 눌린 것으로 보면 드래그를 선택으로 바꾼다).
+
+[0.58.123 설치](releases/0.58.123.md)는 `apps/model-lab/model-lab-chat-write.ts`(명시 요청 판별, 요청 id, 도구 설명, 실패
+코드)와 `ProjectModelTransferStore.addFromChat`·`ModelLabDesktopHost.addModelForChat`을 더한다. 열린 Model Lab iframe은
+작업 공간 전체를 메모리에서 다시 쓰므로 Main이 `workspace.json`에 직접 쓰면 사라진다. 채팅 모델은 반드시 복사 대기함으로 넣는다.
+프로젝트 채팅 도구는 `add_model_to_model_lab`(정책 v41), AI 비서는 브리지 `model-lab-add`와 `confirmingModelLabAdds`다.
+
+[0.58.122 설치](releases/0.58.122.md)는 0.58.121의 `generateDaily` 예약 확인(`generationProfileMatches`로 저장된
+`generationProfileDigest`와 비교)을 포함한다. 예약기 테스트는 실행을 mock으로 바꾸므로, 실제 서비스로 예약 실행을 돌리는
+테스트(`runs a scheduled briefing through the real generation`)가 이 경로를 지킨다. `AppleMailLink`의 `onOpened`는 열기 요청이
+받아진 뒤에만 불리며, 이메일 카드는 여기서 `markMailReadFor`를 호출한다.
+
+[0.58.120 설치](releases/0.58.120.md)는 `PaperBriefingDisclosure` 안에 `BriefingSectionRail`(선택 `className`)을
+`briefing-item-rail`로 둔다. 스타일은 `details.briefing-paper-disclosure > .briefing-item-rail`로 한정한다. 카드 안 버튼 공통 규칙
+`.briefing-insight-card details button`이 여백·테두리·흰 배경을 덮어쓰기 때문이다.
+
+[0.58.119 설치](releases/0.58.119.md)는 0.58.118의 `markMailReadFor`(`mail-read-status.tsx`, 수동 버튼과 같은
+`/mail/mark-read`, 세션 중복 방지)를 포함한다. `feedbackProfile(routineId, includePrivate, senderOf)`는 키워드·보낸 사람·도메인을
+각각 `FEEDBACK_PROFILE_LIMIT`(24)까지 두고, 보낸 사람은 `feedbackSenderLookup`이 저장된 브리핑과 현재 수집 결과에서 항목 id로
+찾는다(기억 파일 형식 변경 없음). 이메일 요약은 항목별 `senderFeedback`과 조건부 `SENDER_FEEDBACK_INSTRUCTION`만 받는다.
+
+[0.58.117 설치](releases/0.58.117.md)는 `sourceResponse`가 429 `routine_busy`(서버가 읽기 전에 거절)를 0.3·0.7·1.5초 뒤
+다시 보내고, 끝내 실패하면 한국어 메시지와 `code: 'routine_busy'`를 준다. 지침 읽기는 `readBriefingGuidance`로 루틴당 하나만
+진행된다. 제목 옆 진행 줄은 `overflow: hidden`, 저장 개수 `flex-shrink: 0`, 경고 `flex-shrink: 3`·최소 62px, 칸 최소
+`min(160px, 100%)`이다. 새 요청을 동시에 늘리는 기능은 서버의 3개 제한을 고려한다.
+
+[0.58.116 설치](releases/0.58.116.md)는 `runRoutineAgent`에서 `briefingClientContext`의 토큰을 잡아
+`dynamicToolHandler`를 `briefingClientContext.run`으로 감싼다. 제공자 도구 호출(Claude Code MCP 브리지, Codex)은 요청의
+AsyncLocalStorage 밖에서 오므로, 소유 확인(`owns`)을 쓰는 코드를 제공자 콜백에서 실행하면 요청자 문맥을 다시 넣어야 한다.
+
+[0.58.115 설치](releases/0.58.115.md)는 `briefing-chat.tsx`에서 답변 중 `.briefing-chat-status`를 그리지 않고 경과 시간을
+진행 메시지 머리에 둔다. `ContextUsageMeter`는 요약 칩과 `.briefing-context-detail`(당시에는 위로 열리는 절대 위치 패널, 0.58.139부터 top layer popover)로 나뉘고
+`.briefing-chat-composer-actions` 안 `.briefing-chat-composer-meta`에 있다. 복원 안내는 로그 안 `.briefing-chat-restored-note`다.
+
+[0.58.114 설치](releases/0.58.114.md)는 `.briefing-assistant-highlights` 열을
+`minmax(min(260px, 100%), 1fr)`로 넓히고, `.briefing-assistant-highlight`를 두 열 grid(`minmax(0, 1fr) auto`)로 바꿔
+`.briefing-summary-jump-hint`를 첫 행 둘째 열에 둔다. 카드 안 `.briefing-mail-delivery`는 한 줄이고 계정이 먼저 말줄임된다.
+전체 검사가 load 20 안팎에서 데스크톱 Git·노트 테스트 시간 초과로 실패할 수 있다. 부하를 확인하고 다시 돌린다.
+
+[0.58.113 설치](releases/0.58.113.md)는 `.briefing-assistant-highlights`를 `align-items: stretch`와
+`grid-auto-rows: 1fr`로 바꿔 요약 카드를 모두 같은 크기로 만들고, 카드(`.briefing-assistant-highlight`)를 flex 열로 두어
+`.briefing-summary-jump-hint`를 `margin-top: auto`로 바닥에 붙인다. 회귀 테스트는 `briefing-summary-card-size.test.ts`다.
+
+[0.58.112 설치](releases/0.58.112.md)는 `BriefingGuidanceStore`(`guidance.v1.enc.json`, 루틴별)와
+`/assistant/guidance/list|add|edit|delete` 경로를 더한다. 지침은 프로필 밖에 있어 `generationRunDigest`를 바꾸지 않는다.
+`analyzeBriefing`의 마지막 인자와 `quickBriefingPayload`의 `guidance`로 전달되며, 지침이 없으면 프롬프트가 그대로다.
+`src/briefing-guidance.ts`가 주소·도메인 규칙을 만들고 보낸 사람 주소로만 맞춘다(`matchesUserGuidance`, 기록 화면 고정).
+헤더 안 UI는 `<p>`를 쓰지 않는다(`.briefing-main-header p`가 숨김).
+
+[0.58.111 설치](releases/0.58.111.md)는 `mailReadNotice`가 일상 조회에서 빈 문자열을 돌려주고(첫 연결·새 계정만 안내),
+`live-mail`은 빈 `notice`를 싣지 않는다. 기록 화면은 예전에 저장된 일상 조회 안내(`이미 요약한 메일은 제외하고…`)를 숨기고, 할 일
+설명은 `todos.limited`일 때만 보인다. 참고로 `apps/desktop/out/briefing-lab/assets`에 이전 렌더러 빌드가 계속 쌓여 ASAR에 함께
+들어간다(실제로 읽는 것은 `index.html`이 가리키는 하나). 이 누적은 [0.58.135 설치](releases/0.58.135.md)에서 고쳤다.
+
+[0.58.110 설치](releases/0.58.110.md)는 `BriefingGenerationControls`의 `inSlot`으로 진행 상자·접힌 실행 경고·일시 중지 안내를
+모두 제목 옆 `.briefing-title-progress`에 렌더링한다. `.briefing-title-row`는 최소 34px, 상태 칸은 `flex: 1 1 0`·줄바꿈 없음,
+제목 열은 `flex: 1 1 0`으로 버튼 옆 남은 폭만 쓴다. 헤더 정렬 확인은 실제 CSS 미리보기에서 요소 세로 중심을 재서 한다.
+
+[0.58.109 설치](releases/0.58.109.md)는 `src/email-action-weekday.ts`로 준비된 일정·할 일을 근거 문장의 단일 요일에
+맞춘다(명시 날짜·복수 요일·종일 일정은 제외, Temporal로 현지 시각 유지). 요약 선별(`screenInsights`), `draftEmailEvent`,
+저장 초안을 여는 버튼(`alignedPreparedActions`)에서 적용되고, 프롬프트에는 `receivedLocal`(요일 포함)이 들어간다. 실행 경고와
+일시 중지 안내는 `BriefingCollapsibleAlert`(닫힌 `details`)이다. Claude CLI 결과가 ENOTFOUND 등 연결 오류면
+`claude_code_network_unavailable`로 분류한다.
+
+[0.58.108 설치](releases/0.58.108.md)는 `.briefing-assistant-highlight`에 종류별 `--highlight-accent`/`--highlight-tint`를
+두고 왼쪽 막대·배경·라벨 색에 쓴다(`BriefingJumpTarget`에 `task` 추가). 기록 화면의 요약 카드는 `upcomingTodos`로
+미완료 할 일 2개를 함께 보여주며, GOSU 안에서는 `openBriefingItem({kind:'task'})`로 연다.
+
+[0.58.107 설치](releases/0.58.107.md)는 본문 읽기 요청 항목에 `html` 표시를 두어 Scholar 알림만
+`source()`를 `mail-source`로 스트리밍하고, `src/mail-html-links.ts`가 MIME의 text/html 부분을 해석해 `mailLinks`로 붙인다.
+`scholarCandidates`는 링크 글자가 기사 제목이고 `paperLink`를 통과할 때만 연결하며 `[PDF]`·도메인 글자는 제목으로 쓰지 않는다.
+실제 알림 점검은 Mail 요청 없이 Envelope Index로 ID를 찾아 `.emlx`를 읽기 전용으로 열고 개수만 출력한다.
+
+[0.58.106 설치](releases/0.58.106.md)는 `BriefingGenerationControls`에 `progressSlot`을 두어 실행 중 진행 상자를
+`briefing-app.tsx` 제목 줄의 `.briefing-title-progress`에 포털로 렌더링한다(슬롯이 없으면 기존처럼 컨트롤 안). 제목 줄의
+상세는 `position: absolute` 패널이고, 420px 컨트롤 열은 진행 상자나 `[role='alert']`가 컨트롤 안에 있을 때만 잡는다.
+
+[0.58.105 설치](releases/0.58.105.md)는 메일 목록을 `readMailIndex`(node:sqlite, 읽기 전용)로 가져와 리더에 `indexed`
+ID를 넘긴다. 리더는 `whose` 없이 `messages.byId`로 읽고 받은 시각이 2초 넘게 다르면 `mail_index_mismatch`를 던져 기존
+방식으로 한 번 다시 읽는다. 색인 실패는 `warning`→생성 경고·`mailIndexFallback`으로 드러난다. 요약 검증은
+`screenInsights`가 항목별로 하고(`quoteMatches`는 문장부호·공백·대소문자·생략 부호 허용), 요청 밖 ID는 버리며, 실패
+항목만 한 번 재요청해 `rejectedItems`로 돌려준다. 생성은 실패 메일을 처리 완료로 표시하지 않아 다음 브리핑이 다시
+읽는다. 요약 기억은 ID 없이 `{kind, text}`로만 보낸다. 진행 상세는 `summaryKinds`·`quickBriefingState`,
+섹션 접기 막대는 `BriefingSectionRail`이다.
+
+[0.58.104 설치](releases/0.58.104.md)는 일정 브리핑의 AI 단계를 병렬화한다. `runBatchesConcurrently`가 이메일 3개·
+논문 2개 묶음을 동시에 돌리고, 치명적 오류는 새 묶음을 멈추고 진행 중 묶음을 중단시킨 뒤 다시 던진다. 수집 직후
+`quickFirstBriefing`이 메타데이터만으로 `snapshot.quickBriefing`을 저장하고 `quickBriefingAt`으로 기록 화면을 새로고침한다
+(메일 AI·private AI 허용, 매번 확인 아님일 때만, 실패는 경고). Claude Code의 `off` 추론 수준(기본값, 요청 없음 포함)과
+`structuredJob.thinking: 'disabled'`는 `--effort`를 빼고 `MAX_THINKING_TOKENS=0`으로 실행한다. 속도 문제를 다시 볼 때는
+먼저 사고 토큰(`usage.output_tokens_details.thinking_tokens`)을 확인한다.
+
+[0.58.103 설치](releases/0.58.103.md)는 앱 시작 경로에서 safeStorage를 모두 뺀다. 0.58.102 기록과 달리 Overleaf 토큰
+상태 확인(`overleafPersonalToken.status()`)은 창이 열릴 때 실행되어 토큰을 복호화했다. `PromptFreeSecretSealing`이
+Overleaf 자격 증명 저장소와 강의 매니페스트 인증기에 safeStorage 대신 주입되며, `GOSU-SEAL-v2:` 접두어가 없는 기존
+파일만 safeStorage로 읽고 시작 시 `credentials/overleaf-git/*.bin`과 `manifest-authentication-key.bin`을 한 번 다시
+봉인한다. 도우미가 없으면 기존 경로 그대로다. 되돌린 이전 빌드는 다시 봉인된 토큰을 읽지 못하므로 백업에
+`credentials/`와 `lecture-external-sources/`를 포함한다. safeStorage를 새로 쓰는 코드는 시작 경로에 두지 않는다.
+
+[0.58.102 설치](releases/0.58.102.md)는 데이터베이스 키 보관 방식을 바꾼다. 팀 ID가 없는 로컬 서명에서는
+Electron safeStorage의 키체인 허용이 빌드마다 사라지므로, 시작 경로는 `openLocalDatabaseWithWrappedKey`로
+`local-key.v2.json`(Briefing 시스템 키에서 HKDF로 파생한 키로 AES-GCM 래핑)을 연다. 기존 `local-key.bin`은 마이그레이션
+때 한 번 읽고 남겨두며, 도우미 실패 시 기존 경로로 연다. 강의 외부 소스·Overleaf 자격 증명은 아직 safeStorage를
+쓰므로 그 기능을 처음 쓸 때 비밀번호를 물을 수 있다. 앱 백업에 `local-key.bin`과 WAL 파일을 포함한다.
+
+[0.58.101 설치](releases/0.58.101.md)는 메일 읽기를 두 프로세스로 나눈다. 일반 읽기는 목록·연결 정보까지만 하고
+(`bodiesDeferred`), 본문과 원문 증명은 `runAppleMailBodies`가 메일별 `body-start` 신호로 감시하며 8초(첫 메일 20초)
+무응답이면 그 메일을 본문 대기로 두고 새 리더로 이어간다. 최대 개수 이후 새 메일은 `pending`으로만 세고 커버리지는
+마지막으로 읽은 메일에 둔다. 커버리지 확정은 누락 경로마다 사유(`limit`·`body`·`incomplete`·`read-failed`)를 붙여
+경고로 돌려준다. 커버리지 정보가 없는 리더(테스트 대역 등)는 경고도 커버리지 변경도 하지 않는다.
+
+[0.58.100 설치](releases/0.58.100.md)는 Apple Mail 스크립트 성능의 핵심 규칙을 남긴다. 큰 메일함에서 위치 기반
+지정자(`box.messages[n]`)의 Apple Event는 매번 위치를 다시 풀어 1~2초가 들고, `whose`가 반환한 ID 기반
+참조(`messages.byId`)는 속성당 약 1ms다. 일반 수집은 커버리지 바닥 이후를 `whose`로 한 번 묻고 수신 시각으로
+정렬해 모든 단계에서 그 참조를 재사용한다. 원문 증명은 `messageSize()`를 먼저 본다. 읽음 처리 위치 탐색은 아직
+위치 기반이다. CLI 진단용 임시 래퍼는 백그라운드 실행(`&`) 시 stdin을 잃어 GOSU 요약을 실패시키므로 쓰면 안 된다.
+
+[0.58.99 설치](releases/0.58.99.md)는 메일 누락 방지 구조를 기록한다. 워크스페이스의 `mailCoverage`는 메일함마다
+`(coveredFrom, coveredTo]`를 빠짐없이 확인·처리한 구간으로, `gapFrom`은 아직 못 읽은 구간의 하한으로 저장한다.
+리더는 이전 커버리지−6시간(승인된 조회 기간 아래로는 내려가지 않음)을 바닥으로 삼고 멈춘 이유·가장 오래 확인한
+메일·시간 순서를 보고한다. 커버리지 확정은 요약 저장 뒤 `nextMailCoverage`로만 하며, 요약 실패·본문 미확인·순서
+뒤섞임·중간 중단·읽기 실패는 전진시키지 않는다. 이미 요약한 메일은 `mailDeliveryKey`(ID·받은 시각)로 제목 읽기 전에
+건너뛴다. 일반 메일 읽기와 Scholar 알림 검색은 Mail 경합을 피하려 순차 실행한다.
+
+[0.58.98 설치](releases/0.58.98.md)는 메일 중복 병합에 `sameDeliveredMail`을 추가한다. 검증된 원문 일치 또는
+서로 다른 계정의 동일 Message-ID(`message://` 링크)·제목이면 한 행으로 합치고, 양쪽 원문 증명이 서로 다르면
+합치지 않는다. `sameVerifiedMail`, 요약 캐시 재사용, 증명 재확인 대상 선정은 그대로다. 표시 시점 병합이므로
+저장된 두 사본에 링크가 모두 있어야 기존 이력도 합쳐진다.
+
+[0.58.97 설치](releases/0.58.97.md)는 Apple Mail 다중 계정 읽기를 순차로 바꾼다. Mail은 Apple Event를 한
+번에 하나씩 처리하므로 동시 리더는 서로를 기다리며 각자의 60초 기한을 소비한다(Gmail 목록 정보는 메일당
+약 0.5–1.2초, 연세는 20–70ms). 결과 한도·계정 표시·범위 검사·부분 결과 처리는 그대로이고, 철회 시 진행 중인
+리더만 중단하고 다음 계정은 시작하지 않는다. 동시 실행 경합은 측정이 아니라 타이밍·코드·화면으로 추론했다.
+
+[0.58.96 설치](releases/0.58.96.md)는 Apple Mail 리더의 패스 순서를 Message-ID → 본문 → 원문 증명으로
+바꾼 이유를 기록한다. 읽기 전용 진단에서 Message-ID는 한 통당 0.02–0.8초였지만 `content()`는 한 계정에서
+8통 중 2통이 약 61초 멈췄고, 60초 읽기 제한은 부분 결과를 돌려주므로 본문을 먼저 읽으면 링크가 전혀 남지
+않는다. Briefing 분석은 이메일 5분·논문 8분 기한을 쓰며 이를 Claude 턴 제한으로도 넘긴다. 요약 묶음 실패는
+경고(`summaryFailures`)로 남기고 계속하되, 취소·설정/소유권 변경·동의·권한·로그인·모델 불가는 실행을 멈추고
+모든 묶음이 실패하면 실행 실패로 처리한다. `manuscript-pdf-compiler.test.ts`의 종료 시 프로세스 그룹 정리
+테스트는 간헐 실패가 확인되어 별도 작업으로 남겼다.
+
+[0.58.95 설치](releases/0.58.95.md)는 CLI 업데이트 뒤 모든 구조화 Claude 턴이 실패한 원인을 기록한다.
+`z.toJSONSchema`가 붙이는 `$schema`(draft 2020-12)를 Claude Code 2.1.272의 `--json-schema` 검증기가
+해석하지 못해 요청 전 exit 1로 끝났다. 어댑터는 `claudeCliJsonSchema`로 스키마 수준 `$schema`만 제거하고
+결과는 GOSU 스키마로 계속 검증한다. 직접 CLI 실험이 성공하는데 앱만 실패하면, 실험 스키마와 실제 인자가
+같은지부터 확인해야 한다. 이번에는 GOSU가 부모일 때만 기록하는 임시 래퍼로 실제 stderr를 얻은 뒤 즉시
+원래 링크로 되돌렸다. 자동 생성 스케줄은 승인 범위 digest만 저장하므로, 중지 안내는 범위에 포함된
+항목을 나열할 뿐 어느 하나가 바뀌었는지 단정하지 않는다.
+
+[0.58.94 설치](releases/0.58.94.md)는 Claude 로그인 상태를 오류 문구가 아니라 `claude auth status`로
+판단하는 쪽을 보강한다. 카탈로그 갱신에서 `loggedIn`이 참이 아니면 캐시된 연결을 버리고 이후 요청은
+`claude_code_auth_required`를 낸다(API 키 등 다른 인증 방식은 구독 필요 오류로 구분). macOS는 번들
+브리지의 EventKit 요청을 호스트 앱에 귀속하므로, 미리 알림 사용 설명은 브리지가 아니라 호스트
+`Info.plist`에 있어야 권한 창이 뜬다. `native-usage-ledger.v1.json`은 평문이라 실패한 호출의 모델과
+소요 시간을 확인하는 첫 증거로 쓸 수 있다. 설치된 0.58.93에서 로그인 후에도 약 0.7초 만에 실패한 원인은
+아직 미확인이며, 이번 버전의 오류 코드 표시로 확인할 예정이다.
+
+[0.58.93 설치](releases/0.58.93.md)는 Claude Code 모델을 어댑터의 표 하나에서 게시하고, CLI 버전이
+낮으면 Fable 5.1을 목록에서 빼 요청 전에 거부한다. `routedBriefingPreferences`는 Briefing 대화에서 고른
+모델을 `briefingAssistant`에만 적용하므로 이메일·논문 요약은 설정한 역할(빠른 모델)을 따른다. 사이드바
+AI 별은 `sidebar-row-label` 안에서 이름 옆에 놓여 격자 열을 건드리지 않고, 완료 상태는 `#f2b705`
+발광이며 포인터 이벤트를 받지 않아 클릭이 행으로 전달돼 확인 처리된다. 검사 시간의 대부분은
+`test/git-workspace-service.test.ts`(실제 git 실행, 35초)이며, 과거의 30분은 실험 프로세스와의 경쟁
+때문이었다. 실제 앱에서의 모델 목록·요약 모델·별 동작 확인은 사용자에게 남아 있다.
+
+[0.58.92 설치](releases/0.58.92.md)는 Apple Mail 메일 조회 실패가 코드가 아니라 시스템 과부하(실험
+프로세스, 코어 10개에 부하 170~~205)로 Apple Event가 3~~17초씩 걸린 탓임을 기록한다. 메일 목록 읽기 제한은
+50초이고 최신순이 두 날짜로 확인되면 기간 밖 메일에서 멈춘다. arXiv 429는 GOSU 밖의 요청 제한이며,
+논문 조회는 실패 출처와 이유를 보존해 안내한다. 실제 Briefing 실행은 한가한 시점에 사용자 확인이 남아 있다.
+
+[0.58.91 설치](releases/0.58.91.md)는 Lecture Studio를 Codex App Server 대신 Project Chat 라우터에
+연결해 `claude-code:*` 모델을 허용한다. Claude CLI는 턴 중 진행 알림이 없으므로 Claude 강의 턴은 idle
+감시 대신 전체 제한만 쓰고 스레드별 `turnTimeoutMs`(5–30분)를 요청한다. 제공자별 연결 끊김은 해당
+제공자 턴만 끝낸다. 설정 저장과 실제 Claude 강의 생성은 사용자 확인이 남아 있다.
+
+[0.58.90 설치](releases/0.58.90.md)는 GOSU AI 입력창 위 여백을 줄이고 `SealedStateStore` 저장 비용을
+낮춘다. 저장 한 번은 기록 수와 무관한 고정 비용(약 3ms CPU + 7.6ms 파일 작업)이다. 자기 커밋의
+inode·크기·mtime·ctime이 같을 때만 복호화를 건너뛰고 스키마 검증은 유지한다. 다른 쓰기나 변조는
+전체 인증 읽기로 돌아간다. 부하 중 테스트 시간 초과는 동시 캡처·검사를 피해서 재현·확인한다.
+
+[0.58.89 설치](releases/0.58.89.md)는 앱 내 Claude 로그인에 인증 코드 입력칸을 더한다. 터미널 없는
+`claude auth login`은 브라우저 코드를 stdin으로 기다리므로, 로그인 중에만 코드를 받아 해당 프로세스에
+전달하고 저장·기록하지 않는다. 백업 후 교체했고 실제 코드 입력 로그인은 사용자 확인이 남아 있다.
+
+[0.58.88 설치](releases/0.58.88.md)는 Claude 구독 로그인을 설정 화면에서 시작한다. Main이 공식
+`claude auth login --claudeai`만 실행하고 자격 증명은 Claude Code 저장소에 남는다. `auth status`는
+토큰 만료를 검증하지 않으므로 turn의 `claude_code_auth_required`를 재로그인 안내로 표시한다.
+nvm Node 22.22.3(ICU 78.2)은 한국어 시간을 `PM`으로 만들어 Briefing 날짜 테스트가 실패하므로
+Runtime gate는 Node 26으로 실행했다. 백업 후 교체했고 실제 설정 화면 확인은 남아 있다.
+
+[0.58.87 후보](releases/0.58.87.md)는 [생성 deadline](MODEL_GENERATION_DEADLINES.md)을
+호출당 15분/큰 입력 30분으로 늘린다. 진단상 300초 로컬 cutoff에 후보가 없었으며 검증 실패와
+구분한다. ModelIR 생성 경로만 확대하고 다른 호출·모델 설정·검증은 유지한다. 명시 Stop의
+AbortSignal 전달, reader 정리와 늦은 결과 차단을 확인했다. 전체 4,239개/기존 제외 8개·Runtime
+1,780개·모의 UI·패키징·고정 서명 통과. 설치는 .85 정상 종료 후 새 백업/교체 대기다.
+
+[0.58.86 후보](releases/0.58.86.md)는 [AI 상태 별](SIDEBAR_AI_ACTIVITY.md)을 기존 아이콘 옆에
+추가한다. 실제 실행 중/성공 결과/확인 상태를 분리하고 실패·취소만으로 완료 표시를 만들지
+않는다. Frame source/origin과 workload를 확인하고 부모가 project scope를 정한다. Reload는
+해당 producer의 실행만 초기화·재동기화한다. 전체 4,230개/기존 제외 8개·Runtime 1,753개,
+테마/너비별 화면·패키징·고정 서명 통과. .85가 키체인 대기 이후 계속 실행 중이어서 강제
+종료하지 않았다. 사용자 정상 종료 후 새 백업/교체/실제 설치 UI 확인을 이어간다.
+
+[0.58.85 설치](releases/0.58.85.md)는 [그래프 검증](MODEL_GRAPH_PRESENTATION.md)의 nested
+axis/index 등호 오판을 고치고 실제 validator 피드백으로 compiler를 1회 보정한다.
+정확히 중복된 loop-carried 간선만 같은 소유자/포트/shape 확인 후 binding으로 정규화한다.
+실제 요청 모델을 LLM으로 생성·검증해 기존 r0은 그대로 두고 r1을 저장했다. 다른 모델·대화·
+설정은 유지했다. 전체 4,211개/기존 제외 8개·Runtime 1,734개, 고정 서명·백업·설치 smoke 통과.
+새 client 미리보기에서 그래프를 확인했으나 실제 설치 창은 키체인 읽기 대기다. 사용자가 OS
+요청을 처리한 뒤 실제 r1 UI 확인을 이어간다. .84 연속성 변경도 포함하며 실행 검증/수학 증명은 별개다.
+
+[0.58.84 후보](releases/0.58.84.md)는 [AI 대화 연속성](CHAT_EXECUTION_CONTINUITY.md)을
+보완한다. Model Copilot은 활성 모델 변경과 무관한 대화별 controller/진행 상태를 사용하며
+답변은 원래 세션에 저장한다. Project Chat의 navigation SSH 취소/자동 거절을 제거하고
+원래 scope의 전역 승인창·명시 취소·만료·권한 철회는 유지한다. 전체 4,204개/기존 제외 8개,
+Runtime 1,683개·패키징·고정 서명 통과. 설치본은 실제 실행 확인된 .83이며 다른 백그라운드
+작업을 중단하지 않도록 정상 종료 후 새 백업/교체를 기다린다. 앱 종료 후 inference 지속은 보장하지 않는다.
+
+[0.58.83 설치](releases/0.58.83.md)는 메일 읽기 차단을 AI 제공자 승인 오류로 잘못 안내하던
+재요약 분기를 구분한다. 소유한 설정의 승인만 무효이면 기존 설정 그대로 native 재승인을
+요청하며 유효한 승인은 재사용하고 꺼진 권한은 유지한다. 전체 4,195개/기존 제외 8개,
+Runtime 1,636개·동일 서명·백업·설치 smoke 통과. 실제 재실행은 키체인 읽기 대기이며
+사용자 승인 후 실제 UI/메일 재요약 검증을 이어간다. 이전 .82 관심 토글 수정도 포함한다.
+
+[0.58.82 후보](releases/0.58.82.md)는 관심 선택의 명시적 null 해제를 API·암호화 선호·UI에
+연결한다. 같은 항목의 선호만 제거하고 다른 자료/요약은 유지한다. 전체 4,185개/기존 제외 8개,
+Runtime 1,626개·화면·패키징·서명 통과. 설치본의 Model Copilot이 실행 중이라 종료/교체하지
+않았다. 이후 새 상태·백업·해시를 확인해 이어가며 실행 중 연구 작업을 중단하지 않는다.
+
+[0.58.81 설치](releases/0.58.81.md)는 이전 이메일 요약의 누락된 할 일 기한을 소유한 저장
+자료에서 보수적으로 복원한다. 재요약/원문 재조회 없이 저장하고, 원래 요약·시각은 유지한다.
+미리 알림 기본 목록/내보내기 선택은 암호화 task-links 저장소에 보존하되 OS 권한을 허위로
+저장하지 않는다. 전체 4,182개/기존 제외 8개, Runtime 1,617개·동일 서명·백업·설치 및 실제
+문제 이메일에서 날짜/12시 입력을 확인했다. OS 최초 허용/목록 선택은 사용자에게 남겨 두었다.
+
+[0.58.80 설치](releases/0.58.80.md)는 [그래프 추론 계약](MODEL_GRAPH_PRESENTATION.md)을
+생성·Copilot·정규화에 공유한다. 핵심 수식은 원래 수식의 행을 선택하고, 역할·차원 설명·
+미확정 사항은 의사 코드 저장/복원에도 유지한다. 전체 4,161개/기존 제외 8개, Runtime 1,596개,
+동일 서명·백업·설치·실제 버전과 대화 복원을 확인했다. 기존 손상 모델의 수학을 검증하거나
+원본 없이 자동 정정한 것이 아니다.
+
+[0.58.79 설치](releases/0.58.79.md)는 아래 0.58.74–78 후보와 후속 그래프 여백·메일 복구·
+시간이 있는 할 일·Model Copilot 수정 실패 분리를 포함한다. 사용자 승인으로 임시 서명을
+원래 고정 인증서로 복구했다. 보호된 백업, 전체 4,150개/기존 제외 8개, Runtime 1,545개,
+설치 서명·기동 검사와 실제 버전/기존 Project Chat 복원을 확인했다. 개인 자료의 실작업 및
+전체 메뉴 탐색 성공과는 구분하며, 실제 백업·해시·제한은 릴리스 기록을 따른다.
+
+[0.58.78 후보](releases/0.58.78.md)는 Briefing Lab 클릭을 History로 직접 연결하고 Papers를
+동등한 다음 행으로 분리한다. 하위 메뉴/루틴 관리 진입만 제거하며 데이터·설정은 유지한다.
+논문 제목 옆 원문 버튼은 저장된 안전한 URL만 열고 펼침/AI 호출을 유발하지 않는다.
+
+[0.58.77 후보](releases/0.58.77.md)는 완료된 조회 결과와 job 오류를 헤더에서 제거한다.
+실행 중 진행·중단 및 실제 조작/설정 실패는 유지하고 자동 주기·이력·본문 소스 상태는 바꾸지 않는다.
+전체 4,120개·Runtime 1,498개, 화면·패키징·고정 서명 검증 통과. 현재 설치본과의 서명 연속성
+실패로 교체하지 않았다. 서명 복구에 대한 사용자 검토 전 gate를 우회하지 않는다.
+
+[0.58.76 후보](releases/0.58.76.md)는 알림 진입의 scrollIntoView를 내부 pane 스크롤로 대체한다.
+실제 브라우저에서 문서가 55px 밀리는 현상을 재현했고 수정 후 문서/host offset 0과 전체 높이를
+확인했다. 알림 요청은 한 번만 이동하고 history 갱신 때 사용자 스크롤을 빼앗지 않는다.
+전체 4,118개·Runtime 1,496개 통과. 고정 서명 후보를 준비했으나 현재 임시 서명 설치본과
+연속성 검증에 실패하여 교체하지 않았다. 서명 복구 검토·승인 전에 gate를 우회하지 않는다.
+
+[0.58.75 후보](releases/0.58.75.md)는 [사전 준비한 이메일 작업](EMAIL_PREPARED_ACTIONS.md)을
+저장하고 버튼의 LLM 재호출을 없앤다. Apple 권한이 없는 경우 GOSU-only 저장을 허용한다.
+기존 요약은 강제 재생성하지 않으며, 확인창/목적지/서버 중복 방지와 OS 권한 경계를 유지한다.
+전체 4,114개·Runtime 1,487개 통과. 작업 중 설치본이 외부에서 같은 ASAR의 임시 서명 0.58.75로
+바뀌어 서명 연속성 검증에 실패했다. 고정 인증서 복구에 대한 사용자 검토 없이 설치를 진행하지 않는다.
+
+[0.58.74 후보](releases/0.58.74.md)는 [비서 공개 웹/미디어](ASSISTANT_WEB_MEDIA.md)를 연결한다.
+비서만 live 검색, 요약/루틴 기본은 disabled다. 기존 scope 검증은 유지한다. 외부 이미지/지도는
+사용자가 눌러 표시하며 복원만으로 원격 요청하지 않는다. 공개 Nominatim API는 추가하지 않는다.
+
+[0.58.73 설치](releases/0.58.73.md)는 공통 논문 disclosure 하단에 상단과 동일한 AI 참조 버튼을
+추가한다. 접기 버튼과 같은 작은 행에 배치하며, 참조/대화/저장 권한과 자동 질의 동작은 바꾸지 않는다.
+
+[0.58.72 설치](releases/0.58.72.md)는 [구조 우선 그래프](MODEL_GRAPH_PRESENTATION.md)를 적용한다.
+기본 forward 흐름, 동일 높이 카드와 상세 수식 분리, 영어 표시 이름을 사용한다. 기존 저장 모델과
+참조/hash는 바꾸지 않는다. 생성 시 영어 이름/안전한 차원을 검증하고 기존 잘못된 차원은 추측하지 않는다.
+
+[0.58.71 설치](releases/0.58.71.md)는 모델 옆 AI 대화 버튼을 Model Copilot으로 명확히 연결한다.
+선택 모델/리비전 태그와 입력 포커스를 유지하고 Project Chat 이동은 모델 메뉴의 별도 항목으로
+옮긴다. 같은 프로젝트의 Model Lab을 읽는 Project Chat 도구와 저장된 참조/대화는 그대로다.
+실제 Model Lab 컴포넌트의 모의 hosted 화면에서 모델 전환·태그·포커스 및 이동/LLM 호출 0회를 확인했다.
+전체 4,073개·Runtime 1,465개 통과. 0.58.67–70 변경도 포함해 정상 Quit/백업/교체했다.
+설치 버전·해시·기동 smoke 통과, 설정 파일은 보존했다. 재실행 main thread가 키체인 복호화에서
+대기하므로 사용자에게 macOS 승인창 확인을 요청했다. OS 보안을 우회하거나 데이터를 초기화하지
+말고, 응답 후 실제 설치 UI를 확인한다. 자세한 백업 경로와 검증 범위는 릴리스 기록을 따른다.
+
+[0.58.70 후보](releases/0.58.70.md)는 [사이드바 프로젝트 순서](PROJECT_SIDEBAR_ORDER.md)를
+마우스 드래그와 메뉴로 바꾼다. 기존 로컬 navigation 상태에 ID 순서만 저장하고 프로젝트 데이터,
+선택/펼침과 실행 중인 작업은 건드리지 않는다. 새 프로젝트 추가·숨김/복원·취소·외부 파일 드래그
+거부를 검증하며, 실제 브라우저에서 양방향 드래그와 새로고침 후 복원을 확인했다.
+
+[0.58.69 후보](releases/0.58.69.md)는 설정의 모델 구조 추출 사용처를 빠른/고성능/기존 모델에
+연결한다. 새 구조 추출과 audit repair에만 적용하며, 캐시와 Model Lab 채팅 선택은 유지한다.
+기존 설정 파일의 새 필드 미지정은 기존 Model Lab 선택을 뜻한다. 빈 역할은 오류로 안내한다.
+전체 4,066개·Runtime 1,458개·설정 화면 검증 통과. 설치 상태는 릴리스 기록을 확인한다.
+
+[0.58.68 후보](releases/0.58.68.md)는 할 일의 프로젝트를 선택 사항으로 바꾸고 개인 할 일을
+`projectId: null`로 저장한다. 표시용 그룹은 실제 프로젝트가 아니다. To-do/브리핑/마감 알림/
+휴지통에 연결하며, 프로젝트 전용 Sync에는 보내지 않는다. UI에서 확인한 신규 생성과 AI의
+기존 할 일 읽기 권한을 분리한다. 일정처럼 AI 준비 후 편집창을 열고 성공 시 닫는다.
+실제 SQLCipher 저장/수정과 outbox 보존 smoke 통과. 전체/설치 상태와 구버전 rollback 주의는
+해당 릴리스 및 [할 일 계약](BRIEFING_TASKS_AND_LIGHTWEIGHT_MODELS.md)을 확인한다.
+
+[0.58.67 후보](releases/0.58.67.md)는 내부 iframe 재로드가 메인 renderer 준비 상태를 false로
+고정해 네이티브 단축키 요청을 대기시키던 문제를 수정한다. main document navigation만 추적하고,
+before-input-event에서 물리 키를 비교한다. 단축키 설정은 보조키/키 선택 목록으로 바꾼다.
+Electron 격리 재현에서 이전 gate 실패와 수정 후 iframe/입력창 포커스 성공을 확인했다.
+전체 최종 검사·설치 상태는 해당 릴리스 기록을 확인한다.
+
+[0.58.66 후보](releases/0.58.66.md)는 이메일 할 일 버튼도 경량 AI로 제목·내용·마감일을
+채우도록 연결했다. 수정한 초안 보존·근거/권한 검증·확인 후 저장은 유지한다. 전체 4,048개,
+Runtime 1,446개·합성 Spark 실호출·실렌더·서명 continuity 통과. 설치본은 0.58.65이며
+정상 종료 메뉴가 창 변경으로 거부되고 재조회가 timeout이라 교체하지 않았다. 사용자 종료 후
+새 백업·해시/설정 재확인부터 이어간다. 실제 개인 할 일·미리 알림은 생성하지 않았다.
+
+[0.58.65 설치](releases/0.58.65.md)는 [아주 가벼운 모델·할 일 추가](BRIEFING_TASKS_AND_LIGHTWEIGHT_MODELS.md)를
+연결한다. 일정 초안은 별도 Spark/low 역할로 지정했고 기존 fast/strong 설정은 유지했다.
+이메일 옆 할 일 추가는 GOSU 프로젝트와 선택한 Apple 미리 알림 목록에 확인 후 저장하며,
+중복/부분 실패를 구분한다. 전체 4,034개/환경 제외 8개·Runtime 1,440개·네이티브 컴파일·화면 검사 후
+정상 종료·백업·교체했다. 실제 v0.58.65/저장 모델/자동 주기 파일 보존 확인. OS 미리 알림 허용과
+실제 개인 항목 생성·휴대폰 도착은 미검증이며, 수정/완료 양방향 동기화는 구현 범위가 아니다.
+
+[0.58.64 설치](releases/0.58.64.md)는 진행 상세 내용 때문에 헤더 버튼이 밀리던 문제를
+수정한다. 최소화/갱신/생성/중단을 같은 행에 두고 상세 영역 폭을 고정한다. 넓고 좁은 검증
+화면에서 펼침 전후 버튼 좌표가 동일했다. 전체 4,018개/환경 제외 8개·Runtime 1,424개 통과.
+정상 종료·백업·교체 후 실제 v0.58.64와 기록 복원, 자동 갱신 파일 보존을 확인했다.
+
+[0.58.63 설치](releases/0.58.63.md)는 AI 비서만 28px였던 그림을 검색/알림과 같은 18px로
+줄인다. 버튼/22px 슬롯/말풍선/반짝임은 유지한다. 전체 4,016개/환경 제외 8개·Runtime 1,422개,
+4종 화면 검사 및 밝은/어두운 화면 직접 확인. 작업 중 설치본이 0.58.62로 바뀌고 생성이 끝난 것을
+재확인한 뒤 정상 종료·새 백업·교체했다. 실제 v0.58.63의 아이콘과 이력, 자동 주기 파일 보존 확인.
+
+[0.58.62 후보](releases/0.58.62.md)는 앱 내 AI 비서 단축키 ⌘⇧Space와 설정의 단축키 항목을
+추가한다. 앱 외부 설정 파일에 저장하고 네이티브 메뉴를 즉시 갱신한다. 전역 OS 단축키는 아니다.
+전체 4,015개/환경 제외 8개·Runtime 1,422개·설정 합성 화면 확인. 설치본 0.58.58의 실행 중인
+브리핑을 중단해도 되는지 사용자에게 확인 요청했으며 아직 교체하지 않았다.
+
+[0.58.61 후보](releases/0.58.61.md)는 이메일의 첫 날짜 정규식 대신 요약 모델로 일정 초안을
+준비한다. 근거·시간대·범위 검증과 권한 재확인 후 편집창에 제목/시간/장소/메모를 전달한다.
+실제 합성 메일 모델 호출에서 약 10초에 확정된 약속을 추출했다. 전체 4,010개/환경 제외 8개,
+Runtime 1,422개 통과. 0.58.59–60 수정도 포함하며 실제 일정 생성은 시험하지 않았다.
+
+[0.58.60 후보](releases/0.58.60.md)는 같은 날 Calendar 재조회를 생략하던 조건을 제거한다.
+새 브리핑마다 승인된 오늘·내일 일정을 갱신하고 실패 때 이전 일정은 보존한다. 실조회에서
+현재 3개/저장 2개, 누락 1개를 확인했다. 전체 4,004개/환경 제외 8개·Runtime 1,422개 통과.
+0.58.59 Scholar 수정도 포함하며 설치본 0.58.58은 생성 중이라 아직 교체하지 않았다.
+
+[0.58.59 후보](releases/0.58.59.md)는 Scholar 알림을 일반 이메일 요약 제외 목록과 독립적으로
+검색한다. 기존 계정/기간/미리보기 권한은 유지하고 논문 기준 중복을 제외한다. Crossref 후보는
+기간 안에서 관련성순으로 조회한다. 실조회에서 공개 후보 2개, 알림 10개에서 논문 후보 12개를
+확인했다. 전체 4,003개/환경 제외 8개·Runtime 1,421개 통과. 설치본 0.58.58은 브리핑 생성 중이다.
+
+[0.58.58 설치](releases/0.58.58.md)는 강수확률을 고정 0–100% 축으로 표시하며 시간별 숫자를
+제거한다. 0/50/100% 축 눈금과 비례 막대, 선택 상세값만 유지한다. 전체 4,001개/환경 제외 8개,
+Runtime 1,419개·실렌더·서명 검증 후 정상 종료·백업·교체했다. 실제 v0.58.58과 4시간 주기 확인.
+
+[0.58.57 설치](releases/0.58.57.md)는 날씨의 반복 0% 숫자를 연속 구간별로 묶는다. 모두 0%이면
+한 줄 설명과 낮은 기준선으로 표시하고 그래프를 158px로 줄인다. 값·이력·시간별 상세는 유지한다.
+전체 4,001개/환경 제외 8개·Runtime 1,419개·합성 화면·빌드·서명 검증 후 백업/교체했다.
+설치본 v0.58.57과 4시간 자동 주기, 새 0% 그래프 설명을 확인했다. 기존 자료/설정은 유지했다.
+
+[0.58.56 설치](releases/0.58.56.md)는 자동 브리핑 주기를 오류 때 끔으로 덮어쓰지 않는다.
+승인된 창/모델 설정과 실행 권한을 구분하고, 실제 권한 변경은 주기를 보존한 채 일시 중지한다.
+로딩 중 끔 표시를 제거하며 재시작 후 4시간 등 기존 선택을 복원한다.
+전체 3,999개/환경 제외 8개·Runtime 1,411개·화면/빌드/서명 검증 후 정상 종료·백업·교체했다.
+실제 v0.58.56에서 4시간 주기와 기존 다음 실행 시각, 이력 복원을 확인했다. 설정 파일도 보존했다.
+
+[0.58.55 설치](releases/0.58.55.md)는 [문맥 효율·사용량 집계](TOKEN_EFFICIENCY_AND_ACCOUNTING.md)를
+개선한다. 원본 기억은 유지하고 인사/관련 이력을 선택하며, 비서·브리핑·Model Lab·압축의 실제
+호출 카운터를 별도 metadata ledger로 기록한다. 기존 Project Chat 집계와 모델별로 함께 표시한다.
+전체 3,994개/환경 제외 8개, Runtime 1,406개·합성 화면·빌드·서명·continuity 통과. 종료 확인 후
+0.58.52와 DB/브리핑/기억/모델 설정을 백업하고 교체했다. 실제 v0.58.55 및 기존 이력을 확인했다.
+0.58.53 논문 검색과 0.58.54 승인 재사용도 함께 설치했다. 새 실측 과금/LLM 품질 검증과는 구분한다.
+
+[0.58.54 후보](releases/0.58.54.md)는 [승인 범위 재사용](APPROVED_SCOPE_REUSE.md)을 공통 설정으로
+연결한다. 승인된 Briefing 범위와 일반 사용자 SSH 작업 폴더를 재사용하되 root/OS/새 범위는
+자동 승인하지 않는다. 개별 철회와 실행 직전 binding 재검증·audit는 유지한다. 0.58.53도 포함한다.
+
+[0.58.53 후보](releases/0.58.53.md)는 채팅에만 있던 대체 논문 검색을 실제 브리핑 생성에도 연결한다.
+arXiv 실패 시에도 Crossref/OpenReview 후보를 유지하며 날짜·연구 필터·저장 요약 제외를 지킨다.
+실패를 0개로 오해하지 않도록 빈 실패 섹션 제목을 조회 미완료로 구분한다.
+
+[0.58.52 설치](releases/0.58.52.md)는 이메일을 중요도·실제 수신 시각 순으로 정렬하고 발신자를
+기존 계정/시간 메타데이터 줄에 표시한다. 발신자를 암호화 이력에 저장하며, 이전 누락 이력은
+명시적인 단일 메일 헤더 조회로 복구할 수 있다. AI 재요약·읽음 변경·자동 대량 재조회는 하지 않는다.
+전체 3,967개/환경 제외 8개, Runtime 1,266개, 실렌더·빌드·고정 서명·continuity 통과.
+정상 종료 후 앱/보호된 데이터를 백업해 교체했고 실제 v0.58.52와 기존 이력 표시를 확인했다.
+
+[0.58.51 설치](releases/0.58.51.md)는 작은 말풍선이 된 0.58.50 디자인을 대체한다. AI 비서
+그림만 28px로 키우고 큰 말풍선·반짝임 배지를 함께 쓴다. 버튼·22px 정렬 슬롯·채팅 패널은 유지한다.
+전체 3,954개/환경 제외 8개, Runtime 1,236개, 실렌더 4종 통과. 사용자 정상 종료 확인 뒤
+0.58.49와 보호된 데이터를 백업하고 교체했다. 실제 v0.58.51·새 아이콘·기존 이력을 확인했다.
+
+[0.58.50 후보](releases/0.58.50.md)는 AI 비서 반짝임을 1.75배로 키우고 테마 녹색으로 강조한다.
+버튼·아이콘 슬롯·채팅 동작은 유지한다. 전체 3,954개/환경 제외 8개, Runtime 1,236개,
+실렌더 4종·빌드·패키징·고정 서명·continuity 통과. 정상 종료 요청이 적용되지 않고
+사용자 창 상태가 바뀌어 설치본 0.58.49는 유지했다. 검증된 staging과 재개 절차는 릴리스 기록에 있다.
+
 [0.58.49 설치](releases/0.58.49.md)는 [모델 참조 대화](MODEL_REFERENCES.md)를 추가한다.
 모델 ID·저장 revision·hash를 Main에서 확인하고 독립 Project Chat에 유지한다. Model Lab
 자체 대화 이동 및 승인된 전역 비서 모델/대화 읽기도 연결한다. 전체 3,954개/환경 제외 8개,

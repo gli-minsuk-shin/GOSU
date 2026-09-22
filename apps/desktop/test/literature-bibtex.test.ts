@@ -66,6 +66,51 @@ function record(title: string, overrides: Partial<LiteratureRecord> = {}): Liter
   };
 }
 
+const springerDoi = '10.1007/978-3-030-58452-8_13';
+const springerUrl =
+  'https://link.springer.com/chapter/10.1007/978-3-030-58452-8_13?utm_source=gosu&q=object%20detection#Sec1';
+
+function springerChapter(overrides: Partial<LiteratureRecord> = {}): LiteratureRecord {
+  return record('End-to-End Object Detection with Transformers', {
+    authors: ['Carion, Nicolas', 'Zagoruyko, Sergey'],
+    containerTitle: 'Computer Vision - ECCV 2020',
+    publishedYear: 2020,
+    workType: 'book-chapter',
+    doi: springerDoi,
+    sourceUrl: springerUrl,
+    sourceTopics: [],
+    searchTags: { topics: [], keywords: [] },
+    citationCount: null,
+    reviewStatus: 'unreviewed',
+    manualAnnotations: { topics: [], summary: '', relevance: '' },
+    ...overrides,
+  });
+}
+
+// The export of springerChapter(), byte for byte. Earlier GOSU versions escaped doi and url like
+// every other field, so only those two lines differ between their files and the current ones.
+function springerChapterBibtex(identifiers: Readonly<{ doi: string; url: string }>): string {
+  return `@incollection{Carion2020End,
+  title = {End-to-End Object Detection with Transformers},
+  author = {Carion, Nicolas and Zagoruyko, Sergey},
+  booktitle = {Computer Vision - ECCV 2020},
+  year = {2020},
+  doi = {${identifiers.doi}},
+  url = {${identifiers.url}},
+  gosuworktype = {book-chapter},
+  gosureviewstatus = {unreviewed},
+  gosufingerprint = {f6c5f49035429f1382a6a582ac6b4b1f9c6b6679e4d6f9fa7475e9fd532e97f8},
+  metadataonly = {true},
+}
+`;
+}
+
+const verbatimSpringerChapter = springerChapterBibtex({ doi: springerDoi, url: springerUrl });
+const escapedSpringerChapter = springerChapterBibtex({
+  doi: String.raw`10.1007/978-3-030-58452-8\_13`,
+  url: String.raw`https://link.springer.com/chapter/10.1007/978-3-030-58452-8\_13?utm\_source=gosu\&q=object\%20detection\#Sec1`,
+});
+
 describe('literature BibTeX transfer', () => {
   it('creates stable readable citation keys without a hard-coded model or provider', () => {
     expect(
@@ -155,6 +200,60 @@ describe('literature BibTeX transfer', () => {
       citationKey: 'Turing1950Computing',
       searchTags: { topics: [], keywords: [] },
     });
+  });
+
+  it('exports doi and url verbatim so an underscore, percent, hash or ampersand still links', () => {
+    expect(serializeLiteratureBibtex([springerChapter()])).toBe(verbatimSpringerChapter);
+  });
+
+  it('keeps escaping LaTeX special characters in every field other than doi and url', () => {
+    const serialized = serializeLiteratureBibtex([
+      springerChapter({
+        title: 'Learning 100% of A_B & C #1',
+        containerTitle: 'Vision & Learning_Notes',
+        sourceTopics: ['R&D_50%'],
+      }),
+    ]);
+
+    expect(serialized).toContain(String.raw`  title = {Learning 100\% of A\_B \& C \#1},`);
+    expect(serialized).toContain(String.raw`  booktitle = {Vision \& Learning\_Notes},`);
+    expect(serialized).toContain(String.raw`  keywords = {R\&D\_50\%},`);
+  });
+
+  it('imports the escaped identifiers of earlier GOSU exports to the same DOI and URL as verbatim ones', () => {
+    const [fromEscaped] = parseLiteratureBibtex(escapedSpringerChapter);
+    const [fromVerbatim] = parseLiteratureBibtex(verbatimSpringerChapter);
+
+    expect(fromEscaped).toMatchObject({ doi: springerDoi, sourceUrl: springerUrl });
+    expect(fromVerbatim).toEqual(fromEscaped);
+  });
+
+  it('re-exports either identifier form as the same verbatim text', () => {
+    for (const exported of [escapedSpringerChapter, verbatimSpringerChapter]) {
+      expect(serializeLiteratureBibtex(parseLiteratureBibtex(exported))).toBe(
+        verbatimSpringerChapter,
+      );
+    }
+  });
+
+  it('drops whitespace and braces from url because a verbatim field cannot escape them', () => {
+    const serialized = serializeLiteratureBibtex([
+      springerChapter({ doi: null, sourceUrl: 'https://www.cs.example.edu/~ada/pa per_{v2}.pdf' }),
+    ]);
+
+    expect(serialized).toContain('  url = {https://www.cs.example.edu/~ada/paper_v2.pdf},\n');
+  });
+
+  it('drops backslashes from url so its own export never reads back as an escape', () => {
+    const serialized = serializeLiteratureBibtex([
+      springerChapter({ doi: null, sourceUrl: 'https://example.org/a\\_b/paper_v2\\' }),
+    ]);
+
+    expect(serialized).toContain('  url = {https://example.org/a_b/paper_v2},\n');
+    expect(parseLiteratureBibtex(serialized)[0]).toMatchObject({
+      sourceUrl: 'https://example.org/a_b/paper_v2',
+    });
+    expect(serializeLiteratureBibtex(parseLiteratureBibtex(serialized))).toBe(serialized);
   });
 
   it('skips BibTeX special entries and percent line comments without treating them as papers', () => {

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Graph toolbar responsive QA</title>
+  </head>
+  <body style="margin: 0; background: #eef2ec">
+    <nav style="height: 32px">
+      <button onclick="document.querySelector('iframe').style.width = '1200px'">Wide 1200</button>
+      <button onclick="document.querySelector('iframe').style.width = '800px'">Narrow 800</button>
+      <button onclick="document.querySelector('iframe').style.width = '420px'">Small 420</button>
+    </nav>
+    <iframe
+      title="Synthetic Model Lab"
+      src="./model-local-chat-visual.html"
+      style="border: 0; width: 1200px; height: 680px"
+    ></iframe>
+  </body>
+</html>

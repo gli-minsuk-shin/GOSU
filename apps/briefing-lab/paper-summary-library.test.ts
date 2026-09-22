@@ -20,10 +20,18 @@ it('offers after paper analysis but never treats source text as confirmation', (
   const cited = paperSummaryCandidate(
     '그 가정이 필요한 이유는?',
     'Bayesian paper의 가정은 추정의 식별을 위해 필요합니다.',
-    [{ title: 'Bayesian paper', url: 'https://example.org/paper' }],
+    [{ title: 'Bayesian paper', url: 'https://doi.org/10.1000/bayesian.paper' }],
   );
   expect(cited?.title).toBe('Bayesian paper');
-  expect(cited?.sourceUrls).toEqual(['https://example.org/paper']);
+  expect(cited?.sourceUrls).toEqual(['https://doi.org/10.1000/bayesian.paper']);
+  // Ingestion only opens arXiv, DOI, OpenReview and PMLR links, so nothing else is offered.
+  expect(
+    paperSummaryCandidate(
+      '그 가정이 필요한 이유는?',
+      'Bayesian paper의 가정은 추정의 식별을 위해 필요합니다.',
+      [{ title: 'Bayesian paper', url: 'https://example.org/paper' }],
+    ),
+  ).toBeNull();
 });
 it('requires explicit approval, encrypts exact content and survives restart without duplicate writes', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'paper-library-test-'));

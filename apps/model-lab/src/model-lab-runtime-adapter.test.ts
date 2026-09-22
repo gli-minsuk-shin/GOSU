@@ -6,10 +6,71 @@ import {
   isCurrentModelLabTurn,
   MODEL_LAB_RUNTIME_ERROR_MESSAGE,
   modelLabRuntimeErrorCode,
+  modelLabRuntimeErrorDetail,
   modelLabRuntimeErrorMessage,
 } from './model-lab-runtime-adapter';
 import { bottleneckAutoencoder, residualClassifier, sampleModels } from './sample-models';
 import type { ModelSpec } from './model-lab-schema';
+it('does not twinkle for a preserved analysis whose graph edit failed', async () => {
+  const postMessage = vi.fn();
+  vi.stubGlobal('window', { parent: { postMessage }, addEventListener: vi.fn() });
+  try {
+    const runtime = createGosuModelLabRuntime(
+      async () =>
+        new Response(
+          JSON.stringify({ body: 'Analysis preserved', trace: ['Graph edit failed · invalid'] }),
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
+    );
+    await runtime.answer({
+      projectModels: [bottleneckAutoencoder],
+      activeModelId: bottleneckAutoencoder.id,
+      selectedModuleId: bottleneckAutoencoder.modules[0]!.id,
+      probe: 'healthy',
+      checkpointIndex: 0,
+      question: 'test',
+    });
+    expect(postMessage.mock.calls.map((c) => c[0].phase)).toEqual(['running', 'failed']);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+it.each([false, true])(
+  'reports live Model Assistant activity and never signals completion for a failed response (%s)',
+  async (failed) => {
+    const postMessage = vi.fn();
+    vi.stubGlobal('window', { parent: { postMessage }, addEventListener: vi.fn() });
+    try {
+      const runtime = createGosuModelLabRuntime(
+        async () =>
+          new Response(
+            JSON.stringify(
+              failed
+                ? { type: 'error', detail: 'model_copilot_timeout' }
+                : { type: 'result', answer: { body: 'done', trace: [] } },
+            ) + '\n',
+            { headers: { 'Content-Type': 'application/x-ndjson' } },
+          ),
+      );
+      const request = {
+        projectModels: [bottleneckAutoencoder],
+        activeModelId: bottleneckAutoencoder.id,
+        selectedModuleId: bottleneckAutoencoder.modules[0]!.id,
+        probe: 'healthy' as const,
+        checkpointIndex: 0,
+        question: 'test',
+      };
+      if (failed) await expect(runtime.answer(request)).rejects.toThrow();
+      else await runtime.answer(request);
+      expect(postMessage.mock.calls.map((c) => c[0].phase)).toEqual([
+        'running',
+        failed ? 'failed' : 'completed',
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  },
+);
 it('delivers validated context accounting events independently from tool progress', async () => {
   const report = {
     windowTokens: 1000000,
@@ -57,6 +118,59 @@ it('surfaces actionable native auth errors without exposing provider diagnostics
   expect(modelLabRuntimeErrorMessage(new Error('private token and raw log'))).toBe(
     MODEL_LAB_RUNTIME_ERROR_MESSAGE,
   );
+});
+
+it('names the failure instead of a generic "unavailable" when the server reports a code', async () => {
+  // The selected model or reasoning level vanished from the catalog: say what to do.
+  expect(
+    modelLabRuntimeErrorMessage(new Error('model_copilot_selected_model_unavailable')),
+  ).toContain('Choose a model again in the Assistant panel');
+  expect(
+    modelLabRuntimeErrorMessage(new Error('model_copilot_selected_reasoning_unavailable')),
+  ).toContain('Choose a reasoning level again');
+  expect(modelLabRuntimeErrorMessage(new Error('model_copilot_agent_unavailable'))).toContain(
+    'could not start with the selected provider',
+  );
+  // An unmapped code is still shown, so the next report says what actually failed…
+  expect(modelLabRuntimeErrorMessage(new Error('claude_code_spawn_failed'))).toBe(
+    `${MODEL_LAB_RUNTIME_ERROR_MESSAGE} Error code: claude_code_spawn_failed.`,
+  );
+  // …but only a plain code: sentences, logs and secrets never reach the chat.
+  expect(modelLabRuntimeErrorDetail('claude_code_spawn_failed token=abc')).toBe(
+    'model_copilot_llm_unavailable',
+  );
+  expect(modelLabRuntimeErrorDetail('x'.repeat(200))).toBe('model_copilot_llm_unavailable');
+  expect(modelLabRuntimeErrorDetail(undefined)).toBe('model_copilot_llm_unavailable');
+  expect(modelLabRuntimeErrorDetail('model_copilot_codex_exit_3')).toBe(
+    'model_copilot_process_failed',
+  );
+  // The streamed failure keeps the server's code all the way to the message.
+  const request = {
+    projectModels: [residualClassifier],
+    activeModelId: residualClassifier.id,
+    selectedModuleId: 'merge',
+    question: 'Explain',
+    probe: 'healthy' as const,
+    checkpointIndex: 0,
+  };
+  const streamed = createGosuModelLabRuntime(
+    async () =>
+      new Response(
+        `${JSON.stringify({ type: 'error', error: 'model_copilot_unavailable', detail: 'model_copilot_selected_model_unavailable' })}\n`,
+        { headers: { 'Content-Type': 'application/x-ndjson' } },
+      ),
+  );
+  await expect(streamed.answer(request)).rejects.toThrow(
+    'model_copilot_selected_model_unavailable',
+  );
+  const plain = createGosuModelLabRuntime(
+    async () =>
+      new Response(
+        JSON.stringify({ error: 'model_copilot_unavailable', detail: 'claude_code_spawn_failed' }),
+        { status: 503, headers: { 'Content-Type': 'application/json' } },
+      ),
+  );
+  await expect(plain.answer(request)).rejects.toThrow('claude_code_spawn_failed');
 });
 
 function withExplicitPorts(model: ModelSpec): ModelSpec {
@@ -199,7 +313,7 @@ describe('Model Lab runtime adapter boundary', () => {
     expect(MODEL_LAB_RUNTIME_ERROR_MESSAGE).not.toContain('stack');
   });
 
-  it('routes Model Copilot questions to the Codex LLM endpoint with conversation context', async () => {
+  it('routes Model Assistant questions to the Codex LLM endpoint with conversation context', async () => {
     const calls: Array<{ input: RequestInfo | URL; init: RequestInit | undefined }> = [];
     const fetchMock: typeof fetch = async (input, init) => {
       calls.push({ input, init });

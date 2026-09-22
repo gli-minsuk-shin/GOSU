@@ -637,7 +637,23 @@ export class ResearchNotesService {
   async current(input: ResearchNotesProjectInput): Promise<ResearchNotesWorkspace | null> {
     const command = ResearchNotesProjectInputSchema.parse(input);
     const project = await this.requireActiveProject(command.projectId);
-    if (!this.dependencies.vault.current()) return null;
+    if (!this.dependencies.vault.current()) {
+      // The saved vault is reconnected late in startup and only once. Opening a project before
+      // that, or after one failed attempt, used to look exactly like "no vault was ever chosen".
+      // Reconnect here instead, and say why when the saved vault cannot be reopened.
+      const restored = await this.dependencies.vault.restore().catch(() => null);
+      if (!restored) {
+        const failure = this.dependencies.vault.restoreError();
+        if (failure === 'missing') {
+          throw new ResearchNotesServiceError('research_notes_vault_missing');
+        }
+        if (failure === 'permission_denied') {
+          throw new ResearchNotesServiceError('research_notes_vault_permission_denied');
+        }
+        if (failure) throw new ResearchNotesServiceError('research_notes_vault_unreadable');
+        return null;
+      }
+    }
     const ensured = await this.ensureProject(project);
     await this.syncLiterature(project.id).catch(() => undefined);
     return this.workspaceView(project, ensured.link);

@@ -1,6 +1,10 @@
 import type { AppLanguage } from '@gosu/contracts';
 
 const messages: Readonly<Record<string, string>> = {
+  'Choose a model for the extraction role in GOSU Settings, or use the existing Model Lab selection.':
+    'GOSU 설정에서 구조 추출에 사용할 역할의 모델을 지정하거나 기존 Model Lab 설정을 선택해주세요.',
+  'Model extraction supports Codex and Claude Code. Change the extraction role in GOSU Settings.':
+    '모델 구조 추출은 Codex와 Claude Code를 지원합니다. GOSU 설정의 추출 모델 역할을 변경해주세요.',
   'Joined the existing build for identical source bytes; no duplicate LLM call was started.':
     '동일한 원본의 진행 중인 생성 작업에 합류했습니다. LLM을 중복 호출하지 않았습니다.',
   'Validating the model-builder request.': '모델 생성 요청을 검증하고 있습니다.',
@@ -12,10 +16,10 @@ const messages: Readonly<Record<string, string>> = {
     '준비된 원본 자료를 재사용하고 검증 결과만 추가합니다. 문서를 다시 추출하지 않습니다.',
   'This source import is already running. Waiting for its canonical graph instead of starting another LLM call.':
     '동일한 원본을 이미 가져오고 있습니다. LLM을 중복 호출하지 않고 표준 그래프 생성을 기다립니다.',
-  'Model reconstruction did not finish within 10 minutes for this large source. The source was not executed and no incomplete graph was saved. Retry or select a faster reasoning level.':
-    '큰 원본의 모델 재구성이 10분 내에 완료되지 않았습니다. 원본을 실행하지 않았고 불완전한 그래프도 저장하지 않았습니다. 재시도하거나 더 빠른 reasoning 수준을 선택하세요.',
-  'Model reconstruction did not finish within 5 minutes. Retry, or select a faster model/reasoning level after the GOSU adapter is connected.':
-    '모델 재구성이 5분 내에 완료되지 않았습니다. GOSU adapter 연결 후 재시도하거나 더 빠른 모델 또는 reasoning 수준을 선택하세요.',
+  'Model reconstruction did not finish within 30 minutes for this large source. The source was not executed and no incomplete graph was saved. Retry or select a faster reasoning level.':
+    '큰 원본의 모델 재구성이 30분 내에 완료되지 않았습니다. 원본을 실행하지 않았고 불완전한 그래프도 저장하지 않았습니다. 재시도하거나 더 빠른 reasoning 수준을 선택하세요.',
+  'Model reconstruction did not finish within 15 minutes. No incomplete graph was saved. Retry or select a faster model/reasoning level.':
+    '모델 재구성이 15분 내에 완료되지 않았습니다. 불완전한 그래프는 저장하지 않았습니다. 재시도하거나 더 빠른 모델 또는 reasoning 수준을 선택하세요.',
   'Codex exited before producing a ModelIR result. Retry the reconstruction or check the local Codex connection.':
     'ModelIR 결과를 생성하기 전에 Codex가 종료되었습니다. 재구성을 다시 시도하거나 로컬 Codex 연결을 확인하세요.',
   'Claude Code exited before producing a ModelIR result. Check that Claude Code is still signed in with a Claude.ai subscription, then retry.':

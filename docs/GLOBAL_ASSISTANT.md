@@ -1,5 +1,16 @@
 # Global GOSU assistant
 
+## Configurable app-local shortcut — 0.58.62 candidate
+
+On macOS the native View menu opens the retained AI assistant with Command+Shift+Space by default.
+Settings → 단축키 records and saves another modified key combination, or restores the default.
+Main validates the fixed IPC request and persists the value in userData/assistant-shortcut.v1.json;
+include this file in future state backups if present. Saving rebuilds the menu immediately.
+The preload buffers early navigation, and repeated shortcut requests increment existing navigation
+revision so the composer refocuses without clearing messages. Existing recommendation behavior stays.
+This is app-local, not a system-wide/background shortcut. OS-reserved combinations may take precedence.
+Focused tests cover persistence, malformed keys, native menu action and early/repeated IPC delivery.
+
 2026-09-14 source: [Model references](MODEL_REFERENCES.md) add `read_model_lab` for model structure,
 pseudocode and model/revision chat history across approved active projects. Existing project-read
 and private-AI/provider approval gates remain; model writes/training are not part of this reader.

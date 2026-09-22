@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  enqueueBackgroundSshApproval,
   enqueueVisibleSshApproval,
   mergeHydratedSshApprovals,
   rememberResolvedSshApproval,
@@ -33,6 +34,13 @@ function approval(id: string, overrides: Partial<SshApprovalRequest> = {}): SshA
 }
 
 describe('SSH approval renderer state', () => {
+  it('keeps background approvals pending without automatically granting them or replaying resolved ones', () => {
+    const request = approval('77777777-7777-4777-8777-777777777778');
+    const now = Date.parse('2026-08-06T00:00:02.000Z');
+    expect(enqueueBackgroundSshApproval([], request, new Set(), now)).toEqual([request]);
+    expect(enqueueBackgroundSshApproval([], request, new Set([request.id]), now)).toEqual([]);
+    expect(enqueueBackgroundSshApproval([], request, new Set(), now + 600000)).toEqual([]);
+  });
   it('upserts duplicate events and removes only the resolved approval', () => {
     const first = approval('55555555-5555-4555-8555-555555555555');
     const second = approval('66666666-6666-4666-8666-666666666666', {
@@ -105,10 +113,10 @@ describe('SSH approval renderer state', () => {
         new Set(),
         Date.parse('2026-08-06T00:00:02.000Z'),
       ),
-    ).toEqual([valid]);
+    ).toEqual([valid, otherSession]);
   });
 
-  it('prunes current approvals outside the exact scope or already resolved', () => {
+  it('preserves pending background approvals while pruning resolved ones during hydration', () => {
     const valid = approval('cccccccc-cccc-4ccc-8ccc-cccccccccccc');
     const otherProject = approval('dddddddd-dddd-4ddd-8ddd-dddddddddddd', {
       projectId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
@@ -126,7 +134,7 @@ describe('SSH approval renderer state', () => {
         new Set([resolved.id]),
         Date.parse('2026-08-06T00:00:02.000Z'),
       ),
-    ).toEqual([valid]);
+    ).toEqual([valid, otherProject, otherSession]);
   });
 
   it('bounds resolved-request tombstones while retaining the newest IDs', () => {

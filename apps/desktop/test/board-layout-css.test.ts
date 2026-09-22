@@ -39,10 +39,41 @@ describe('Board responsive layout CSS', () => {
     expect(boardRules.some((rule) => rule.includes('repeat(5, minmax(156px, 1fr))'))).toBe(true);
   });
 
+  it('keeps a task to one 34px line and a resting board free of buttons', () => {
+    const row = declarationsFor('.todo-task-row')[0] ?? '';
+    expect(row).toContain('min-height: 34px');
+    expect(row).toContain('align-items: center');
+    expect(
+      declarationsFor('.todo-task-title').some((rule) => rule.includes('white-space: nowrap')),
+    ).toBe(true);
+    // Actions are hidden at rest and come back with the pointer or with keyboard focus.
+    expect(styles).toMatch(/\.todo-task-actions,\s*\.task-actions\s*\{[^}]*opacity: 0/u);
+    for (const selector of [
+      '.todo-task-row:hover .todo-task-actions',
+      '.todo-task-row:focus-within .todo-task-actions',
+      '.task-card:hover .task-actions',
+      '.task-card:focus-within .task-actions',
+    ])
+      expect(styles).toContain(selector);
+    // A column no longer reserves 350px when it holds one card.
+    expect(declarationsFor('.kanban-column')[0]).toContain('min-height: 160px');
+    expect(declarationsFor('.task-card h3')[0]).toContain('-webkit-line-clamp: 2');
+  });
+
+  it('keeps filter and quick-add labels for assistive technology while showing one row of controls', () => {
+    expect(styles).toMatch(
+      /\.board-filter-bar \.field-label,\s*\.task-composer > label > \.field-label\s*\{[^}]*clip-path: inset\(50%\)/u,
+    );
+    expect(styles).not.toContain('.board-help');
+    expect(styles).not.toContain('.todo-list-summary');
+  });
+
   it('keeps global filter and composer grids more specific than the shared Board defaults', () => {
     expect(workspaceTaskStyles).toContain('.workspace-tasks-view .workspace-task-filter-bar {');
     expect(workspaceTaskStyles).toContain('.workspace-tasks-view .workspace-task-composer,');
-    expect(workspaceTaskStyles).toContain('@container kanban-workspace (max-width: 1080px)');
+    // Compact controls stay on one row far below the former 1080px break.
+    expect(workspaceTaskStyles).toContain('@container kanban-workspace (max-width: 760px)');
+    expect(workspaceTaskStyles).not.toContain('(max-width: 1080px)');
     expect(workspaceTaskStyles).toContain('@container kanban-workspace (max-width: 680px)');
   });
 });

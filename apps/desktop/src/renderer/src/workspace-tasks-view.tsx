@@ -16,7 +16,6 @@ import {
   activeKanbanFilterCount,
   parseTaskLabels,
   projectTaskLabels,
-  taskDueState,
 } from './kanban-board-model';
 import {
   EMPTY_WORKSPACE_GLOBAL_BOARD_FILTERS,
@@ -37,6 +36,7 @@ import {
   type WorkspaceGlobalBoardVisibleLimits,
 } from './workspace-global-board-model';
 import './workspace-tasks-view.css';
+import { TaskDue, TaskIcon } from './task-compact';
 import { boardColumnDisplayLabel } from './domain-ui-labels';
 
 const PRIORITIES: ReadonlyArray<{ value: WorkspaceTaskPriority; label: string }> = [
@@ -50,7 +50,7 @@ type WorkspaceTasksViewMode = 'kanban' | 'todo';
 
 type DraggedWorkspaceTask = Readonly<{
   taskId: string;
-  projectId: string;
+  projectId: string | null;
   expectedVersion: number;
 }>;
 
@@ -104,7 +104,7 @@ export function workspaceGlobalTaskCreateInput(
   const description = input.description.trim();
   const labels = parseTaskLabels(input.labels);
   return {
-    projectId: input.projectId,
+    projectId: input.projectId || null,
     title: input.title.trim(),
     status: input.status,
     ...(description ? { description } : {}),
@@ -283,67 +283,68 @@ export function WorkspaceTasksView({
           )}
         </div>
       )}
-      <header className="kanban-command-bar">
-        <div className="kanban-title-block">
-          <span>{uiText('WORKSPACE TASKS')}</span>
-          <h2>{uiText('All project tasks')}</h2>
-          <p>
-            {activeTaskCount} {uiText('active')}{' '}
-            {activeTaskCount === 1 ? uiText('task') : uiText('tasks')} {uiText('across')}{' '}
-            {activeProjects.length} {uiText('active')}{' '}
-            {activeProjects.length === 1 ? uiText('project') : uiText('projects')}
-          </p>
-        </div>
-        <div className="kanban-view-actions">
-          <div className="board-layout-switch" role="group" aria-label={uiText('Task layout')}>
+      <div className="task-toolbar">
+        <header className="kanban-command-bar">
+          <div className="kanban-title-block">
+            <h2>{uiText('All project tasks')}</h2>
+            <p>
+              {activeTaskCount} {uiText('active')}{' '}
+              {activeTaskCount === 1 ? uiText('task') : uiText('tasks')} {uiText('across')}{' '}
+              {activeProjects.length} {uiText('active')}{' '}
+              {activeProjects.length === 1 ? uiText('project') : uiText('projects')}
+            </p>
+          </div>
+          <div className="kanban-view-actions">
+            <div className="board-layout-switch" role="group" aria-label={uiText('Task layout')}>
+              <button
+                type="button"
+                className={viewMode === 'kanban' ? 'active' : ''}
+                aria-pressed={viewMode === 'kanban'}
+                onClick={() => {
+                  setViewMode('kanban');
+                  setFilters((current) => ({ ...current, mode: 'active' }));
+                }}
+              >
+                {uiText('Kanban')}
+              </button>
+              <button
+                type="button"
+                className={viewMode === 'todo' ? 'active' : ''}
+                aria-pressed={viewMode === 'todo'}
+                onClick={() => {
+                  setViewMode('todo');
+                  setFilters((current) => ({ ...current, mode: 'active' }));
+                }}
+              >
+                {uiText('To-do')}
+              </button>
+            </div>
             <button
               type="button"
-              className={viewMode === 'kanban' ? 'active' : ''}
-              aria-pressed={viewMode === 'kanban'}
-              onClick={() => {
-                setViewMode('kanban');
-                setFilters((current) => ({ ...current, mode: 'active' }));
-              }}
+              className={filters.mode === 'archived' ? 'secondary-button active' : 'ghost-button'}
+              onClick={() =>
+                setFilters((current) => ({
+                  ...current,
+                  mode: current.mode === 'active' ? 'archived' : 'active',
+                }))
+              }
             >
-              {uiText('Kanban')}
-            </button>
-            <button
-              type="button"
-              className={viewMode === 'todo' ? 'active' : ''}
-              aria-pressed={viewMode === 'todo'}
-              onClick={() => {
-                setViewMode('todo');
-                setFilters((current) => ({ ...current, mode: 'active' }));
-              }}
-            >
-              {uiText('To-do')}
+              {filters.mode === 'active'
+                ? uiText('Task trash ({scopedTrashCount})', { scopedTrashCount: scopedTrashCount })
+                : uiText('Back to active tasks')}
             </button>
           </div>
-          <button
-            type="button"
-            className={filters.mode === 'archived' ? 'secondary-button active' : 'ghost-button'}
-            onClick={() =>
-              setFilters((current) => ({
-                ...current,
-                mode: current.mode === 'active' ? 'archived' : 'active',
-              }))
-            }
-          >
-            {filters.mode === 'active'
-              ? uiText('Task trash ({scopedTrashCount})', { scopedTrashCount: scopedTrashCount })
-              : uiText('Back to active tasks')}
-          </button>
-        </div>
-      </header>
+        </header>
 
-      <WorkspaceTaskFilters
-        projects={activeProjects}
-        projectLabels={projectLabels}
-        labels={availableLabels}
-        filters={filters}
-        activeCount={activeFilterCount}
-        onChange={setFilters}
-      />
+        <WorkspaceTaskFilters
+          projects={activeProjects}
+          projectLabels={projectLabels}
+          labels={availableLabels}
+          filters={filters}
+          activeCount={activeFilterCount}
+          onChange={setFilters}
+        />
+      </div>
 
       {filters.mode === 'archived' ? (
         <WorkspaceTaskTrash
@@ -371,14 +372,10 @@ export function WorkspaceTasksView({
             onCreate={onCreateTask}
           />
 
-          {activeProjects.length === 0 ? (
+          {activeProjects.length === 0 && joinedTasks.length === 0 ? (
             <section className="workspace-task-empty" aria-label={uiText('No active projects')}>
-              <strong>{uiText('Create or restore an active project first')}</strong>
-              <p>
-                {uiText(
-                  'Every task belongs to one project, so GOSU never creates an unassigned task.',
-                )}
-              </p>
+              <strong>개인 할 일을 추가해보세요</strong>
+              <p>프로젝트를 선택하지 않아도 할 일을 저장할 수 있습니다.</p>
             </section>
           ) : viewMode === 'todo' ? (
             <WorkspaceTodoList
@@ -455,7 +452,6 @@ export function WorkspaceTasksView({
                             {boardColumnDisplayLabel(column.status, column.label)}
                           </strong>
                         </div>
-                        <small>{uiText('Across active projects')}</small>
                       </div>
                       <span
                         aria-label={uiText('{totalCount} tasks', { totalCount: column.totalCount })}
@@ -555,7 +551,7 @@ function WorkspaceTaskFilters({
       aria-label={uiText('Filter tasks across projects')}
     >
       <label>
-        {uiText('Project')}
+        <span className="field-label">{uiText('Project')}</span>
         <select
           value={filters.projectId ?? ''}
           onChange={(event) => onChange({ ...filters, projectId: event.target.value || null })}
@@ -569,7 +565,7 @@ function WorkspaceTaskFilters({
         </select>
       </label>
       <label className="board-search">
-        {uiText('Search')}
+        <span className="field-label">{uiText('Search')}</span>
         <input
           type="search"
           value={filters.query}
@@ -578,7 +574,7 @@ function WorkspaceTaskFilters({
         />
       </label>
       <label>
-        {uiText('Priority')}
+        <span className="field-label">{uiText('Priority')}</span>
         <select
           value={filters.priority}
           onChange={(event) =>
@@ -598,7 +594,7 @@ function WorkspaceTaskFilters({
         </select>
       </label>
       <label>
-        {uiText('Label')}
+        <span className="field-label">{uiText('Label')}</span>
         <select
           value={filters.label}
           onChange={(event) => onChange({ ...filters, label: event.target.value })}
@@ -612,7 +608,7 @@ function WorkspaceTaskFilters({
         </select>
       </label>
       <label>
-        {uiText('Due')}
+        <span className="field-label">{uiText('Due')}</span>
         <select
           value={filters.due}
           onChange={(event) =>
@@ -673,9 +669,7 @@ export function WorkspaceTaskComposer({
   const [dueDate, setDueDate] = useState('');
   const [labels, setLabels] = useState('');
   const busy = busyAction !== null;
-  const selectedBoard = selectedProject
-    ? resolveWorkspaceBoardSettings(selectedProject.board)
-    : null;
+  const selectedBoard = resolveWorkspaceBoardSettings(selectedProject?.board);
   const projectLabels = useMemo(() => workspaceGlobalProjectLabels(projects), [projects]);
 
   useEffect(() => {
@@ -700,10 +694,10 @@ export function WorkspaceTaskComposer({
         className={`task-composer workspace-task-composer${showDetails ? ' expanded' : ''}`}
         onSubmit={(event) => {
           event.preventDefault();
-          if (!selectedProject || busy) return;
+          if (busy || (projectId && !selectedProject)) return;
           void onCreate(
             workspaceGlobalTaskCreateInput({
-              projectId: selectedProject.id,
+              projectId: selectedProject?.id ?? '',
               title,
               status,
               description,
@@ -722,28 +716,7 @@ export function WorkspaceTaskComposer({
         }}
       >
         <label>
-          {uiText('Project')}
-          <select
-            value={projectId}
-            required
-            disabled={busy || projects.length === 0}
-            onChange={(event) => {
-              const nextProjectId = event.target.value;
-              setProjectId(nextProjectId);
-              const project = projects.find((candidate) => candidate.id === nextProjectId);
-              setStatus(project ? resolveWorkspaceGlobalInitialStatus(project) : 'backlog');
-            }}
-          >
-            <option value="">{uiText('Choose a project')}</option>
-            {projects.map((project) => (
-              <option value={project.id} key={project.id}>
-                {projectLabels.get(project.id) ?? project.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          {uiText('Task title')}
+          <span className="field-label">{uiText('Task title')}</span>
           <input
             value={title}
             onChange={(event) => setTitle(event.target.value)}
@@ -755,9 +728,31 @@ export function WorkspaceTaskComposer({
           />
         </label>
         <label>
-          {uiText('Initial stage')}
+          <span className="field-label">{uiText('Project')}</span>
+          <select
+            value={projectId}
+            disabled={busy}
+            title="프로젝트는 선택 사항입니다. 선택하지 않으면 개인 할 일로 저장합니다."
+            onChange={(event) => {
+              const nextProjectId = event.target.value;
+              setProjectId(nextProjectId);
+              const project = projects.find((candidate) => candidate.id === nextProjectId);
+              setStatus(project ? resolveWorkspaceGlobalInitialStatus(project) : 'backlog');
+            }}
+          >
+            <option value="">프로젝트 없음 · 개인 할 일</option>
+            {projects.map((project) => (
+              <option value={project.id} key={project.id}>
+                {projectLabels.get(project.id) ?? project.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span className="field-label">{uiText('Initial stage')}</span>
           <select
             value={status}
+            title={uiText('Initial stage')}
             onChange={(event) => setStatus(event.target.value as WorkspaceTaskStatus)}
             disabled={busy || !selectedBoard}
           >
@@ -775,7 +770,7 @@ export function WorkspaceTaskComposer({
         <button
           type="submit"
           className="primary-button"
-          disabled={busy || !selectedProject || title.trim().length < 2}
+          disabled={busy || (!!projectId && !selectedProject) || title.trim().length < 2}
         >
           {busyAction === 'task:create' ? uiText('Adding…') : uiText('Add task')}
         </button>
@@ -811,9 +806,6 @@ export function WorkspaceTaskComposer({
           </div>
         )}
       </form>
-      <p className="board-help">
-        {uiText('Choose the owning project explicitly. Global tasks never become unassigned.')}
-      </p>
     </section>
   );
 }
@@ -843,7 +835,6 @@ function WorkspaceTaskCard({
 }) {
   const previous = WORKSPACE_GLOBAL_BOARD_COLUMNS[columnIndex - 1];
   const next = WORKSPACE_GLOBAL_BOARD_COLUMNS[columnIndex + 1];
-  const dueState = taskDueState(item.task.dueDate);
   const context = `${item.task.title} in ${projectLabel}`;
 
   return (
@@ -854,40 +845,8 @@ function WorkspaceTaskCard({
       onDragEnd={onDragEnd}
       aria-label={context}
     >
-      <div className="workspace-task-context-row">
-        <WorkspaceProjectBadge
-          project={item.project}
-          label={projectLabel}
-          onOpenProjectBoard={onOpenProjectBoard}
-        />
-        <span className="workspace-task-stage">
-          {boardColumnDisplayLabel(item.task.status, item.statusLabel)}
-        </span>
-      </div>
       <div className="task-card-heading">
-        {item.task.priority && (
-          <span className={`priority-badge ${uiText(item.task.priority)}`}>
-            {uiText(item.task.priority)}
-          </span>
-        )}
-        <h3>{item.task.title}</h3>
-      </div>
-      {item.task.description && <p className="task-description">{item.task.description}</p>}
-      <WorkspaceTaskLabels labels={item.task.labels} />
-      {item.task.dueDate && (
-        <time className={`task-due ${dueState}`} dateTime={item.task.dueDate}>
-          {dueState === 'overdue'
-            ? uiText('Overdue · ')
-            : dueState === 'today'
-              ? uiText('Today · ')
-              : uiText('Due · ')}
-          {item.task.dueDate}
-        </time>
-      )}
-      <footer>
-        <span className="task-version">
-          v{item.task.version} · {formatUpdated(item.task.updatedAt)}
-        </span>
+        <h3 title={item.task.description}>{item.task.title}</h3>
         <div className="task-actions">
           <button
             type="button"
@@ -902,15 +861,16 @@ function WorkspaceTaskCard({
                 : uiText('Already in the first column')
             }
           >
-            ←
+            <TaskIcon name="left" />
           </button>
           <button
             type="button"
             onClick={onEdit}
             disabled={busy}
             aria-label={uiText('Edit {context}', { context: context })}
+            title={uiText('Edit')}
           >
-            {uiText('Edit')}
+            <TaskIcon name="edit" />
           </button>
           <button
             type="button"
@@ -925,7 +885,7 @@ function WorkspaceTaskCard({
                 : uiText('Already in the final column')
             }
           >
-            →
+            <TaskIcon name="right" />
           </button>
           <button
             type="button"
@@ -935,10 +895,25 @@ function WorkspaceTaskCard({
             aria-label={uiText('Delete {context}', { context: context })}
             title={uiText('Delete task; restorable from Task trash')}
           >
-            {uiText('Delete')}
+            <TaskIcon name="trash" />
           </button>
         </div>
-      </footer>
+      </div>
+      <div className="task-card-meta">
+        {item.task.priority && (
+          <span className={`priority-badge ${uiText(item.task.priority)}`}>
+            {uiText(item.task.priority)}
+          </span>
+        )}
+        <TaskDue dueDate={item.task.dueDate} dueAt={item.task.dueAt} />
+        <WorkspaceTaskLabels labels={item.task.labels} />
+        <WorkspaceProjectBadge
+          project={item.project}
+          label={projectLabel}
+          onOpenProjectBoard={onOpenProjectBoard}
+        />
+        <WorkspaceOwnStage item={item} />
+      </div>
     </article>
   );
 }
@@ -966,21 +941,11 @@ function WorkspaceTodoList({
   onOpenProjectBoard?: ((projectId: string) => void) | undefined;
   onShowMore: (status: WorkspaceTaskStatus, totalCount: number) => void;
 }) {
-  const matchingCount = columns.reduce((total, column) => total + column.totalCount, 0);
   return (
     <section
       className="todo-task-list workspace-todo-list"
       aria-label={uiText('All-project To-do list')}
     >
-      <header className="todo-list-summary">
-        <div>
-          <span>{uiText('TO-DO VIEW')}</span>
-          <h3>{uiText('Tasks by workflow stage')}</h3>
-        </div>
-        <p>
-          {matchingCount} {uiText('matching tasks · project ownership stays unchanged')}
-        </p>
-      </header>
       <div className="todo-status-groups">
         {columns.map((column) => (
           <section className="todo-status-group" key={column.status}>
@@ -1050,7 +1015,6 @@ function WorkspaceTodoRow({
   onOpenProjectBoard?: ((projectId: string) => void) | undefined;
 }) {
   const completed = item.task.status === 'done';
-  const dueState = taskDueState(item.task.dueDate);
   const context = `${item.task.title} in ${projectLabel}`;
   const reopenStatus = resolveWorkspaceGlobalReopenStatus(item.project);
   const reopenLabel = resolveWorkspaceGlobalStatusLabel(item.project, reopenStatus);
@@ -1072,48 +1036,31 @@ function WorkspaceTodoRow({
         title={completionLabel}
         onChange={() => void onUpdate(workspaceGlobalTaskCompletionUpdate(item))}
       />
-      <div className="todo-task-content">
-        <div className="workspace-task-context-row">
-          <WorkspaceProjectBadge
-            project={item.project}
-            label={projectLabel}
-            onOpenProjectBoard={onOpenProjectBoard}
-          />
-          <span className="todo-status-badge">
-            {boardColumnDisplayLabel(item.task.status, item.statusLabel)}
-          </span>
-          {item.task.priority && (
-            <span className={`priority-badge ${uiText(item.task.priority)}`}>
-              {uiText(item.task.priority)}
-            </span>
-          )}
-        </div>
-        <div className="todo-task-heading">
-          <h4>{item.task.title}</h4>
-        </div>
-        {item.task.description && <p className="todo-task-description">{item.task.description}</p>}
-        <div className="todo-task-metadata">
-          {item.task.dueDate && (
-            <time className={`task-due ${dueState}`} dateTime={item.task.dueDate}>
-              {dueState === 'overdue'
-                ? uiText('Overdue · ')
-                : dueState === 'today'
-                  ? uiText('Today · ')
-                  : uiText('Due · ')}
-              {item.task.dueDate}
-            </time>
-          )}
-          <WorkspaceTaskLabels labels={item.task.labels} />
-        </div>
-      </div>
+      <span
+        className={`priority-badge ${item.task.priority ? uiText(item.task.priority) : 'none'}`}
+      >
+        {item.task.priority ? uiText(item.task.priority) : ''}
+      </span>
+      <h4 className="todo-task-title" title={item.task.description}>
+        {item.task.title}
+      </h4>
+      <WorkspaceTaskLabels labels={item.task.labels} />
+      <WorkspaceOwnStage item={item} />
+      <WorkspaceProjectBadge
+        project={item.project}
+        label={projectLabel}
+        onOpenProjectBoard={onOpenProjectBoard}
+      />
+      <TaskDue dueDate={item.task.dueDate} dueAt={item.task.dueAt} />
       <div className="todo-task-actions">
         <button
           type="button"
           onClick={onEdit}
           disabled={busy}
           aria-label={uiText('Edit {context}', { context: context })}
+          title={uiText('Edit')}
         >
-          {uiText('Edit')}
+          <TaskIcon name="edit" />
         </button>
         <button
           type="button"
@@ -1123,7 +1070,7 @@ function WorkspaceTodoRow({
           aria-label={uiText('Delete {context}', { context: context })}
           title={uiText('Delete task; restorable from Task trash')}
         >
-          {uiText('Delete')}
+          <TaskIcon name="trash" />
         </button>
       </div>
     </article>
@@ -1341,6 +1288,20 @@ export function WorkspaceTaskTrash({
   );
 }
 
+/**
+ * The project's own name for the stage ("PI Review"), only when it differs from the shared column
+ * or group the task already sits under; repeating "In Progress" on every task was noise.
+ */
+function WorkspaceOwnStage({ item }: { item: WorkspaceGlobalBoardTask }) {
+  const shared = WORKSPACE_GLOBAL_BOARD_COLUMNS.find(({ status }) => status === item.task.status);
+  if (!shared || item.statusLabel === shared.label) return null;
+  return (
+    <span className="workspace-task-stage" title={uiText('Stage in this project')}>
+      {item.statusLabel}
+    </span>
+  );
+}
+
 function WorkspaceProjectBadge({
   project,
   label,
@@ -1350,7 +1311,7 @@ function WorkspaceProjectBadge({
   label: string;
   onOpenProjectBoard?: ((projectId: string) => void) | undefined;
 }) {
-  if (!onOpenProjectBoard) {
+  if (!onOpenProjectBoard || project.id === 'personal') {
     return (
       <span className="workspace-project-badge" title={label}>
         {label}

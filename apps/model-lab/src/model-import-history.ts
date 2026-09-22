@@ -4,7 +4,7 @@ export const MODEL_IMPORT_HISTORY_STORAGE_KEY = 'gosu.model-lab.import-history.v
 export const MODEL_IMPORT_HISTORY_MAX_JOBS = 8;
 
 export type ModelImportPhase =
-  ModelBuildProgressPhase | 'local-validation' | 'registering-session' | 'complete';
+  ModelBuildProgressPhase | 'local-validation' | 'registering-session' | 'complete' | 'cancelled';
 
 export type ModelImportJob = Readonly<{
   id: string;
@@ -34,6 +34,7 @@ const phases = new Set<ModelImportPhase>([
   'local-validation',
   'registering-session',
   'complete',
+  'cancelled',
 ]);
 
 function boundedString(value: unknown, maximum: number) {

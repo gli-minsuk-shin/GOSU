@@ -22,25 +22,112 @@ import { ClaudeCodeMcpBridge } from './claude-code-mcp-bridge';
 import { PROJECT_CHAT_MAX_NORMALIZED_IMAGE_BYTES } from '../shared/project-chat-attachment-contracts';
 
 export const CLAUDE_CODE_PROVIDER_ID = 'claude-code';
+export const CLAUDE_CODE_HAIKU_MODEL_ID = 'claude-code:haiku';
 export const CLAUDE_CODE_SONNET_MODEL_ID = 'claude-code:sonnet';
+export const CLAUDE_CODE_SONNET_5_MODEL_ID = 'claude-code:sonnet-5';
 export const CLAUDE_CODE_OPUS_MODEL_ID = 'claude-code:opus';
 export const CLAUDE_CODE_OPUS_5_MODEL_ID = 'claude-code:opus-5';
+export const CLAUDE_CODE_FABLE_5_1_MODEL_ID = 'claude-code:fable-5-1';
 export const CLAUDE_CODE_CONTEXT_WINDOW_TOKENS = 1_000_000;
 
+export const CLAUDE_CODE_HAIKU_UPSTREAM_MODEL_ID = 'claude-haiku-4-5';
 export const CLAUDE_CODE_SONNET_UPSTREAM_MODEL_ID = 'claude-sonnet-4-6';
+export const CLAUDE_CODE_SONNET_5_UPSTREAM_MODEL_ID = 'claude-sonnet-5';
 export const CLAUDE_CODE_OPUS_UPSTREAM_MODEL_ID = 'claude-opus-4-8';
 export const CLAUDE_CODE_OPUS_5_UPSTREAM_MODEL_ID = 'claude-opus-5';
+export const CLAUDE_CODE_FABLE_5_1_UPSTREAM_MODEL_ID = 'claude-fable-5-1';
+/** Claude Code 2.1.169 rejects Fable 5.1 with "version 2.1.251 or newer is required". */
+export const CLAUDE_CODE_FABLE_5_1_MIN_CLI_VERSION = '2.1.251';
 
+type ClaudeCodeModelSpec = Readonly<{
+  modelId: string;
+  upstreamModelId: string;
+  label: string;
+  contextWindowTokens: number;
+  minCliVersion?: string;
+}>;
+
+/** Subscription models in capability order; each was probed through the local CLI. */
+export const CLAUDE_CODE_MODELS: readonly ClaudeCodeModelSpec[] = [
+  {
+    modelId: CLAUDE_CODE_HAIKU_MODEL_ID,
+    upstreamModelId: CLAUDE_CODE_HAIKU_UPSTREAM_MODEL_ID,
+    label: 'Haiku 4.5',
+    contextWindowTokens: 200_000,
+  },
+  {
+    modelId: CLAUDE_CODE_SONNET_MODEL_ID,
+    upstreamModelId: CLAUDE_CODE_SONNET_UPSTREAM_MODEL_ID,
+    label: 'Sonnet 4.6',
+    contextWindowTokens: CLAUDE_CODE_CONTEXT_WINDOW_TOKENS,
+  },
+  {
+    modelId: CLAUDE_CODE_SONNET_5_MODEL_ID,
+    upstreamModelId: CLAUDE_CODE_SONNET_5_UPSTREAM_MODEL_ID,
+    label: 'Sonnet 5',
+    contextWindowTokens: CLAUDE_CODE_CONTEXT_WINDOW_TOKENS,
+  },
+  {
+    modelId: CLAUDE_CODE_OPUS_MODEL_ID,
+    upstreamModelId: CLAUDE_CODE_OPUS_UPSTREAM_MODEL_ID,
+    label: 'Opus 4.8',
+    contextWindowTokens: CLAUDE_CODE_CONTEXT_WINDOW_TOKENS,
+  },
+  {
+    modelId: CLAUDE_CODE_OPUS_5_MODEL_ID,
+    upstreamModelId: CLAUDE_CODE_OPUS_5_UPSTREAM_MODEL_ID,
+    label: 'Opus 5',
+    contextWindowTokens: CLAUDE_CODE_CONTEXT_WINDOW_TOKENS,
+  },
+  {
+    modelId: CLAUDE_CODE_FABLE_5_1_MODEL_ID,
+    upstreamModelId: CLAUDE_CODE_FABLE_5_1_UPSTREAM_MODEL_ID,
+    label: 'Fable 5.1',
+    contextWindowTokens: CLAUDE_CODE_CONTEXT_WINDOW_TOKENS,
+    minCliVersion: CLAUDE_CODE_FABLE_5_1_MIN_CLI_VERSION,
+  },
+];
+
+export function isClaudeCodeModelId(modelId: string | null | undefined) {
+  return CLAUDE_CODE_MODELS.some((model) => model.modelId === modelId);
+}
+
+/** True when a "2.1.272 (Claude Code)" style version is at least the required x.y.z. */
+export function claudeCliVersionAtLeast(version: string, minimum: string | undefined) {
+  if (!minimum) return true;
+  const parse = (value: string) =>
+    value
+      .match(/(\d+)\.(\d+)\.(\d+)/)
+      ?.slice(1, 4)
+      .map(Number);
+  const actual = parse(version),
+    required = parse(minimum);
+  if (!actual || !required) return false;
+  for (let index = 0; index < 3; index += 1) {
+    if (actual[index]! !== required[index]!) return actual[index]! > required[index]!;
+  }
+  return true;
+}
+
+// One remote task is a chain of tool calls: find the workspace, look at resources, list, read,
+// write, run, read the result. Twelve rounds ended such a turn halfway; the turn deadline and the
+// per-tool limits still bound it.
+const CLAUDE_CODE_MAX_AGENT_TURNS = 40;
 const CLAUDE_CODE_TIMEOUT_MS = 5 * 60_000;
+const CLAUDE_CODE_MAX_TURN_TIMEOUT_MS = 30 * 60_000;
+
+export function claudeCodeTurnTimeoutMs(requested: number | undefined) {
+  if (typeof requested !== 'number' || !Number.isFinite(requested)) return CLAUDE_CODE_TIMEOUT_MS;
+  return Math.min(CLAUDE_CODE_MAX_TURN_TIMEOUT_MS, Math.max(CLAUDE_CODE_TIMEOUT_MS, requested));
+}
 const CLAUDE_CODE_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const CLAUDE_CODE_MAX_NATIVE_IMAGES = 20;
 const CLAUDE_CODE_MAX_NATIVE_IMAGE_BYTES = 20 * 1024 * 1024;
-const CLAUDE_CODE_REASONING_OPTIONS = ['low', 'medium', 'high', 'xhigh'] as const;
+// "off" has no Claude Code effort level: it runs with a zero extended-thinking budget. Measured
+// 2026-09-17 on Haiku for a 30-email metadata job: medium 43.6s, low 65.2s, off 4.8s.
+const CLAUDE_CODE_REASONING_OPTIONS = ['off', 'low', 'medium', 'high', 'xhigh'] as const;
 
-type ClaudeCodeModelId =
-  | typeof CLAUDE_CODE_SONNET_MODEL_ID
-  | typeof CLAUDE_CODE_OPUS_MODEL_ID
-  | typeof CLAUDE_CODE_OPUS_5_MODEL_ID;
+type ClaudeCodeModelId = string;
 
 type ClaudeCodeRunRequest = Readonly<{
   executable: string;
@@ -50,6 +137,8 @@ type ClaudeCodeRunRequest = Readonly<{
   signal: AbortSignal;
   timeoutMs: number;
   maxOutputBytes: number;
+  /** Added to the sanitized environment; never used to pass credentials. */
+  environment?: Readonly<Record<string, string>>;
 }>;
 
 type ClaudeCodeRunResult = Readonly<{
@@ -71,6 +160,8 @@ type ClaudeCodeConnection = Readonly<{
 }>;
 
 type ClaudeCodeThread = {
+  liveWeb: boolean;
+  turnTimeoutMs: number;
   id: string;
   cwd: string;
   developerInstructions: string;
@@ -109,6 +200,7 @@ type ClaudeCodeTurnErrorCode =
   | 'claude_code_output_too_large'
   | 'claude_code_result_invalid'
   | 'claude_code_empty_response'
+  | 'claude_code_network_unavailable'
   | 'claude_code_failed';
 
 function claudeAuthRequired(result: ClaudeCodeJsonResult) {
@@ -116,9 +208,26 @@ function claudeAuthRequired(result: ClaudeCodeJsonResult) {
     result.is_error === true &&
     (result.api_error_status === 401 ||
       (typeof result.result === 'string' &&
-        /oauth(?: access)? token (?:has )?expired|expired oauth|re-authenticate to continue/i.test(
+        // The CLI words an expired login differently across versions ("OAuth access token has
+        // expired", "OAuth session expired and could not be refreshed"), so match the family.
+        /oauth(?: access)? token (?:has )?expired|oauth session (?:has )?expired|expired oauth|could not be refreshed|re-authenticate to continue|failed to authenticate|run \/login/i.test(
           result.result,
         )))
+  );
+}
+
+/**
+ * The CLI retries a lost connection ten times and then reports "API Error: Can't reach the API server
+ * — check your internet or DNS (ENOTFOUND)" (2026-09-18, Briefing paper batches). That is not a login
+ * or CLI version problem, so it gets its own code.
+ */
+function claudeNetworkUnavailable(result: ClaudeCodeJsonResult) {
+  return (
+    result.is_error === true &&
+    typeof result.result === 'string' &&
+    /can't reach the api server|\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH)\b|getaddrinfo|connection error/i.test(
+      result.result,
+    )
   );
 }
 
@@ -130,13 +239,14 @@ function safeClaudeErrorCode(error: unknown): ClaudeCodeTurnErrorCode {
     case 'claude_code_output_too_large':
     case 'claude_code_result_invalid':
     case 'claude_code_empty_response':
+    case 'claude_code_network_unavailable':
       return code;
     default:
       return 'claude_code_failed';
   }
 }
 
-function sanitizedClaudeEnvironment() {
+export function sanitizedClaudeEnvironment() {
   const environment = { ...process.env };
   for (const key of [
     'ANTHROPIC_API_KEY',
@@ -184,7 +294,7 @@ export function createNodeClaudeCodeProjectChatPlatform(): ClaudeCodeProjectChat
       return new Promise((resolvePromise, rejectPromise) => {
         const child = spawn(request.executable, [...request.args], {
           cwd: request.cwd,
-          env: sanitizedClaudeEnvironment(),
+          env: { ...sanitizedClaudeEnvironment(), ...request.environment },
           stdio: ['pipe', 'pipe', 'pipe'],
         });
         let stdout = '';
@@ -230,13 +340,18 @@ export function createNodeClaudeCodeProjectChatPlatform(): ClaudeCodeProjectChat
             else {
               // Authentication failures use exit 1 even when stdout is a result
               // envelope. Return only our stable code, never raw provider text.
-              let authRequired = false;
+              let authRequired = false,
+                networkUnavailable = false;
               try {
                 const result: unknown = JSON.parse(stdout);
                 authRequired =
                   typeof result === 'object' &&
                   result !== null &&
                   claudeAuthRequired(result as ClaudeCodeJsonResult);
+                networkUnavailable =
+                  typeof result === 'object' &&
+                  result !== null &&
+                  claudeNetworkUnavailable(result as ClaudeCodeJsonResult);
               } catch {
                 // A non-JSON process failure has no trusted provider error code.
               }
@@ -244,7 +359,9 @@ export function createNodeClaudeCodeProjectChatPlatform(): ClaudeCodeProjectChat
                 new Error(
                   authRequired
                     ? 'claude_code_auth_required'
-                    : `claude_code_exit_${code ?? 'unknown'}`,
+                    : networkUnavailable
+                      ? 'claude_code_network_unavailable'
+                      : `claude_code_exit_${code ?? 'unknown'}`,
                 ),
               );
             }
@@ -258,9 +375,10 @@ export function createNodeClaudeCodeProjectChatPlatform(): ClaudeCodeProjectChat
 }
 
 function upstreamModelId(modelId: ClaudeCodeModelId) {
-  if (modelId === CLAUDE_CODE_OPUS_5_MODEL_ID) return CLAUDE_CODE_OPUS_5_UPSTREAM_MODEL_ID;
-  if (modelId === CLAUDE_CODE_OPUS_MODEL_ID) return CLAUDE_CODE_OPUS_UPSTREAM_MODEL_ID;
-  return CLAUDE_CODE_SONNET_UPSTREAM_MODEL_ID;
+  return (
+    CLAUDE_CODE_MODELS.find((model) => model.modelId === modelId)?.upstreamModelId ??
+    CLAUDE_CODE_SONNET_UPSTREAM_MODEL_ID
+  );
 }
 export function claudeReportedContextWindow(value: unknown, modelId: string): number | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -280,83 +398,52 @@ export function claudeReportedContextWindow(value: unknown, modelId: string): nu
 }
 
 function modelCatalog(version: string, subscriptionType: string) {
+  const supported = CLAUDE_CODE_MODELS.filter((model) =>
+    claudeCliVersionAtLeast(version, model.minCliVersion),
+  );
   const catalogVersion = createHash('sha256')
     .update(
-      `claude-code\n${version}\n${subscriptionType}\n${CLAUDE_CODE_SONNET_UPSTREAM_MODEL_ID}\n${CLAUDE_CODE_OPUS_UPSTREAM_MODEL_ID}\n${CLAUDE_CODE_OPUS_5_UPSTREAM_MODEL_ID}\ncontext-window:${CLAUDE_CODE_CONTEXT_WINDOW_TOKENS}`,
+      `claude-code\n${version}\n${subscriptionType}\n${supported
+        .map((model) => `${model.upstreamModelId}:${model.contextWindowTokens}`)
+        .join('\n')}`,
     )
     .digest('hex');
   const reasoningOptions = CLAUDE_CODE_REASONING_OPTIONS.map((id) => ({
     id,
-    label: id === 'xhigh' ? 'Extra high' : `${id[0]!.toUpperCase()}${id.slice(1)}`,
-    isDefault: id === 'high',
+    label:
+      id === 'off'
+        ? '사고 끔'
+        : id === 'xhigh'
+          ? 'Extra high'
+          : `${id[0]!.toUpperCase()}${id.slice(1)}`,
+    // The user chose thinking off as the default; a profile can still select a level explicitly.
+    isDefault: id === 'off',
   }));
   return ModelCatalogSchema.parse({
     schemaVersion: 1,
     providerId: CLAUDE_CODE_PROVIDER_ID,
     catalogVersion,
     fetchedAt: new Date().toISOString(),
-    models: [
-      {
-        schemaVersion: 1,
-        providerId: CLAUDE_CODE_PROVIDER_ID,
-        modelId: CLAUDE_CODE_SONNET_MODEL_ID,
-        displayName: 'Claude Code · Sonnet 4.6 (subscription)',
-        catalogVersion,
-        isDefault: false,
-        modalities: ['text'],
-        reasoningOptions,
-        contextWindowTokens: CLAUDE_CODE_CONTEXT_WINDOW_TOKENS,
-        metadata: {
-          runtime: 'byo-local-subscription-cli',
-          runtimeVersion: version,
-          subscriptionType,
-          upstreamModelId: CLAUDE_CODE_SONNET_UPSTREAM_MODEL_ID,
-          contextWindowSource: 'configured',
-          nativeTools: ['GOSU project-scoped MCP'],
-          supportsPersonality: false,
-        },
+    models: supported.map((model) => ({
+      schemaVersion: 1,
+      providerId: CLAUDE_CODE_PROVIDER_ID,
+      modelId: model.modelId,
+      displayName: `Claude Code · ${model.label} (subscription)`,
+      catalogVersion,
+      isDefault: false,
+      modalities: ['text'],
+      reasoningOptions,
+      contextWindowTokens: model.contextWindowTokens,
+      metadata: {
+        runtime: 'byo-local-subscription-cli',
+        runtimeVersion: version,
+        subscriptionType,
+        upstreamModelId: model.upstreamModelId,
+        contextWindowSource: 'configured',
+        nativeTools: ['GOSU project-scoped MCP'],
+        supportsPersonality: false,
       },
-      {
-        schemaVersion: 1,
-        providerId: CLAUDE_CODE_PROVIDER_ID,
-        modelId: CLAUDE_CODE_OPUS_MODEL_ID,
-        displayName: 'Claude Code · Opus 4.8 (subscription)',
-        catalogVersion,
-        isDefault: false,
-        modalities: ['text'],
-        reasoningOptions,
-        contextWindowTokens: CLAUDE_CODE_CONTEXT_WINDOW_TOKENS,
-        metadata: {
-          runtime: 'byo-local-subscription-cli',
-          runtimeVersion: version,
-          subscriptionType,
-          upstreamModelId: CLAUDE_CODE_OPUS_UPSTREAM_MODEL_ID,
-          contextWindowSource: 'configured',
-          nativeTools: ['GOSU project-scoped MCP'],
-          supportsPersonality: false,
-        },
-      },
-      {
-        schemaVersion: 1,
-        providerId: CLAUDE_CODE_PROVIDER_ID,
-        modelId: CLAUDE_CODE_OPUS_5_MODEL_ID,
-        displayName: 'Claude Code · Opus 5 (subscription)',
-        catalogVersion,
-        isDefault: false,
-        modalities: ['text'],
-        reasoningOptions,
-        contextWindowTokens: CLAUDE_CODE_CONTEXT_WINDOW_TOKENS,
-        metadata: {
-          runtime: 'byo-local-subscription-cli',
-          runtimeVersion: version,
-          subscriptionType,
-          upstreamModelId: CLAUDE_CODE_OPUS_5_UPSTREAM_MODEL_ID,
-          contextWindowSource: 'configured',
-          nativeTools: ['GOSU project-scoped MCP'],
-          supportsPersonality: false,
-        },
-      },
-    ],
+    })),
   });
 }
 
@@ -370,7 +457,7 @@ function collaborationModeCatalog(catalogVersion: string) {
         id: 'default',
         displayName: 'Claude Code default',
         recommendedModelId: null,
-        recommendedReasoningOptionId: 'high',
+        recommendedReasoningOptionId: 'off',
       },
       {
         id: 'plan',
@@ -405,11 +492,51 @@ function parseAuthStatus(stdout: string) {
   return status.subscriptionType.trim().slice(0, 64);
 }
 
+/**
+ * Claude Code 2.1.272 validates --json-schema with a validator that cannot resolve the
+ * draft 2020-12 meta-schema that z.toJSONSchema declares, and exits before any request
+ * ("no schema with key or ref"). The declaration carries no structure, so drop every schema-level
+ * `$schema`; a property that is merely named "$schema" is kept.
+ */
+export function claudeCliJsonSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(claudeCliJsonSchema);
+  if (typeof schema !== 'object' || schema === null) return schema;
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === '$schema' && typeof value === 'string') continue;
+    result[key] =
+      key === 'properties' && typeof value === 'object' && value !== null && !Array.isArray(value)
+        ? Object.fromEntries(
+            Object.entries(value).map(([name, child]) => [name, claudeCliJsonSchema(child)]),
+          )
+        : claudeCliJsonSchema(value);
+  }
+  return result;
+}
+
+/** True when the CLI reports no stored login at all, as opposed to a different auth method. */
+function claudeStatusLoggedOut(stdout: string) {
+  try {
+    const value: unknown = JSON.parse(stdout);
+    return (
+      typeof value === 'object' &&
+      value !== null &&
+      !Array.isArray(value) &&
+      (value as Record<string, unknown>).loggedIn !== true
+    );
+  } catch {
+    return false;
+  }
+}
+
 function parseClaudeResult(stdout: string): ClaudeCodeJsonResult {
   try {
     const result = JSON.parse(stdout) as ClaudeCodeJsonResult;
     if (result && typeof result === 'object' && claudeAuthRequired(result)) {
       throw new Error('claude_code_auth_required');
+    }
+    if (result && typeof result === 'object' && claudeNetworkUnavailable(result)) {
+      throw new Error('claude_code_network_unavailable');
     }
     if (!result || typeof result !== 'object' || result.is_error === true) {
       throw new Error('claude_code_result_invalid');
@@ -419,7 +546,8 @@ function parseClaudeResult(stdout: string): ClaudeCodeJsonResult {
     if (
       error instanceof Error &&
       (error.message === 'claude_code_result_invalid' ||
-        error.message === 'claude_code_auth_required')
+        error.message === 'claude_code_auth_required' ||
+        error.message === 'claude_code_network_unavailable')
     )
       throw error;
     throw new Error('claude_code_result_invalid', { cause: error });
@@ -574,6 +702,9 @@ export class ClaudeCodeProjectChatAdapter
   implements RefreshableClaudeCodeProjectChat
 {
   private connection: ClaudeCodeConnection | null = null;
+  // A login that expired while the app ran must not look like "never connected": remember it so
+  // every later request reports the actionable login error instead of a generic failure.
+  private loginExpired = false;
   private readonly threads = new Map<string, ClaudeCodeThread>();
 
   constructor(
@@ -609,7 +740,18 @@ export class ClaudeCodeProjectChatAdapter
     ]);
     const version = versionResult.stdout.trim().slice(0, 64);
     if (!version) throw new Error('claude_code_version_invalid');
-    const subscriptionType = parseAuthStatus(authResult.stdout);
+    let subscriptionType: string;
+    try {
+      subscriptionType = parseAuthStatus(authResult.stdout);
+    } catch (error) {
+      // A stored login that is gone or expired must not leave a cached catalog behind: drop it so
+      // the app stops looking connected and reports a login error the user can act on. A different
+      // authentication method (an API key) is a configuration problem, not an expired login.
+      this.loginExpired = claudeStatusLoggedOut(authResult.stdout);
+      this.resetConnection();
+      throw error;
+    }
+    this.loginExpired = false;
     const catalog = modelCatalog(version, subscriptionType);
     const collaborationModes = collaborationModeCatalog(catalog.catalogVersion);
     // Catalog polling must not erase a healthy native conversation every minute.
@@ -682,6 +824,8 @@ export class ClaudeCodeProjectChatAdapter
           })()
       : null;
     this.threads.set(threadId, {
+      liveWeb: input.webSearchMode === 'live',
+      turnTimeoutMs: claudeCodeTurnTimeoutMs(input.turnTimeoutMs),
       id: threadId,
       cwd: input.cwd,
       developerInstructions: input.developerInstructions ?? '',
@@ -706,10 +850,11 @@ export class ClaudeCodeProjectChatAdapter
     }
     if (thread.activeTurn && !thread.activeTurn.terminal)
       throw new Error('claude_code_thread_busy');
-    const reasoningOptionId = input.reasoningOptionId ?? 'high';
+    const reasoningOptionId = input.reasoningOptionId ?? 'off';
     if (!CLAUDE_CODE_REASONING_OPTIONS.includes(reasoningOptionId as never)) {
       throw new Error('claude_code_reasoning_option_invalid');
     }
+    const thinkingOff = reasoningOptionId === 'off' || input.thinking === 'disabled';
     if (
       input.expectedCollaborationModeCatalogVersion &&
       input.expectedCollaborationModeCatalogVersion !== connection.collaborationModes.catalogVersion
@@ -764,6 +909,12 @@ export class ClaudeCodeProjectChatAdapter
     });
 
     const mcpConfig = thread.mcpBridge?.mcpConfig(this.mcpProxyCommand);
+    const enabledTools = [
+      mcpConfig ? `mcp__${thread.mcpBridge!.serverName}__*` : '',
+      ...(thread.liveWeb ? ['WebSearch', 'WebFetch'] : []),
+    ]
+      .filter(Boolean)
+      .join(',');
     const args = [
       '-p',
       '--output-format',
@@ -771,16 +922,15 @@ export class ClaudeCodeProjectChatAdapter
       ...(input.localImagePaths?.length ? ['--input-format', 'stream-json'] : []),
       '--model',
       upstreamModelId(modelId),
-      '--effort',
-      reasoningOptionId,
+      ...(thinkingOff ? [] : ['--effort', reasoningOptionId]),
       '--permission-mode',
       'dontAsk',
       '--tools',
-      mcpConfig ? `mcp__${thread.mcpBridge!.serverName}__*` : '',
-      ...(mcpConfig
-        ? ['--allowedTools', `mcp__${thread.mcpBridge!.serverName}__*`, '--max-turns', '12']
+      enabledTools,
+      ...(enabledTools
+        ? ['--allowedTools', enabledTools, '--max-turns', String(CLAUDE_CODE_MAX_AGENT_TURNS)]
         : []),
-      ...(mcpConfig ? ['--setting-sources', ''] : ['--safe-mode']),
+      ...(mcpConfig || thread.liveWeb ? ['--setting-sources', ''] : ['--safe-mode']),
       '--no-chrome',
       '--strict-mcp-config',
       '--mcp-config',
@@ -793,7 +943,9 @@ export class ClaudeCodeProjectChatAdapter
         : ['--session-id', turn.nativeSessionId]),
       '--append-system-prompt',
       systemBoundary(thread.developerInstructions),
-      ...(input.outputSchema ? ['--json-schema', JSON.stringify(input.outputSchema)] : []),
+      ...(input.outputSchema
+        ? ['--json-schema', JSON.stringify(claudeCliJsonSchema(input.outputSchema))]
+        : []),
     ];
     void this.platform
       .run({
@@ -802,8 +954,9 @@ export class ClaudeCodeProjectChatAdapter
         stdin,
         cwd: thread.cwd,
         signal: abortController.signal,
-        timeoutMs: CLAUDE_CODE_TIMEOUT_MS,
+        timeoutMs: thread.turnTimeoutMs,
         maxOutputBytes: CLAUDE_CODE_MAX_OUTPUT_BYTES,
+        ...(thinkingOff ? { environment: { MAX_THINKING_TOKENS: '0' } } : {}),
       })
       .then(
         (result) => this.completeTurn(thread.id, turnId, result.stdout),
@@ -942,17 +1095,17 @@ export class ClaudeCodeProjectChatAdapter
   }
 
   private requireConnection() {
-    if (!this.connection) throw new Error('claude_code_not_connected');
+    if (!this.connection)
+      throw new Error(
+        this.loginExpired ? 'claude_code_auth_required' : 'claude_code_not_connected',
+      );
     return this.connection;
   }
 
   private requireModel(modelId: string | null): ClaudeCodeModelId {
     const selected = modelId ?? CLAUDE_CODE_SONNET_MODEL_ID;
-    if (
-      selected !== CLAUDE_CODE_SONNET_MODEL_ID &&
-      selected !== CLAUDE_CODE_OPUS_MODEL_ID &&
-      selected !== CLAUDE_CODE_OPUS_5_MODEL_ID
-    ) {
+    // Only models published for the connected CLI version are runnable (e.g. no Fable on 2.1.169).
+    if (!this.requireConnection().catalog.models.some((model) => model.modelId === selected)) {
       throw new Error('claude_code_model_not_in_catalog');
     }
     return selected;

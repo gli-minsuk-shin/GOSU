@@ -16,6 +16,29 @@ import type { BriefingNotificationSnapshot } from '../../briefing-lab/src/briefi
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const stamp = '2026-09-08T03:00:00.000Z';
+it('links personal deadline notifications to the global task rather than a fabricated project', () => {
+  const task: WorkspaceTask = {
+    id: id(1),
+    projectId: null,
+    title: 'Personal deadline',
+    status: 'planned',
+    dueDate: '2026-09-14',
+    version: 1,
+    createdAt: stamp,
+    updatedAt: stamp,
+  };
+  const notices = buildWorkspaceNotifications({
+    projects: [],
+    tasks: [task],
+    inbox: emptyNotificationInbox(),
+    now: new Date('2026-09-14T03:00:00Z'),
+  });
+  expect(notices).toHaveLength(1);
+  expect(notices[0]).toMatchObject({
+    projectName: '개인 할 일',
+    target: { kind: 'personal-task', taskId: task.id },
+  });
+});
 it('combines live calendar phases and completed briefing counts without repeating the same alert', () => {
   const at = new Date('2026-09-14T02:40:00Z');
   const personal: BriefingNotificationSnapshot = {

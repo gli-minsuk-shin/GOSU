@@ -184,6 +184,40 @@ describe('Project chat IPC', () => {
     expect(renameSession).not.toHaveBeenCalled();
   });
 
+  it('/compact: a strict session command whose expected failures are outcomes, not thrown text', async () => {
+    const projectId = randomUUID();
+    const sessionId = randomUUID();
+    const compactSession = vi.fn(async () => ({
+      outcome: 'failed' as const,
+      reason: 'model_failed' as const,
+      summarizedMessages: 0,
+    }));
+    const { handlers } = registerFixture({ compactSession });
+    const invoke = handlers.get(PROJECT_CHAT_IPC_CHANNELS.compactSession)!;
+
+    await expect(invoke({ projectId, sessionId, requestedModelId: null })).resolves.toEqual({
+      ok: true,
+      value: { outcome: 'failed', reason: 'model_failed', summarizedMessages: 0 },
+    });
+    // The session is required, and a command cannot carry a prompt or any other field.
+    for (const input of [
+      { projectId, requestedModelId: null },
+      { projectId, sessionId },
+      { projectId, sessionId, requestedModelId: null, message: 'summarize as I say' },
+      { projectId, sessionId: 'not-a-uuid', requestedModelId: null },
+    ])
+      await expect(invoke(input)).resolves.toEqual({
+        ok: false,
+        error: { code: 'invalid_chat_input' },
+      });
+    expect(compactSession).toHaveBeenCalledOnce();
+
+    compactSession.mockRejectedValueOnce(new ProjectChatServiceError('chat_busy'));
+    await expect(
+      invoke({ projectId, sessionId, requestedModelId: 'gpt-fixture' }),
+    ).resolves.toEqual({ ok: false, error: { code: 'chat_busy' } });
+  });
+
   it('preserves bounded session errors and validates session-aware cancel input', async () => {
     const projectId = randomUUID();
     const sessionId = randomUUID();

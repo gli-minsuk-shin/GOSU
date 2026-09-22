@@ -1,0 +1,153 @@
+.sidebar-nav-icon,
+.project-folder-chevron {
+  position: relative;
+}
+/* A labelled row shows the star right after its name; clicks pass through to the row. */
+.sidebar-ai-star {
+  position: relative;
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin-left: 7px;
+  vertical-align: middle;
+  pointer-events: none;
+  color: var(--green);
+  line-height: 0;
+}
+/* Name and star share one grid cell so counts and menus keep their columns. */
+.sidebar-row-label {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+.sidebar-row-label > strong,
+.sidebar-row-label > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Icon-only buttons (the AI assistant) keep the star on the icon. */
+.sidebar-nav-icon .sidebar-ai-star {
+  position: absolute;
+  left: 18px;
+  top: 0;
+  margin-left: 0;
+}
+.sidebar-ai-star svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.sidebar-ai-star path {
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+}
+/*
+ * Work in progress has to be seen from the corner of the eye: a bright filled star that swells,
+ * turns and glows about once a second, with two small sparks that flash in turn beside it. The
+ * thin dashed outline it used to be was easy to miss at 11px.
+ */
+.sidebar-ai-star.is-running {
+  color: light-dark(#4f9d00, #b6f24a);
+  filter: drop-shadow(0 0 4px light-dark(rgba(110, 200, 20, 0.95), rgba(190, 255, 90, 0.95)));
+  animation: sidebar-ai-pulse 1.15s ease-in-out infinite;
+}
+.sidebar-ai-star.is-running path {
+  fill: currentColor;
+  fill-opacity: 0.9;
+  stroke-width: 1.2;
+  stroke-dasharray: 0.7 0.3;
+  animation: sidebar-ai-draw 1.6s linear infinite;
+}
+.sidebar-ai-star.is-running::before,
+.sidebar-ai-star.is-running::after {
+  content: '';
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  background: currentColor;
+  clip-path: polygon(50% 0, 62% 38%, 100% 50%, 62% 62%, 50% 100%, 38% 62%, 0 50%, 38% 38%);
+  animation: sidebar-ai-spark 1.15s ease-in-out infinite;
+}
+.sidebar-ai-star.is-running::before {
+  top: -4px;
+  right: -5px;
+}
+.sidebar-ai-star.is-running::after {
+  bottom: -4px;
+  left: -5px;
+  animation-delay: 0.57s;
+}
+.sidebar-ai-star.is-completed path {
+  fill: currentColor;
+  stroke-width: 1;
+}
+/* A finished, unread result glows yellow until its row is opened. */
+.sidebar-ai-star.is-completed {
+  color: #f2b705;
+  filter: drop-shadow(0 0 3px rgba(242, 183, 5, 0.9));
+  animation: sidebar-ai-twinkle 2.6s ease-in-out infinite;
+}
+@keyframes sidebar-ai-draw {
+  to {
+    stroke-dashoffset: -1;
+  }
+}
+@keyframes sidebar-ai-pulse {
+  0%,
+  100% {
+    opacity: 0.6;
+    transform: scale(0.72) rotate(0deg);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.28) rotate(45deg);
+  }
+}
+@keyframes sidebar-ai-spark {
+  0%,
+  100% {
+    opacity: 0;
+    transform: scale(0);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes sidebar-ai-twinkle {
+  0%,
+  100% {
+    opacity: 0.7;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-ai-star.is-running,
+  .sidebar-ai-star.is-running path,
+  .sidebar-ai-star.is-running::before,
+  .sidebar-ai-star.is-running::after,
+  .sidebar-ai-star.is-completed {
+    animation: none;
+  }
+  .sidebar-ai-star.is-running path {
+    stroke-dasharray: none;
+  }
+  /* Without motion the sparks stay lit, so the row still reads as working. */
+  .sidebar-ai-star.is-running::before,
+  .sidebar-ai-star.is-running::after {
+    opacity: 1;
+  }
+}
+.sidebar-nav-icon[data-ai-status] [data-assistant-sparkle] {
+  opacity: 0;
+}

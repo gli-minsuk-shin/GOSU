@@ -9,6 +9,8 @@ import {
   LiteratureImportRequestSchema,
   LiteratureSearchInputSchema,
   OrganizeLiteratureInputSchema,
+  PlanLiteratureSearchInputSchema,
+  UndoLiteratureSearchInputSchema,
   UpdateLiteratureAnnotationsInputSchema,
   type LiteratureIpcResult,
 } from '../shared/literature-contracts';
@@ -79,6 +81,25 @@ export function registerLiteratureIpc(
         if (!aiService) throw new LiteratureAiServiceError('literature_ai_unavailable');
         return aiService.organize(command);
       },
+      reportUnexpected,
+    ),
+  );
+  register(LITERATURE_IPC_CHANNELS.planSearch, (input) =>
+    withInput(
+      input,
+      PlanLiteratureSearchInputSchema,
+      (command) => {
+        if (!aiService) throw new LiteratureAiServiceError('literature_ai_unavailable');
+        return aiService.planSearch(command);
+      },
+      reportUnexpected,
+    ),
+  );
+  register(LITERATURE_IPC_CHANNELS.undoSearch, (input) =>
+    withInput(
+      input,
+      UndoLiteratureSearchInputSchema,
+      (command) => service.undoSearchAdditions(command),
       reportUnexpected,
     ),
   );

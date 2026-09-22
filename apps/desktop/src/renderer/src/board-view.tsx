@@ -23,6 +23,7 @@ import {
 import { BoardSettingsForm } from './board-settings-form';
 import { boardColumnDisplayLabel, boardTitleDisplayLabel } from './domain-ui-labels';
 import type { SearchTargetRequest } from './search-results-model';
+import { TaskDue, TaskIcon } from './task-compact';
 import {
   EMPTY_KANBAN_FILTERS,
   activeKanbanFilterCount,
@@ -34,7 +35,6 @@ import {
   projectTaskLabels,
   resolveKanbanColumns,
   resolveTodoReopenStatus,
-  taskDueState,
   type KanbanFilters,
 } from './kanban-board-model';
 
@@ -116,73 +116,74 @@ export function BoardView({
       className="kanban-workspace"
       aria-label={uiText('{title} task workspace', { title: board.title })}
     >
-      <header className="kanban-command-bar">
-        <div className="kanban-title-block">
-          <span>{uiText('PROJECT BOARD')}</span>
-          <h2>{boardTitleDisplayLabel(board.title)}</h2>
-          <p>
-            {tasks.filter((task) => task.archivedAt === undefined).length}{' '}
-            {uiText('active research tasks')}
-          </p>
-        </div>
-        <div className="kanban-view-actions">
-          <div className="board-layout-switch" role="group" aria-label={uiText('Task layout')}>
+      <div className="task-toolbar">
+        <header className="kanban-command-bar">
+          <div className="kanban-title-block">
+            <h2>{boardTitleDisplayLabel(board.title)}</h2>
+            <p>
+              {tasks.filter((task) => task.archivedAt === undefined).length}{' '}
+              {uiText('active research tasks')}
+            </p>
+          </div>
+          <div className="kanban-view-actions">
+            <div className="board-layout-switch" role="group" aria-label={uiText('Task layout')}>
+              <button
+                type="button"
+                className={viewMode === 'kanban' ? 'active' : ''}
+                aria-pressed={viewMode === 'kanban'}
+                onClick={() => {
+                  setViewMode('kanban');
+                  setFilters((current) => ({ ...current, mode: 'active' }));
+                }}
+              >
+                {uiText('Kanban')}
+              </button>
+              <button
+                type="button"
+                className={viewMode === 'todo' ? 'active' : ''}
+                aria-pressed={viewMode === 'todo'}
+                onClick={() => {
+                  setViewMode('todo');
+                  setFilters((current) => ({ ...current, mode: 'active' }));
+                }}
+              >
+                {uiText('To-do')}
+              </button>
+            </div>
             <button
               type="button"
-              className={viewMode === 'kanban' ? 'active' : ''}
-              aria-pressed={viewMode === 'kanban'}
-              onClick={() => {
-                setViewMode('kanban');
-                setFilters((current) => ({ ...current, mode: 'active' }));
-              }}
+              className={filters.mode === 'archived' ? 'secondary-button active' : 'ghost-button'}
+              onClick={() =>
+                setFilters((current) => ({
+                  ...current,
+                  mode: current.mode === 'active' ? 'archived' : 'active',
+                }))
+              }
             >
-              {uiText('Kanban')}
+              {filters.mode === 'active'
+                ? uiText('Task trash ({trashedTaskCount})', { trashedTaskCount: trashedTaskCount })
+                : uiText('Back to tasks')}
             </button>
             <button
               type="button"
-              className={viewMode === 'todo' ? 'active' : ''}
-              aria-pressed={viewMode === 'todo'}
+              className="secondary-button"
               onClick={() => {
-                setViewMode('todo');
-                setFilters((current) => ({ ...current, mode: 'active' }));
+                setSettingsFocusStatus(null);
+                setShowSettings((current) => !current);
               }}
             >
-              {uiText('To-do')}
+              {showSettings ? uiText('Close settings') : uiText('Rename columns & settings')}
             </button>
           </div>
-          <button
-            type="button"
-            className={filters.mode === 'archived' ? 'secondary-button active' : 'ghost-button'}
-            onClick={() =>
-              setFilters((current) => ({
-                ...current,
-                mode: current.mode === 'active' ? 'archived' : 'active',
-              }))
-            }
-          >
-            {filters.mode === 'active'
-              ? uiText('Task trash ({trashedTaskCount})', { trashedTaskCount: trashedTaskCount })
-              : uiText('Back to tasks')}
-          </button>
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={() => {
-              setSettingsFocusStatus(null);
-              setShowSettings((current) => !current);
-            }}
-          >
-            {showSettings ? uiText('Close settings') : uiText('Rename columns & settings')}
-          </button>
-        </div>
-      </header>
+        </header>
 
-      <BoardFilters
-        filters={filters}
-        labels={availableLabels}
-        activeCount={filterCount}
-        onChange={setFilters}
-      />
+        <BoardFilters
+          filters={filters}
+          labels={availableLabels}
+          activeCount={filterCount}
+          onChange={setFilters}
+        />
+      </div>
 
       {showSettings && (
         <BoardSettingsPanel
@@ -344,7 +345,7 @@ export function BoardView({
                             aria-label={uiText('Rename {label} column', { label: column.label })}
                             title={uiText('Rename {label}', { label: column.label })}
                           >
-                            {uiText('Rename')}
+                            <TaskIcon name="edit" />
                           </button>
                         </div>
                         {column.wipLimit !== null && (
@@ -442,7 +443,7 @@ function BoardFilters({
   return (
     <section className="board-filter-bar" aria-label={uiText('Filter project tasks')}>
       <label className="board-search">
-        {uiText('Search')}
+        <span className="field-label">{uiText('Search')}</span>
         <input
           type="search"
           value={filters.query}
@@ -451,7 +452,7 @@ function BoardFilters({
         />
       </label>
       <label>
-        {uiText('Priority')}
+        <span className="field-label">{uiText('Priority')}</span>
         <select
           value={filters.priority}
           onChange={(event) =>
@@ -468,7 +469,7 @@ function BoardFilters({
         </select>
       </label>
       <label>
-        {uiText('Label')}
+        <span className="field-label">{uiText('Label')}</span>
         <select
           value={filters.label}
           onChange={(event) => onChange({ ...filters, label: event.target.value })}
@@ -482,7 +483,7 @@ function BoardFilters({
         </select>
       </label>
       <label>
-        {uiText('Due')}
+        <span className="field-label">{uiText('Due')}</span>
         <select
           value={filters.due}
           onChange={(event) =>
@@ -539,15 +540,6 @@ export function TodoTaskList({
 
   return (
     <section className="todo-task-list" aria-label={uiText('To-do list')}>
-      <header className="todo-list-summary">
-        <div>
-          <span>{uiText('TO-DO VIEW')}</span>
-          <h3>{uiText('Tasks by workflow stage')}</h3>
-        </div>
-        <p>
-          {tasks.length} {uiText('matching tasks · changes also appear on Kanban')}
-        </p>
-      </header>
       <div className="todo-status-groups">
         {groups.map((group) => (
           <section className="todo-status-group" key={group.status}>
@@ -575,7 +567,6 @@ export function TodoTaskList({
                     <TodoTaskRow
                       key={`${task.id}:${task.version}`}
                       task={task}
-                      statusLabel={group.label}
                       reopenLabel={reopenLabel}
                       reopenStatus={reopenStatus}
                       busy={busy}
@@ -598,7 +589,6 @@ export function TodoTaskList({
 
 export function TodoTaskRow({
   task,
-  statusLabel,
   reopenLabel,
   reopenStatus,
   busy,
@@ -609,7 +599,6 @@ export function TodoTaskRow({
   onUpdate,
 }: {
   task: WorkspaceTask;
-  statusLabel: string;
   reopenLabel: string;
   reopenStatus: WorkspaceTaskStatus;
   busy: boolean;
@@ -620,7 +609,6 @@ export function TodoTaskRow({
   onUpdate: (input: UpdateTaskInput) => Promise<boolean>;
 }) {
   const completed = task.status === 'done';
-  const dueState = taskDueState(task.dueDate);
   const completionLabel = completed
     ? `Reopen ${task.title} in ${reopenLabel}`
     : `Mark ${task.title} done`;
@@ -647,45 +635,27 @@ export function TodoTaskRow({
           })
         }
       />
-      <div className="todo-task-content">
-        <div className="todo-task-heading">
-          <h4>{task.title}</h4>
-          <span className="todo-status-badge">{statusLabel}</span>
-          {task.priority && (
-            <span className={`priority-badge ${uiText(task.priority)}`}>
-              {uiText(task.priority)}
-            </span>
-          )}
-        </div>
-        {task.description && <p className="todo-task-description">{task.description}</p>}
-        <div className="todo-task-metadata">
-          {task.dueDate && (
-            <time className={`task-due ${dueState}`} dateTime={task.dueDate}>
-              {dueState === 'overdue'
-                ? uiText('Overdue · ')
-                : dueState === 'today'
-                  ? uiText('Today · ')
-                  : uiText('Due · ')}
-              {task.dueDate}
-            </time>
-          )}
-          {(task.labels?.length ?? 0) > 0 && (
-            <div className="task-labels">
-              {task.labels?.map((label) => (
-                <span key={label}>{label}</span>
-              ))}
-            </div>
-          )}
-        </div>
+      <span className={`priority-badge ${task.priority ? uiText(task.priority) : 'none'}`}>
+        {task.priority ? uiText(task.priority) : ''}
+      </span>
+      <h4 className="todo-task-title" title={task.description}>
+        {task.title}
+      </h4>
+      <div className="task-labels">
+        {task.labels?.map((label) => (
+          <span key={label}>{label}</span>
+        ))}
       </div>
+      <TaskDue dueDate={task.dueDate} dueAt={task.dueAt} />
       <div className="todo-task-actions">
         <button
           type="button"
           onClick={onEdit}
           disabled={busy}
           aria-label={uiText('Edit {title}', { title: task.title })}
+          title={uiText('Edit')}
         >
-          {uiText('Edit')}
+          <TaskIcon name="edit" />
         </button>
         <button
           type="button"
@@ -695,7 +665,7 @@ export function TodoTaskRow({
           aria-label={uiText('Delete {title}', { title: task.title })}
           title={uiText('Delete task; restorable from Task trash')}
         >
-          {uiText('Delete')}
+          <TaskIcon name="trash" />
         </button>
       </div>
     </article>
@@ -751,19 +721,24 @@ function TaskComposer({
         }}
       >
         <label>
-          {uiText('Task title')}
+          <span className="field-label">{uiText('Task title')}</span>
           <input
             value={title}
             onChange={(event) => setTitle(event.target.value)}
             minLength={2}
             maxLength={240}
             placeholder={uiText('Add a concrete research task')}
+            title={
+              viewMode === 'kanban'
+                ? uiText('Drag cards between columns or use the move controls.')
+                : uiText('Check a task to complete it; uncheck a completed task to reopen it.')
+            }
             required
             disabled={busy}
           />
         </label>
         <label>
-          {uiText('Initial column')}
+          <span className="field-label">{uiText('Initial column')}</span>
           <select
             value={status}
             onChange={(event) => setStatus(event.target.value as WorkspaceTaskStatus)}
@@ -810,11 +785,6 @@ function TaskComposer({
           </div>
         )}
       </form>
-      <p className="board-help">
-        {viewMode === 'kanban'
-          ? uiText('Drag cards between columns or use the move controls.')
-          : uiText('Check a task to complete it; uncheck a completed task to reopen it.')}
-      </p>
     </section>
   );
 }
@@ -861,7 +831,6 @@ function TaskCard({
   }
   const previous = columns[columnIndex - 1];
   const next = columns[columnIndex + 1];
-  const dueState = taskDueState(task.dueDate);
   return (
     <article
       ref={elementRef}
@@ -872,33 +841,7 @@ function TaskCard({
       onDragEnd={onDragEnd}
     >
       <div className="task-card-heading">
-        {task.priority && (
-          <span className={`priority-badge ${uiText(task.priority)}`}>{uiText(task.priority)}</span>
-        )}
         <h3>{task.title}</h3>
-      </div>
-      {task.description && <p className="task-description">{task.description}</p>}
-      {(task.labels?.length ?? 0) > 0 && (
-        <div className="task-labels">
-          {task.labels?.map((label) => (
-            <span key={label}>{label}</span>
-          ))}
-        </div>
-      )}
-      {task.dueDate && (
-        <time className={`task-due ${dueState}`} dateTime={task.dueDate}>
-          {dueState === 'overdue'
-            ? uiText('Overdue · ')
-            : dueState === 'today'
-              ? uiText('Today · ')
-              : uiText('Due · ')}
-          {task.dueDate}
-        </time>
-      )}
-      <footer>
-        <span className="task-version">
-          v{task.version} · {formatUpdated(task.updatedAt)}
-        </span>
         <div className="task-actions">
           <button
             type="button"
@@ -919,15 +862,16 @@ function TaskCard({
                 : uiText('Already in the first column')
             }
           >
-            ←
+            <TaskIcon name="left" />
           </button>
           <button
             type="button"
             onClick={onEdit}
             disabled={busy}
             aria-label={uiText('Edit {title}', { title: task.title })}
+            title={uiText('Edit')}
           >
-            {uiText('Edit')}
+            <TaskIcon name="edit" />
           </button>
           <button
             type="button"
@@ -948,7 +892,7 @@ function TaskCard({
                 : uiText('Already in the final column')
             }
           >
-            →
+            <TaskIcon name="right" />
           </button>
           <button
             type="button"
@@ -958,10 +902,24 @@ function TaskCard({
             aria-label={uiText('Delete {title}', { title: task.title })}
             title={uiText('Delete task; restorable from Task trash')}
           >
-            {uiText('Delete')}
+            <TaskIcon name="trash" />
           </button>
         </div>
-      </footer>
+      </div>
+      {task.description && <p className="task-description">{task.description}</p>}
+      <div className="task-card-meta">
+        {task.priority && (
+          <span className={`priority-badge ${uiText(task.priority)}`}>{uiText(task.priority)}</span>
+        )}
+        <TaskDue dueDate={task.dueDate} dueAt={task.dueAt} />
+        {(task.labels?.length ?? 0) > 0 && (
+          <div className="task-labels">
+            {task.labels?.map((label) => (
+              <span key={label}>{label}</span>
+            ))}
+          </div>
+        )}
+      </div>
     </article>
   );
 }

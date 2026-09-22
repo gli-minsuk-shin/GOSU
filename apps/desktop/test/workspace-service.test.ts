@@ -88,6 +88,62 @@ function expectServiceError(error: unknown, code: WorkspaceServiceError['code'])
 }
 
 describe('WorkspaceService', () => {
+  it('persists personal tasks with no project and supports editing, completion, trash and restart', async () => {
+    const storage = new MemoryWorkspaceStorage(),
+      service = new WorkspaceService(storage);
+    const task = await service.createTask({
+      projectId: null,
+      title: 'Personal follow-up',
+      dueDate: '2026-09-20',
+      dueAt: '2026-09-20T04:30:00Z',
+    });
+    expect((await service.snapshot()).projects).toEqual([]);
+    expect(task.projectId).toBeNull();
+    expect(storage.operations.at(-1)?.projectId).toBeUndefined();
+    const done = await service.updateTask({
+      projectId: null,
+      taskId: task.id,
+      expectedVersion: task.version,
+      status: 'done',
+    });
+    const deleted = await service.setTaskArchived({
+      projectId: null,
+      taskId: task.id,
+      expectedVersion: done.version,
+      archived: true,
+    });
+    expect(deleted.archivedAt).toBeDefined();
+    const restored = await new WorkspaceService(storage).setTaskArchived({
+      projectId: null,
+      taskId: task.id,
+      expectedVersion: deleted.version,
+      archived: false,
+    });
+    expect(restored.archivedAt).toBeUndefined();
+    expect(restored.dueAt).toBe('2026-09-20T04:30:00Z');
+    const project = await service.createProject({ name: 'Research' });
+    await expect(
+      service.updateTask({
+        projectId: project.id,
+        taskId: task.id,
+        expectedVersion: task.version,
+        status: 'planned',
+      }),
+    ).rejects.toMatchObject({ code: 'cross_project_access_denied' });
+  });
+  it('uses a trusted task id once across concurrent creation and durable reload', async () => {
+    const storage = new MemoryWorkspaceStorage(),
+      service = new WorkspaceService(storage);
+    const project = await service.createProject({ name: 'Reminder integration' });
+    const id = '22222222-2222-4222-8222-222222222222',
+      command = { projectId: project.id, title: 'Follow up' };
+    const results = await Promise.allSettled([
+      service.createTask(command, id),
+      service.createTask(command, id),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect((await new WorkspaceService(storage).snapshot()).tasks.map((t) => t.id)).toEqual([id]);
+  });
   it('empties only recoverable Trash atomically and returns an idempotent preservation receipt', async () => {
     const storage = new MemoryWorkspaceStorage();
     const service = new WorkspaceService(storage);
@@ -691,6 +747,7 @@ describe('WorkspaceService', () => {
       description: '  Run the fixed-seed comparison.  ',
       priority: 'high',
       dueDate: '2026-08-14',
+      dueAt: '2026-08-14T04:30:00Z',
       labels: [' Baseline ', 'GPU', 'baseline', ' gpu '],
     });
 
@@ -717,6 +774,7 @@ describe('WorkspaceService', () => {
     expect(cleared).not.toHaveProperty('description');
     expect(cleared).not.toHaveProperty('priority');
     expect(cleared).not.toHaveProperty('dueDate');
+    expect(cleared).not.toHaveProperty('dueAt');
     expect(cleared).not.toHaveProperty('labels');
     expect(storage.operations.at(-1)).toMatchObject({
       commandType: 'task.update',

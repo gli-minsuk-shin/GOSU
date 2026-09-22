@@ -1,5 +1,8 @@
 # Python function-entry model imports
 
+2026-09-15: [Generation deadline policy](MODEL_GENERATION_DEADLINES.md) supersedes the five/ten-
+minute values below with 15/30-minute per-call limits and an explicit import cancellation path.
+
 Model Lab imports standalone Python solvers through static AST analysis; it does not import or run
 the uploaded Python module. The callable-source pipeline is versioned as
 `model-ir-canonical-v1-semantic-harness-v8-complete-callable-source-20260907`.

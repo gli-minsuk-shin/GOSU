@@ -199,6 +199,21 @@ describe('Model Lab domain', () => {
     expect(tuple).toEqual([]);
     expect(legitimateIdentity).toEqual([]);
   });
+  it('does not count axis/index qualifiers inside formulas as collapsed assignments', () => {
+    const module = {
+      ...residualClassifier.modules[1]!,
+      id: 'index-qualifiers',
+      activation: null,
+      transform: 'a = min(x)\nb = project(a)\nc = min(b)\nd = project(c)',
+      formula:
+        String.raw`a=\min_{i=1}x_i` +
+        '\n' +
+        String.raw`b=\operatorname{project}(a)` +
+        '\n' +
+        String.raw`d=\operatorname{project}(\min_{j=1}b_j)`,
+    };
+    expect(moduleFormulaConsistencyFindings(module)).toEqual([]);
+  });
 
   it('uses exact output port identities for named-value liveness instead of display labels', () => {
     const source = {

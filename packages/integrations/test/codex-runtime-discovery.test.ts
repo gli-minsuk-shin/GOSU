@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  codexRuntimeEnvironment,
   resolveGosuCodexHome,
   resolveInstalledCodexExecutable,
 } from '../src/codex-runtime-discovery.js';
 
 const appRuntime = '/Applications/ChatGPT.app/Contents/Resources/codex';
 const codexRuntime = '/Applications/Codex.app/Contents/Resources/codex';
+const homebrewRuntime = '/opt/homebrew/bin/codex';
 const fallbackExecutable = '/bundled/node';
 
 describe('shared GOSU Codex login scope', () => {
@@ -108,7 +110,12 @@ function fixture(versions: Record<string, string | null>) {
   return {
     platform: 'darwin' as const,
     userHome: '/fixture',
-    probeVersion: vi.fn(async (executable: string) => versions[executable] ?? null),
+    // An app opened from Finder: no package-manager directory on PATH.
+    environment: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' } as NodeJS.ProcessEnv,
+    probeVersion: vi.fn(
+      async (executable: string, _args?: readonly string[], _environment?: NodeJS.ProcessEnv) =>
+        versions[executable] ?? null,
+    ),
   };
 }
 
@@ -141,16 +148,99 @@ describe('installed Codex runtime discovery', () => {
     );
   });
 
-  it('retains the bundled runtime when installed candidates are older, prerelease or incompatible', async () => {
+  it('retains the bundled runtime when installed candidates are older or another major version', async () => {
     const dependencies = fixture({
       [fallbackExecutable]: 'codex-cli 0.149.0',
       codex: 'codex-cli 0.99.0',
-      [codexRuntime]: 'codex-cli 0.200.0-beta.1',
+      [codexRuntime]: 'codex-cli 1.4.0-beta.1',
       [appRuntime]: 'codex-cli 1.0.0',
     });
     await expect(
       resolveInstalledCodexExecutable({ fallbackExecutable }, dependencies),
     ).resolves.toBe(fallbackExecutable);
+  });
+
+  it('uses a newer prerelease build so models released after the bundled runtime stay listed', async () => {
+    // The ChatGPT app ships alpha builds for weeks. Refusing them dropped GOSU to the bundled
+    // 0.149.0, whose model list from the service has no GPT-6-Astra.
+    await expect(
+      resolveInstalledCodexExecutable(
+        { fallbackExecutable },
+        fixture({
+          [fallbackExecutable]: 'codex-cli 0.149.0',
+          [appRuntime]: 'codex-cli 0.154.0-alpha.6.2',
+        }),
+      ),
+    ).resolves.toBe(appRuntime);
+    // A newer prerelease outranks an older release…
+    await expect(
+      resolveInstalledCodexExecutable(
+        { fallbackExecutable },
+        fixture({
+          [fallbackExecutable]: 'codex-cli 0.149.0',
+          [homebrewRuntime]: 'codex-cli 0.153.4',
+          [appRuntime]: 'codex-cli 0.154.0-alpha.6.2',
+        }),
+      ),
+    ).resolves.toBe(appRuntime);
+    // …a release outranks its own prerelease…
+    await expect(
+      resolveInstalledCodexExecutable(
+        { fallbackExecutable },
+        fixture({
+          [fallbackExecutable]: 'codex-cli 0.154.0',
+          [appRuntime]: 'codex-cli 0.154.0-alpha.6.2',
+        }),
+      ),
+    ).resolves.toBe(fallbackExecutable);
+    // …and prerelease identifiers compare numerically, not as text.
+    await expect(
+      resolveInstalledCodexExecutable(
+        { fallbackExecutable },
+        fixture({
+          [fallbackExecutable]: 'codex-cli 0.149.0',
+          [codexRuntime]: 'codex-cli 0.154.0-alpha.10',
+          [appRuntime]: 'codex-cli 0.154.0-alpha.6.2',
+        }),
+      ),
+    ).resolves.toBe(codexRuntime);
+    await expect(
+      resolveInstalledCodexExecutable(
+        { fallbackExecutable },
+        fixture({
+          [fallbackExecutable]: 'codex-cli 0.149.0',
+          [appRuntime]: 'codex-cli 0.154.0-alpha/../../evil',
+        }),
+      ),
+    ).resolves.toBe(fallbackExecutable);
+  });
+
+  it('finds a Homebrew runtime by absolute path and runs it with its own directory on PATH', async () => {
+    // An app opened from Finder has no /opt/homebrew/bin on PATH, and that codex is a
+    // `#!/usr/bin/env node` script whose node lives beside it.
+    const dependencies = fixture({
+      [fallbackExecutable]: 'codex-cli 0.149.0',
+      [homebrewRuntime]: 'codex-cli 0.153.4',
+    });
+    await expect(
+      resolveInstalledCodexExecutable({ fallbackExecutable }, dependencies),
+    ).resolves.toBe(homebrewRuntime);
+    const probe = dependencies.probeVersion.mock.calls.find(([path]) => path === homebrewRuntime)!;
+    expect((probe[2] as NodeJS.ProcessEnv).PATH?.split(':')[0]).toBe('/opt/homebrew/bin');
+    // Native runtimes and PATH lookups keep the caller's environment.
+    expect(
+      dependencies.probeVersion.mock.calls.find(([path]) => path === appRuntime)![2],
+    ).toBeUndefined();
+    const finder = { PATH: '/usr/bin:/bin', HOME: '/Users/fixture' };
+    expect(codexRuntimeEnvironment(homebrewRuntime, finder)).toEqual({
+      PATH: '/opt/homebrew/bin:/usr/bin:/bin',
+      HOME: '/Users/fixture',
+    });
+    expect(
+      codexRuntimeEnvironment('/usr/local/bin/codex', { PATH: '/usr/local/bin:/bin' }),
+    ).toEqual({ PATH: '/usr/local/bin:/bin' });
+    expect(codexRuntimeEnvironment(appRuntime, finder)).toBe(finder);
+    expect(codexRuntimeEnvironment('codex', finder)).toBe(finder);
   });
 
   it('ignores missing, failed and malformed version probes', async () => {

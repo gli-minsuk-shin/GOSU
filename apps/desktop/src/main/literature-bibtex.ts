@@ -14,6 +14,9 @@ import {
 } from './literature-transfer';
 
 const ignoredTitleWords = new Set(['a', 'an', 'and', 'for', 'in', 'of', 'on', 'the', 'to', 'with']);
+// LaTeX reads these fields verbatim (\doi{}, \url{}, biblatex verbatim fields), so an escaped
+// underscore ("10.1007/978-3-030-58452-8\_13") prints its backslash and breaks the link.
+const verbatimFields = new Set(['doi', 'url']);
 
 export type CitationKeyInput = LiteratureFingerprintInput &
   Readonly<{ citationKey?: string | null | undefined }>;
@@ -105,7 +108,12 @@ function serializeEntry(record: LiteratureTransferRecord, citationKey: string): 
   ];
   const serializedFields = fields
     .filter((field): field is readonly [string, string] => field[1] !== null)
-    .map(([name, value]) => `  ${name} = {${escapeBibtexValue(value)}},`);
+    .map(([name, value]) => {
+      const written = verbatimFields.has(name)
+        ? verbatimBibtexValue(value)
+        : escapeBibtexValue(value);
+      return `  ${name} = {${written}},`;
+    });
   return `@${entryType(record.workType)}{${citationKey},\n${serializedFields.join('\n')}\n}`;
 }
 
@@ -448,6 +456,12 @@ function escapeBibtexValue(value: string): string {
     })
     .replace(/\s+/gu, ' ')
     .trim();
+}
+
+// Nothing can be escaped here: a brace would unbalance the entry, whitespace is never part of an
+// identifier, and a backslash would read back as an escape or swallow the closing brace on import.
+function verbatimBibtexValue(value: string): string {
+  return value.replace(/[\s{}\\]/gu, '');
 }
 
 function unescapeBibtexValue(value: string): string {

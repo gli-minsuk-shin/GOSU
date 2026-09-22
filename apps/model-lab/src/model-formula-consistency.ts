@@ -22,7 +22,20 @@ function transformAssignmentGroupCount(transform: string) {
 }
 
 function formulaRelationCount(clause: string) {
-  return clause.match(/=|\\(?:leftarrow|coloneqq)/gu)?.length ?? 0;
+  // Axis/index qualifiers (e.g. min_{axis=1}, sum_{i=1}) are not assignment chains.
+  let depth = 0;
+  let count = 0;
+  for (let index = 0; index < clause.length; index++) {
+    const char = clause[index]!;
+    if ('{[('.includes(char) && clause[index - 1] !== '\\') depth++;
+    else if ('}])'.includes(char) && clause[index - 1] !== '\\') depth = Math.max(0, depth - 1);
+    else if (
+      depth === 0 &&
+      (char === '=' || /^\\(?:leftarrow|coloneqq)\b/u.test(clause.slice(index)))
+    )
+      count++;
+  }
+  return count;
 }
 
 function formulaAssignmentClauses(formula: string) {

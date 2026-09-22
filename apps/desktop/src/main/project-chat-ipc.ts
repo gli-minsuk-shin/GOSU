@@ -3,6 +3,7 @@ import { ZodError } from 'zod';
 import {
   ApplyProjectChatActionInputSchema,
   BranchProjectChatSessionInputSchema,
+  CompactProjectChatSessionInputSchema,
   CreateProjectChatSessionInputSchema,
   ProjectChatProjectInputSchema,
   ProjectChatQueuedTurnInputSchema,
@@ -64,6 +65,14 @@ export function registerProjectChatIpc(
       input,
       RenameProjectChatSessionInputSchema,
       (command) => chat.renameSession(command),
+      reportUnexpected,
+    ),
+  );
+  register(PROJECT_CHAT_IPC_CHANNELS.compactSession, (input) =>
+    withInput(
+      input,
+      CompactProjectChatSessionInputSchema,
+      (command) => chat.compactSession(command),
       reportUnexpected,
     ),
   );

@@ -413,8 +413,8 @@ const pairs: readonly (readonly [string, string])[] = [
     '개의 영향력 있는 인용. 제한된 대표 논문 경로에는 동일한 영향력 기준, 인용 검색, 다음 이상의 논문 연령을 적용합니다:',
   ],
   [
-    'influential citation. Others remain Broad for screening. Venue metadata and author h-index never promote a paper by themselves. Existing v1 labels remain historical until that search is run again. Each search is additive; scores are only comparable within the same search.',
-    '개의 영향력 있는 인용. 나머지는 검토를 위한 Broad에 남습니다. 게재지 메타데이터와 저자 h-index만으로는 승격하지 않습니다. 기존 v1 분류는 해당 검색을 다시 실행하기 전까지 과거 기록으로 유지됩니다. 각 검색은 결과를 추가하며 점수는 같은 검색 안에서만 비교할 수 있습니다.',
+    'influential citation. A paper is saved only when its own title, abstract, topics or venue mention the search terms; the remaining on-topic papers stay Broad for screening, and Broad is never topped up with unrelated works. Venue metadata and author h-index never promote a paper by themselves. Labels older than v3 remain historical until that search is run again. Each search is additive; scores are only comparable within the same search.',
+    '개의 영향력 있는 인용. 논문 자체의 제목·초록·주제·게재지에 검색어가 나와야만 저장합니다. 주제에 맞는 나머지 논문은 검토용 넓은 범위에 남고, 무관한 논문으로 개수를 채우지 않습니다. 게재지 메타데이터와 저자 h-index만으로는 승격하지 않습니다. v3보다 오래된 분류는 해당 검색을 다시 실행하기 전까지 과거 기록으로 유지됩니다. 각 검색은 결과를 추가하며 점수는 같은 검색 안에서만 비교할 수 있습니다.',
   ],
   [
     'AI drafts use provider metadata and available abstracts, and remain separate from human review notes.',
@@ -494,11 +494,11 @@ const pairs: readonly (readonly [string, string])[] = [
   ],
   [
     'Archive pauses normal work while keeping the project easy to restore. Trash is a separate, recoverable step with two warnings. Renaming keeps the stable project slug.',
-    '보관은 쉽게 복원할 수 있도록 유지하면서 일반 작업을 일시정지합니다. 휴지통은 두 번의 경고를 거치는 별도의 복원 가능한 단계입니다. 이름을 바꿔도 고정 프로젝트 slug는 유지됩니다.',
+    '아카이브는 쉽게 복원할 수 있도록 유지하면서 일반 작업을 일시정지합니다. 휴지통은 두 번의 경고를 거치는 별도의 복원 가능한 단계입니다. 이름을 바꿔도 고정 프로젝트 slug는 유지됩니다.',
   ],
   [
     "Stop or wait for this project's active Codex turn before archiving it or moving it to Trash.",
-    '프로젝트를 보관하거나 휴지통으로 옮기기 전에 진행 중인 Codex 응답을 중단하거나 완료를 기다리세요.',
+    '프로젝트를 아카이브하거나 휴지통으로 옮기기 전에 진행 중인 Codex 응답을 중단하거나 완료를 기다리세요.',
   ],
   [
     'The project will disappear from the switcher, but its tasks, objectives, Board, project chat, and action provenance stay locally preserved. You can restore it below.',
@@ -506,7 +506,7 @@ const pairs: readonly (readonly [string, string])[] = [
   ],
   [
     'Archived projects keep their Board, goals, notes, and chat history. Restore one to active before changing it or asking its AI agent to work.',
-    '보관된 프로젝트의 보드, 목표, 노트, 채팅 이력은 유지됩니다. 변경하거나 AI agent에 작업을 요청하려면 먼저 활성 상태로 복원하세요.',
+    '아카이브한 프로젝트의 보드, 목표, 노트, 채팅 이력은 유지됩니다. 변경하거나 AI agent에 작업을 요청하려면 먼저 활성 상태로 복원하세요.',
   ],
   [
     'Enter only an owner/repository identifier. Tokens, SSH addresses, and repository contents never enter Hosted Sync.',
@@ -582,7 +582,7 @@ const pairs: readonly (readonly [string, string])[] = [
   ],
   [
     'Restoring keeps the same project ID, Board, goals, and local history. Active and archived projects are never included when this section is emptied.',
-    '복원 시 동일한 프로젝트 ID, 보드, 목표, 로컬 이력을 유지합니다. 이 구역을 비워도 활성 프로젝트와 보관된 프로젝트는 포함되지 않습니다.',
+    '복원 시 동일한 프로젝트 ID, 보드, 목표, 로컬 이력을 유지합니다. 이 구역을 비워도 활성 프로젝트와 아카이브한 프로젝트는 포함되지 않습니다.',
   ],
   [
     'GitHub repositories, local worktrees, Research Notes files, and remote server data are not deleted. Project links are detached and cannot be restored in GOSU.',
@@ -606,7 +606,7 @@ const pairs: readonly (readonly [string, string])[] = [
   ],
   [
     'Parent project is archived. Restore it to Active in Projects before restoring this task.',
-    '상위 프로젝트가 보관되어 있습니다. 할 일을 복원하기 전에 프로젝트 화면에서 활성 상태로 복원하세요.',
+    '상위 프로젝트가 아카이브에 있습니다. 할 일을 복원하기 전에 프로젝트 화면에서 활성 상태로 복원하세요.',
   ],
   [
     'Known tokens come only from local provider receipts. Missing usage is never estimated or displayed as zero.',

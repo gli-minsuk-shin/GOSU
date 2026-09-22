@@ -74,6 +74,11 @@ shasum -a 256 apps/desktop/dist/mac-arm64/GOSU.app/Contents/Resources/app.asar
 로드하는 격리 smoke다. DB·Keychain·network·일반 renderer를 열지 않으므로 **사용자 workspace의
 실제 시작 성공을 대신하지 않는다.** 두 확인을 구분해 기록한다.
 
+0.58.135부터 이 verifier는 smoke 앞에서 `app.asar`의 `out/model-lab/assets`와 `out/briefing-lab/assets`를
+[검사](../scripts/lab-bundles.mjs)한다. `index.html`과 그것이 불러오는 번들 어디에서도 참조되지 않는 `.js`·`.css`가
+있으면 개수와 경로를 보여 주며 실패한다(이전 빌드의 번들이 패키지에 실린 것). 실패하면 패키지를 고치지 말고
+`pnpm --filter @gosu/desktop build`가 두 Lab 폴더를 새로 복사하는지부터 확인한 뒤 다시 패키징한다.
+
 Hermes bundle은 [prepare script](../scripts/prepare-hermes-runtime.mjs)와 manifest 검증을 통과해야 한다.
 runtime을 새로 받거나 API key를 넣는 것이 아니다. production bundle 요구사항을 development
 fallback 검증으로 충족했다고 말하지 않는다.

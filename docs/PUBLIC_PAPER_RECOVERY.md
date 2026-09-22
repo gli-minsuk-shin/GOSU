@@ -1,5 +1,33 @@
 # Public paper lookup and source failure recovery
 
+## Recurring Briefing recovery, 2026-09-14 (0.58.53)
+
+The prior chat search did not change recurring collection. That missing wiring caused the reported
+arXiv timeout to fail the entire paper source. The default collection now calls
+[multi-source discovery](../apps/briefing-lab/briefing-paper-discovery.ts), independently querying
+arXiv and the existing allowlisted Crossref/OpenReview indexes with 12-second deadlines.
+arXiv retains its complete profile query, spacing and HTTP cooldown. Alternate indexes query the
+two highest-weight keyword phrases (one request per phrase/provider), each at most 60 candidates.
+This bounded coverage is disclosed, not represented as exhaustive literature search. Chat keeps
+its own title/topic/identifier lookup and does not recursively invoke recurring discovery.
+
+All candidates must have a reliable publication date inside the original window, match a weighted
+keyword or synonym, pass the author/excluded-term filters, and retain source bibliographic evidence.
+DOI metadata is not a full-paper read; OpenReview is not proof of peer review. Identical saved keys
+are excluded before the display limit. Successful raw candidates are cached for two minutes and
+re-filtered against current exclusions/dates. A partial cache cannot produce a false empty-success
+after its known candidates are exhausted. No failures, private mail bodies or user settings are
+invented/reset to make recovery look successful. HTTP cooldowns and TLS/DNS safety are unchanged.
+
+No matching candidates plus an unavailable source remains incomplete, not confirmed zero. Valid
+alternate candidates survive partial failure and can proceed through the existing AI summary flow.
+Saved History remains intact; an empty failed source is labelled 조회 미완료.
+
+API references: [Crossref date filters](https://www.crossref.org/documentation/retrieve-metadata/rest-api/rest-api-filters/)
+and [OpenReview search](https://docs.openreview.net/reference/api-v2/openapi-definition).
+Explicit public-only smoke: `tools/public-discovery-smoke.ts`, no mailbox/LLM/library writes.
+See [0.58.53](releases/0.58.53.md) for actual tests, live evidence and installation status.
+
 ## General discovery update, 2026-09-14
 
 Source candidate [0.58.39](releases/0.58.39.md) adds broad publisher DOI metadata through Crossref,

@@ -2,6 +2,12 @@ import { z } from 'zod';
 
 export const MODEL_USAGE_PERIODS = ['day', 'week', 'month'] as const;
 export const MODEL_USAGE_WORKLOAD_KINDS = [
+  'briefing_assistant',
+  'briefing_summary',
+  'paper_summary',
+  'context_compaction',
+  'daily_quote',
+  'model_lab',
   'project_chat',
   'project_chat_title',
   'lecture_generation',
@@ -224,11 +230,32 @@ export const ModelUsageModelRowSchema = ModelUsageAggregateSchema.extend({
   resolvedModelId: boundedIdentifierSchema,
 }).strict();
 export type ModelUsageModelRow = z.infer<typeof ModelUsageModelRowSchema>;
+export const ModelUsageProjectModelRowSchema = ModelUsageModelRowSchema.extend({
+  projectId: uuidSchema,
+  projectName: z.string().trim().min(1).max(512).nullable(),
+}).strict();
+export type ModelUsageProjectModelRow = z.infer<typeof ModelUsageProjectModelRowSchema>;
 
 export const ModelUsageWorkloadRowSchema = ModelUsageAggregateSchema.extend({
   workloadKind: ModelUsageWorkloadKindSchema,
 }).strict();
 export type ModelUsageWorkloadRow = z.infer<typeof ModelUsageWorkloadRowSchema>;
+
+/**
+ * One feature's usage on one model, at the grain of `byModel`. A feature has no price of its own: its
+ * API-equivalent cost is the sum over these parts.
+ */
+export const ModelUsageWorkloadModelRowSchema = ModelUsageModelRowSchema.extend({
+  workloadKind: ModelUsageWorkloadKindSchema,
+}).strict();
+export type ModelUsageWorkloadModelRow = z.infer<typeof ModelUsageWorkloadModelRowSchema>;
+
+/** The features that get a detail tab on the Usage screen: what the user runs most. */
+export const MODEL_USAGE_DETAIL_WORKLOADS = ['briefing_summary', 'paper_summary'] as const;
+export const ModelUsageDailyWorkloadModelRowSchema = ModelUsageWorkloadModelRowSchema.extend({
+  bucketKey: localDateSchema,
+}).strict();
+export type ModelUsageDailyWorkloadModelRow = z.infer<typeof ModelUsageDailyWorkloadModelRowSchema>;
 
 export const ModelUsageLectureConnectionRowSchema = ModelUsageAggregateSchema.extend({
   connectionKey: boundedIdentifierSchema,
@@ -326,7 +353,14 @@ export const ModelUsageAnalyticsReportSchema = z
     byProject: z.array(ModelUsageProjectRowSchema).max(1_000),
     byConnection: z.array(ModelUsageConnectionRowSchema).max(1_000),
     byModel: z.array(ModelUsageModelRowSchema).max(1_000),
+    byProjectModel: z.array(ModelUsageProjectModelRowSchema).max(1000).optional(),
     byWorkload: z.array(ModelUsageWorkloadRowSchema).max(MODEL_USAGE_WORKLOAD_KINDS.length),
+    // Optional: reports from before 0.58.138 do not have it. It is cut at 1,000 rows like the other
+    // model breakdowns, so a reader checks that its turns add up to `totals` before relying on it.
+    byWorkloadModel: z.array(ModelUsageWorkloadModelRowSchema).max(1000).optional(),
+    // Optional: reports from before 0.58.140 do not have it. Briefing and paper summaries only (the
+    // detail tabs of the Usage screen), one row per local day, feature and model, newest day first.
+    byDayWorkloadModel: z.array(ModelUsageDailyWorkloadModelRowSchema).max(1000).optional(),
     lectureGenerations: ModelUsageLectureGenerationPageSchema,
   })
   .strict()

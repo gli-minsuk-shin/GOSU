@@ -153,6 +153,57 @@ afterEach(async () => {
 });
 
 describe('ResearchNotesService project workspaces', () => {
+  it('reconnects the saved vault when a project opens before startup has, and explains a vault it cannot reopen', async () => {
+    // Startup restores the vault late and only once. A project opened in that window got `null`,
+    // which the screen shows as "Connect an Obsidian Vault": the setting looked deleted.
+    const { root, storage, literature, workspace } = await fixture({ connectVault: false });
+    let savedRoot: string | null = root;
+    const vault = new VaultAccess({ loadRoot: async () => savedRoot, saveRoot: vi.fn() });
+    const service = new ResearchNotesService({
+      storage,
+      literature,
+      workspace,
+      vault,
+      now: () => NOW,
+    });
+    expect(vault.current()).toBeNull();
+    await expect(service.current({ projectId: PROJECT_ID })).resolves.toMatchObject({
+      projectId: PROJECT_ID,
+      status: 'ready',
+    });
+    expect(vault.current()?.root).toBe(root);
+
+    // A saved vault that cannot be opened is a reported problem, not an empty setting.
+    savedRoot = join(root, 'not-here');
+    const broken = new VaultAccess({ loadRoot: async () => savedRoot, saveRoot: vi.fn() });
+    const brokenService = new ResearchNotesService({
+      storage,
+      literature,
+      workspace,
+      vault: broken,
+      now: () => NOW,
+    });
+    await expect(brokenService.current({ projectId: PROJECT_ID })).rejects.toMatchObject({
+      code: 'research_notes_vault_missing',
+    });
+    // It reconnects by itself once the folder is back, without choosing the vault again.
+    savedRoot = root;
+    await expect(brokenService.current({ projectId: PROJECT_ID })).resolves.toMatchObject({
+      status: 'ready',
+    });
+
+    // With nothing saved, it is still the first-time "choose a vault" screen.
+    const unset = new VaultAccess({ loadRoot: async () => null, saveRoot: vi.fn() });
+    const unsetService = new ResearchNotesService({
+      storage,
+      literature,
+      workspace,
+      vault: unset,
+      now: () => NOW,
+    });
+    await expect(unsetService.current({ projectId: PROJECT_ID })).resolves.toBeNull();
+  });
+
   it('creates the default GOSU project structure and initial Literature projection', async () => {
     const { root, storage, service } = await fixture();
 

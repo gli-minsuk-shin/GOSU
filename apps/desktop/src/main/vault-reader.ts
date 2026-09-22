@@ -262,7 +262,15 @@ export class VaultReader {
     }
     state.directories += 1;
 
-    const entries = await opendir(directory);
+    let entries;
+    try {
+      entries = await opendir(directory);
+    } catch (error) {
+      // One folder that vanished or cannot be read must not disconnect the whole vault. The root
+      // itself still has to open.
+      if (depth > 0 && isSkippableEntryError(error)) return;
+      throw error;
+    }
     for await (const entry of entries) {
       signal?.throwIfAborted();
       if (state.entries >= this.limits.maxEntries) {
@@ -276,8 +284,12 @@ export class VaultReader {
       if (entry.isDirectory()) {
         await this.walk(full, results, state, depth + 1, signal);
       } else if (entry.isFile() && DOCUMENT_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
-        const metadata = await stat(full);
-        if (metadata.size <= this.limits.maxMarkdownBytes) {
+        // A note deleted or moved between the listing and this check is simply not listed.
+        const metadata = await stat(full).catch((error: unknown) => {
+          if (isSkippableEntryError(error)) return null;
+          throw error;
+        });
+        if (metadata && metadata.size <= this.limits.maxMarkdownBytes) {
           results.push(relative(this.root, full));
         }
       }
@@ -285,6 +297,11 @@ export class VaultReader {
       if (results.length >= this.limits.maxFiles || state.stopped) break;
     }
   }
+}
+
+function isSkippableEntryError(error: unknown) {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR' || code === 'EACCES' || code === 'EPERM';
 }
 
 function decodeAttachmentSource(rawSource: string) {

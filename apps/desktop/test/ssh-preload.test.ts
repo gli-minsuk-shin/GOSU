@@ -55,6 +55,11 @@ describe('SSH preload bridge', () => {
     );
   });
 
+  it('keeps the per-server AI notes out of the reviewed SSH surface, as two plain methods', () => {
+    expect(Object.keys(api.sshAgentNotes)).toEqual(['get', 'set']);
+    expect(Object.keys(api.ssh)).not.toContain('agentNotes');
+  });
+
   it('exposes fixed connection and approval methods without a renderer execute channel', () => {
     expect(Object.keys(api.ssh)).toEqual([
       'listConnections',

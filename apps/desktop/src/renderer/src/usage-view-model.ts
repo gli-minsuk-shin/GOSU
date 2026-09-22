@@ -14,7 +14,14 @@ export const USAGE_PERIODS = [
 ] as const satisfies readonly ModelUsagePeriod[];
 export type UsagePeriod = ModelUsagePeriod;
 
-export const USAGE_BREAKDOWNS = ['projects', 'lectures', 'providers'] as const;
+/** Briefing and paper summaries first: they are what is run most (user request, 2026-09-22). */
+export const USAGE_BREAKDOWNS = [
+  'briefing',
+  'papers',
+  'projects',
+  'lectures',
+  'providers',
+] as const;
 export type UsageBreakdown = (typeof USAGE_BREAKDOWNS)[number];
 
 export type NullableTokenCounts = Readonly<{
@@ -48,7 +55,6 @@ export type UsageChartBar = UsageChartBucket &
     inputHeight: number;
     outputY: number;
     outputHeight: number;
-    incomplete: boolean;
   }>;
 
 export type UsageChartTick = Readonly<{
@@ -157,6 +163,16 @@ export function formatCompactTokenCount(value: number | null) {
   }).format(value);
 }
 
+/** Dollars with cents; amounts under a dollar keep up to four decimals so small usage is not $0.00. */
+export function formatUsd(value: number) {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: value >= 1 ? 2 : 4,
+  }).format(value);
+}
+
 export function formatUsageCoverage(reported: number, total: number) {
   if (total === 0) return uiText('No finalized turns');
   return uiText('{reported} of {total} turns', {
@@ -214,7 +230,6 @@ export function buildUsageTokenChart(buckets: readonly UsageChartBucket[]): Usag
       inputHeight: plotBottom - inputTop,
       outputY: totalTop,
       outputHeight: inputTop - totalTop,
-      incomplete: bucket.lowerBound || bucket.inputTokens === null || bucket.outputTokens === null,
     } satisfies UsageChartBar;
   });
   const ticks = Array.from({ length: 5 }, (_, index) => {
@@ -296,6 +311,8 @@ export function usagePeriodLabel(period: UsagePeriod) {
 }
 
 export function usageBreakdownLabel(breakdown: UsageBreakdown) {
+  if (breakdown === 'briefing') return uiText('Briefing');
+  if (breakdown === 'papers') return uiText('Paper summaries');
   if (breakdown === 'projects') return uiText('Projects');
   if (breakdown === 'lectures') return uiText('Lecture generations');
   return uiText('Providers & models');

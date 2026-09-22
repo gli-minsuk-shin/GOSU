@@ -8,6 +8,7 @@ import {
   CLAUDE_CODE_OPUS_5_MODEL_ID,
   CLAUDE_CODE_PROVIDER_ID,
   CLAUDE_CODE_SONNET_MODEL_ID,
+  isClaudeCodeModelId,
   type RefreshableClaudeCodeProjectChat,
 } from './claude-code-project-chat-adapter';
 import {
@@ -334,11 +335,7 @@ export class ProjectChatProviderRouter extends EventEmitter implements ProjectCh
   }
 
   private isClaudeCodeModel(modelId: string | null | undefined) {
-    return (
-      modelId === CLAUDE_CODE_SONNET_MODEL_ID ||
-      modelId === CLAUDE_CODE_OPUS_MODEL_ID ||
-      modelId === CLAUDE_CODE_OPUS_5_MODEL_ID
-    );
+    return isClaudeCodeModelId(modelId);
   }
 
   private runHermesLifecycle<Result>(operation: () => Promise<Result>): Promise<Result> {

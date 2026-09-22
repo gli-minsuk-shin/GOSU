@@ -8,6 +8,7 @@ import {
   markOriginalMailRead,
   runMailMarkRead,
   readOriginalMailStatus,
+  readOriginalMailSender,
 } from './briefing-mail-mark-read';
 import { appleMailMessageUrl } from './src/apple-mail-url';
 const mailbox = { accountId: 'native-account', path: ['Inbox'] },
@@ -15,6 +16,91 @@ const mailbox = { accountId: 'native-account', path: ['Inbox'] },
 const itemId = createHash('sha256')
   .update(JSON.stringify([mailbox.accountId, mailbox.path, '42']))
   .digest('hex');
+it('reads only the exact sender header without touching body or read-status properties', () => {
+  const message = {
+    id: () => 42,
+    exists: () => true,
+    messageId: () => 'original@example.test',
+    sender: () => 'Office <office@example.test>',
+  };
+  Object.defineProperty(message, 'readStatus', {
+    get: () => {
+      throw Error('No read-state access');
+    },
+    set: () => {
+      throw Error('No write');
+    },
+  });
+  Object.defineProperty(message, 'content', {
+    get: () => {
+      throw Error('No body read');
+    },
+  });
+  const box = { name: () => 'Inbox', mailboxes: () => [], messages: { byId: () => message } };
+  const run = runInNewContext(`${APPLE_MAIL_MARK_READ}\nrun`, {
+    Application: () => ({
+      accounts: () => [{ id: () => mailbox.accountId, mailboxes: () => [box] }],
+    }),
+  });
+  expect(
+    JSON.parse(
+      run([
+        JSON.stringify({
+          ...mailbox,
+          action: 'read-sender',
+          nativeId: '42',
+          messageId: 'original@example.test',
+        }),
+      ]),
+    ),
+  ).toEqual({ id: '42', sender: 'Office <office@example.test>' });
+});
+it('recovers the sender with identity and cancellation checks and never requests a mark action', async () => {
+  const run = vi
+    .fn<typeof runMailMarkRead>()
+    .mockResolvedValue({ id: '42', sender: 'Office <office@example.test>' });
+  const guard = vi.fn(async () => undefined);
+  expect(
+    await readOriginalMailSender(
+      mailbox,
+      itemId,
+      url,
+      new AbortController().signal,
+      guard,
+      run,
+      '42',
+    ),
+  ).toBe('Office <office@example.test>');
+  expect(run.mock.calls.map(([q]) => q.action)).toEqual(['read-sender']);
+  expect(guard).toHaveBeenCalledTimes(3);
+  run.mockClear();
+  await expect(
+    readOriginalMailSender(mailbox, itemId, url, new AbortController().signal, guard, run, '43'),
+  ).rejects.toThrow('target_missing');
+  expect(run).not.toHaveBeenCalled();
+  const aborted = new AbortController();
+  aborted.abort();
+  await expect(
+    readOriginalMailSender(mailbox, itemId, url, aborted.signal, guard, run, '42'),
+  ).rejects.toThrow('source_cancelled');
+});
+it.each([
+  { id: '99', sender: 'Wrong identity' },
+  { id: '42', sender: '' },
+])('rejects unconfirmed or missing sender metadata', async (value) => {
+  const run = vi.fn<typeof runMailMarkRead>().mockResolvedValue(value);
+  await expect(
+    readOriginalMailSender(
+      mailbox,
+      itemId,
+      url,
+      new AbortController().signal,
+      async () => undefined,
+      run,
+      '42',
+    ),
+  ).rejects.toThrow();
+});
 it('locates a legacy message using bounded native IDs without two mailbox-wide whose searches', () => {
   const message = { id: () => 42, exists: () => true, messageId: () => 'original@example.test' };
   const messages = Object.assign([() => message], {

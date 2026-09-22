@@ -72,18 +72,29 @@ export type ProjectRecord = Readonly<{
 
 export type WorkspaceTask = Readonly<{
   id: string;
-  projectId: string;
+  projectId: string | null;
   title: string;
   status: WorkspaceTaskStatus;
   description?: string | undefined;
   priority?: WorkspaceTaskPriority | undefined;
   dueDate?: string | undefined;
+  dueAt?: string | undefined;
   labels?: readonly string[] | undefined;
   archivedAt?: string | undefined;
   version: number;
   createdAt: string;
   updatedAt: string;
 }>;
+
+/** Display-only group for null-owned tasks; never persisted as a project or used as a grant. */
+export const PERSONAL_TASK_GROUP: ProjectRecord = Object.freeze({
+  id: 'personal',
+  name: '개인 할 일',
+  slug: 'personal',
+  version: 1,
+  createdAt: '1970-01-01T00:00:00Z',
+  updatedAt: '1970-01-01T00:00:00Z',
+});
 
 export type WorkspaceMetric = PrimaryMetric;
 export type WorkspaceGuardrail = MetricGuardrail;
@@ -285,12 +296,13 @@ const projectSchema: z.ZodType<ProjectRecord> = z
 const taskSchema: z.ZodType<WorkspaceTask> = z
   .object({
     id: uuidSchema,
-    projectId: uuidSchema,
+    projectId: uuidSchema.nullable(),
     title: z.string().trim().min(2).max(240),
     status: taskStatusSchema,
     description: z.string().trim().min(1).max(4_000).optional(),
     priority: taskPrioritySchema.optional(),
     dueDate: localDateSchema.optional(),
+    dueAt: z.string().datetime({ offset: true }).optional(),
     labels: taskLabelsSchema.optional(),
     archivedAt: timestampSchema.optional(),
     version: z.number().int().positive(),
@@ -339,7 +351,7 @@ export const WorkspaceSnapshotSchema: z.ZodType<WorkspaceSnapshot> = z
       slugs.add(project.slug);
     }
     for (const [index, task] of snapshot.tasks.entries()) {
-      if (!projectIds.has(task.projectId)) {
+      if (task.projectId !== null && !projectIds.has(task.projectId)) {
         context.addIssue({
           code: 'custom',
           message: 'Task references an unknown project',
@@ -498,12 +510,13 @@ export const SetProjectArchivedInputSchema = ProjectVersionCommandSchema.extend(
 
 export const CreateTaskInputSchema = z
   .object({
-    projectId: uuidSchema,
+    projectId: uuidSchema.nullable(),
     title: z.string().trim().min(2).max(240),
     status: taskStatusSchema.default('backlog'),
     description: z.string().trim().max(4_000).optional(),
     priority: taskPrioritySchema.optional(),
     dueDate: localDateSchema.optional(),
+    dueAt: z.string().datetime({ offset: true }).optional(),
     labels: taskLabelsSchema.optional(),
   })
   .strict();
@@ -518,7 +531,7 @@ const optionalTaskDueDateUpdateSchema = z
 
 export const UpdateTaskInputSchema = z
   .object({
-    projectId: uuidSchema,
+    projectId: uuidSchema.nullable(),
     taskId: uuidSchema,
     expectedVersion: z.number().int().positive(),
     title: z.string().trim().min(2).max(240).optional(),
@@ -550,7 +563,7 @@ export const UpdateBoardSettingsInputSchema = z
 
 export const SetTaskArchivedInputSchema = z
   .object({
-    projectId: uuidSchema,
+    projectId: uuidSchema.nullable(),
     taskId: uuidSchema,
     expectedVersion: z.number().int().positive(),
     archived: z.boolean(),

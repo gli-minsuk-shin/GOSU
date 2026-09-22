@@ -1,5 +1,10 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { droppedAttachmentPaths } from './dropped-attachment-paths';
+import {
+  APPROVAL_POLICY_CHANNELS,
+  ApprovalPolicySchema,
+  type ApprovalPolicy,
+} from '../shared/approval-policy';
 import { BriefingNotificationSnapshotSchema } from '../../../briefing-lab/src/briefing-notifications';
 import { MODEL_ROUTING_CHANNELS, ModelRoutingSchema, type ModelRouting } from '@gosu/contracts';
 import type {
@@ -27,6 +32,11 @@ import type {
   DisconnectAgentAddOnRequest,
 } from '../shared/agent-addon-contracts';
 import { APP_NAVIGATION_CHANNELS } from '../shared/app-navigation-channels';
+import {
+  APP_SHORTCUT_TARGETS,
+  type AppShortcuts,
+  type AppShortcutTarget,
+} from '../shared/app-shortcuts';
 import {
   CODEX_AUTH_IPC_CHANNELS,
   CodexAuthenticationEventSchema,
@@ -93,6 +103,14 @@ import type {
 import { unwrapGitWorkspaceIpcResult } from '../shared/git-workspace-ipc-result';
 import { LITERATURE_IPC_CHANNELS } from '../shared/literature-channels';
 import { MANUSCRIPT_WORKSPACE_IPC_CHANNELS } from '../shared/manuscript-workspace-channels';
+import { MODEL_PRICE_IPC_CHANNELS, type ModelPriceStatus } from '../shared/model-price-contracts';
+import { FULL_DISK_ACCESS_CHANNEL, type FullDiskAccessState } from '../shared/full-disk-access';
+import {
+  USAGE_LIMIT_IPC_CHANNELS,
+  UsageLimitStatusSchema,
+  type UsageLimitSettings,
+  type UsageLimitStatus,
+} from '../shared/usage-limit-contracts';
 import { MODEL_USAGE_IPC_CHANNELS } from '../shared/model-usage-channels';
 import type {
   ModelUsageAnalyticsQuery,
@@ -190,12 +208,35 @@ import type {
   LiteratureAiCancelReceipt,
   LiteratureRecord,
   LiteratureSearchInput,
+  LiteratureSearchPlanReceipt,
   LiteratureSearchReceipt,
   ListLiteratureInput,
   OrganizeLiteratureInput,
+  PlanLiteratureSearchInput,
+  UndoLiteratureSearchInput,
+  UndoLiteratureSearchReceipt,
   UpdateLiteratureAnnotationsInput,
 } from '../shared/literature-contracts';
 import { unwrapLiteratureIpcResult } from '../shared/literature-ipc-result';
+import {
+  DAILY_QUOTE_CHANNELS,
+  DailyQuoteHistorySchema,
+  DailyQuoteViewSchema,
+  type DailyQuoteHistory,
+  type DailyQuoteView,
+} from '../shared/daily-quote-contracts';
+import {
+  SSH_AGENT_NOTES_CHANNELS,
+  SshAgentNotesSchema,
+  type SetSshAgentNoteInput,
+  type SshAgentNotes,
+} from '../shared/ssh-agent-notes-contracts';
+import {
+  PAPER_LIBRARY_IPC_CHANNELS,
+  type ImportPaperSummariesInput,
+  type ImportPaperSummariesReceipt,
+  type PaperLibraryList,
+} from '../shared/paper-library-contracts';
 import { PROJECT_CHAT_ATTACHMENT_IPC_CHANNELS } from '../shared/project-chat-attachment-channels';
 import type {
   ChooseProjectChatAttachmentsInput,
@@ -215,6 +256,8 @@ import {
   type ProjectChatQueuedTurnInput,
   type ProjectChatSession,
   type RenameProjectChatSessionInput,
+  type CompactProjectChatSessionInput,
+  type ProjectChatCompactionReceipt,
   type ProjectChatSnapshot,
   type ProjectChatTurnReceipt,
   type SendProjectChatMessageInput,
@@ -324,6 +367,20 @@ async function invokeLiterature<T>(channel: string, input: unknown): Promise<T> 
   return unwrapLiteratureIpcResult<T>(result);
 }
 
+/** The thrown message is a bounded code the Literature view can explain, never library text. */
+async function invokePaperLibrary<T>(channel: string, input: unknown): Promise<T> {
+  const result: unknown = await ipcRenderer
+    .invoke(channel, input)
+    .catch(() => ({ ok: false, error: { code: 'paper_library_unavailable' } }));
+  if (typeof result === 'object' && result !== null && 'ok' in result) {
+    const outcome = result as { ok: boolean; value?: T; error?: { code?: unknown } };
+    if (outcome.ok && 'value' in outcome) return outcome.value as T;
+    const code = outcome.error?.code;
+    if (typeof code === 'string' && /^[a-z_]{3,64}$/u.test(code)) throw new Error(code);
+  }
+  throw new Error('paper_library_unavailable');
+}
+
 async function invokeManuscriptWorkspace<T>(channel: string, input: unknown): Promise<T> {
   const result = await ipcRenderer.invoke(channel, input).catch(() => ({
     ok: false,
@@ -396,7 +453,64 @@ async function invokeSsh<T>(channel: string, input?: unknown): Promise<T> {
   return unwrapSshIpcResult<T>(result);
 }
 
+async function invokeSshAgentNotes(channel: string, input: unknown): Promise<SshAgentNotes> {
+  const result: unknown = await ipcRenderer
+    .invoke(channel, input)
+    .catch(() => ({ ok: false, error: { code: 'ssh_agent_notes_unavailable' } }));
+  if (typeof result === 'object' && result !== null && 'ok' in result) {
+    const outcome = result as { ok: boolean; value?: unknown; error?: { code?: unknown } };
+    if (outcome.ok) return SshAgentNotesSchema.parse(outcome.value);
+    const code = outcome.error?.code;
+    if (typeof code === 'string' && /^[a-z_]{3,64}$/u.test(code)) throw new Error(code);
+  }
+  throw new Error('ssh_agent_notes_unavailable');
+}
+
 const openSettingsListeners = new Set<() => void>();
+const openAssistantListeners = new Set<() => void>();
+let pendingOpenAssistant = false;
+ipcRenderer.on(APP_NAVIGATION_CHANNELS.openAssistant, (_event, ...args: unknown[]) => {
+  if (args.length) return;
+  if (!openAssistantListeners.size) {
+    pendingOpenAssistant = true;
+    return;
+  }
+  for (const listener of openAssistantListeners) listener();
+});
+function onOpenAssistant(listener: () => void) {
+  if (typeof listener !== 'function') throw new Error('invalid_assistant_listener');
+  openAssistantListeners.add(listener);
+  if (pendingOpenAssistant) {
+    pendingOpenAssistant = false;
+    listener();
+  }
+  return () => {
+    openAssistantListeners.delete(listener);
+  };
+}
+const openSurfaceListeners = new Set<(target: AppShortcutTarget) => void>();
+let pendingOpenSurface: AppShortcutTarget | null = null;
+ipcRenderer.on(APP_NAVIGATION_CHANNELS.openSurface, (_event, ...args: unknown[]) => {
+  const target = args[0];
+  if (args.length !== 1 || !(APP_SHORTCUT_TARGETS as readonly unknown[]).includes(target)) return;
+  if (!openSurfaceListeners.size) {
+    pendingOpenSurface = target as AppShortcutTarget;
+    return;
+  }
+  for (const listener of openSurfaceListeners) listener(target as AppShortcutTarget);
+});
+function onOpenSurface(listener: (target: AppShortcutTarget) => void) {
+  if (typeof listener !== 'function') throw new Error('invalid_surface_listener');
+  openSurfaceListeners.add(listener);
+  if (pendingOpenSurface) {
+    const target = pendingOpenSurface;
+    pendingOpenSurface = null;
+    listener(target);
+  }
+  return () => {
+    openSurfaceListeners.delete(listener);
+  };
+}
 const toggleSidebarListeners = new Set<() => void>();
 let pendingOpenSettings = false;
 let pendingSidebarToggle = false;
@@ -468,6 +582,16 @@ const api = {
   app: {
     onOpenSettings,
     onToggleSidebar,
+    onOpenAssistant,
+    getAssistantShortcut: (): Promise<string> =>
+      ipcRenderer.invoke(APP_NAVIGATION_CHANNELS.getAssistantShortcut),
+    setAssistantShortcut: (value: string): Promise<string> =>
+      ipcRenderer.invoke(APP_NAVIGATION_CHANNELS.setAssistantShortcut, value),
+    onOpenSurface,
+    getAppShortcuts: (): Promise<AppShortcuts> =>
+      ipcRenderer.invoke(APP_NAVIGATION_CHANNELS.getAppShortcuts),
+    setAppShortcuts: (value: AppShortcuts): Promise<AppShortcuts> =>
+      ipcRenderer.invoke(APP_NAVIGATION_CHANNELS.setAppShortcuts, value),
   },
   runtime: {
     readiness: () => ipcRenderer.invoke('gosu:runtime:readiness'),
@@ -485,6 +609,14 @@ const api = {
       ipcRenderer.invoke(AGENT_ADD_ON_CHANNELS.disconnect, {
         id,
       } satisfies DisconnectAgentAddOnRequest) as Promise<AgentAddOnStatus>,
+  },
+  claudeCode: {
+    // Runs the official Claude Code subscription login; tokens never reach GOSU.
+    login: () => ipcRenderer.invoke('gosu:claude-code:login') as Promise<{ status: 'signed_in' }>,
+    cancelLogin: () => ipcRenderer.invoke('gosu:claude-code:cancel-login') as Promise<boolean>,
+    submitLoginCode: (code: string) =>
+      ipcRenderer.invoke('gosu:claude-code:submit-login-code', code) as Promise<boolean>,
+    openLoginPage: () => ipcRenderer.invoke('gosu:claude-code:open-login-page') as Promise<boolean>,
   },
   codex: {
     status: () => ipcRenderer.invoke('gosu:codex:status'),
@@ -509,6 +641,12 @@ const api = {
     },
   },
   briefingLab: {
+    getApprovalPolicy: (): Promise<ApprovalPolicy> =>
+      ipcRenderer.invoke(APPROVAL_POLICY_CHANNELS.get).then((v) => ApprovalPolicySchema.parse(v)),
+    setApprovalPolicy: (value: ApprovalPolicy): Promise<ApprovalPolicy> =>
+      ipcRenderer
+        .invoke(APPROVAL_POLICY_CHANNELS.set, ApprovalPolicySchema.parse(value))
+        .then((v) => ApprovalPolicySchema.parse(v)),
     notifications: () =>
       ipcRenderer
         .invoke('briefing-lab:notifications')
@@ -527,7 +665,9 @@ const api = {
       ipcRenderer
         .invoke(MODEL_ROUTING_CHANNELS.set, ModelRoutingSchema.parse(value))
         .then((v) => ModelRoutingSchema.parse(v)),
-    openPrivacy: (kind: 'automation' | 'calendar'): Promise<void> =>
+    fullDiskAccess: () =>
+      ipcRenderer.invoke(FULL_DISK_ACCESS_CHANNEL) as Promise<FullDiskAccessState>,
+    openPrivacy: (kind: 'automation' | 'calendar' | 'full-disk'): Promise<void> =>
       ipcRenderer.invoke('briefing-lab:open-privacy', kind),
     open: (): Promise<{ url: string; configuration: unknown }> =>
       ipcRenderer.invoke('briefing-lab:open-global'),
@@ -542,6 +682,52 @@ const api = {
         MODEL_USAGE_IPC_CHANNELS.query,
         input,
       ) as Promise<ModelUsageAnalyticsReport>,
+    prices: () => ipcRenderer.invoke(MODEL_PRICE_IPC_CHANNELS.status) as Promise<ModelPriceStatus>,
+    refreshPrices: () =>
+      ipcRenderer.invoke(MODEL_PRICE_IPC_CHANNELS.refresh) as Promise<ModelPriceStatus>,
+  },
+  usageLimits: {
+    status: () => ipcRenderer.invoke(USAGE_LIMIT_IPC_CHANNELS.status) as Promise<UsageLimitStatus>,
+    refresh: () =>
+      ipcRenderer.invoke(USAGE_LIMIT_IPC_CHANNELS.refresh) as Promise<UsageLimitStatus>,
+    configure: (settings: UsageLimitSettings) =>
+      ipcRenderer.invoke(USAGE_LIMIT_IPC_CHANNELS.configure, settings) as Promise<UsageLimitStatus>,
+    onChanged: (listener: (status: UsageLimitStatus) => void) => {
+      if (typeof listener !== 'function') throw new Error('invalid_usage_limit_listener');
+      const handler = (_event: Electron.IpcRendererEvent, ...arguments_: unknown[]) => {
+        if (arguments_.length !== 1) return;
+        const parsed = UsageLimitStatusSchema.safeParse(arguments_[0]);
+        if (parsed.success) listener(parsed.data);
+      };
+      ipcRenderer.on(USAGE_LIMIT_IPC_CHANNELS.changed, handler);
+      return () => {
+        ipcRenderer.removeListener(USAGE_LIMIT_IPC_CHANNELS.changed, handler);
+      };
+    },
+  },
+  dailyQuote: {
+    /** Today's title bar quote; null when it cannot be read, so the chrome simply shows none. */
+    get: async (): Promise<DailyQuoteView | null> => {
+      const value: unknown = await ipcRenderer.invoke(DAILY_QUOTE_CHANNELS.get).catch(() => null);
+      const parsed = DailyQuoteViewSchema.safeParse(value);
+      return parsed.success ? parsed.data : null;
+    },
+    /** Asks for one more line now; the answer says how many of the day's allowance are left. */
+    refresh: async (): Promise<DailyQuoteView | null> => {
+      const value: unknown = await ipcRenderer
+        .invoke(DAILY_QUOTE_CHANNELS.refresh)
+        .catch(() => null);
+      const parsed = DailyQuoteViewSchema.safeParse(value);
+      return parsed.success ? parsed.data : null;
+    },
+    /** Every line still stored, newest first, with the time it was written. */
+    history: async (): Promise<DailyQuoteHistory | null> => {
+      const value: unknown = await ipcRenderer
+        .invoke(DAILY_QUOTE_CHANNELS.history)
+        .catch(() => null);
+      const parsed = DailyQuoteHistorySchema.safeParse(value);
+      return parsed.success ? parsed.data : null;
+    },
   },
   paperSummaries: {
     save: (input: PaperSummaryCandidate) =>
@@ -549,6 +735,12 @@ const api = {
         candidate: input,
         confirmed: true,
       }) as Promise<PaperSummarySaveReceipt>,
+    list: () => invokePaperLibrary<PaperLibraryList>(PAPER_LIBRARY_IPC_CHANNELS.list, undefined),
+    importToLiterature: (input: ImportPaperSummariesInput) =>
+      invokePaperLibrary<ImportPaperSummariesReceipt>(
+        PAPER_LIBRARY_IPC_CHANNELS.importToLiterature,
+        input,
+      ),
   },
   projectChat: {
     snapshot: (projectId: string, sessionId?: string) =>
@@ -566,6 +758,11 @@ const api = {
       invokeProjectChat<ProjectChatSession>(PROJECT_CHAT_IPC_CHANNELS.branchSession, input),
     renameSession: (input: RenameProjectChatSessionInput) =>
       invokeProjectChat<ProjectChatSession>(PROJECT_CHAT_IPC_CHANNELS.renameSession, input),
+    compactSession: (input: CompactProjectChatSessionInput) =>
+      invokeProjectChat<ProjectChatCompactionReceipt>(
+        PROJECT_CHAT_IPC_CHANNELS.compactSession,
+        input,
+      ),
     updateProfile: (input: UpdateProjectChatProfileInput) =>
       invokeProjectChat<ProjectChatProfile>(PROJECT_CHAT_IPC_CHANNELS.updateProfile, input),
     send: (input: SendProjectChatMessageInput) =>
@@ -741,6 +938,10 @@ const api = {
       invokeLiterature<LiteratureOrganizeReceipt>(LITERATURE_IPC_CHANNELS.organize, input),
     cancelOrganize: (input: CancelLiteratureAiInput) =>
       invokeLiterature<LiteratureAiCancelReceipt>(LITERATURE_IPC_CHANNELS.cancelOrganize, input),
+    planSearch: (input: PlanLiteratureSearchInput) =>
+      invokeLiterature<LiteratureSearchPlanReceipt>(LITERATURE_IPC_CHANNELS.planSearch, input),
+    undoSearch: (input: UndoLiteratureSearchInput) =>
+      invokeLiterature<UndoLiteratureSearchReceipt>(LITERATURE_IPC_CHANNELS.undoSearch, input),
   },
   lectureStudio: {
     list: (input: ListLectureStudiosInput) =>
@@ -949,6 +1150,14 @@ const api = {
         ipcRenderer.removeListener(EXPERIMENT_EVALUATION_IPC_CHANNELS.event, handler);
       };
     },
+  },
+  /**
+   * The user's notes for the AI per registered server. Kept out of `ssh`: that namespace is the
+   * reviewed connection and approval surface, and plain text settings do not belong to it.
+   */
+  sshAgentNotes: {
+    get: () => invokeSshAgentNotes(SSH_AGENT_NOTES_CHANNELS.get, undefined),
+    set: (input: SetSshAgentNoteInput) => invokeSshAgentNotes(SSH_AGENT_NOTES_CHANNELS.set, input),
   },
   ssh: {
     listConnections: () =>

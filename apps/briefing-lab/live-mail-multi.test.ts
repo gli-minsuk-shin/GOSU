@@ -130,6 +130,21 @@ it('keeps successful accounts on a source timeout but fails closed on a scope/in
     'mail_scope_response_invalid',
   );
 });
+it('does not make every other account wait for a Mail that never answered, and counts the unread accounts', async () => {
+  const f = await fixture();
+  const reads = () => f.read.mock.calls.filter(([q]) => q.action === 'read').length;
+  // One account answered too slowly: the other is still read, and the unread one is counted.
+  f.read.mockRejectedValueOnce(Error('mail_timeout_metadata'));
+  const partial = await f.mail.collect('r', f.scope, f.signal);
+  expect(partial).toMatchObject({ delayedAccounts: 1 });
+  expect(partial.items).toHaveLength(1);
+  expect(reads()).toBe(2);
+  // Mail was silent for the whole waiting time: the second account is not sent to the same Mail.
+  f.read.mockRejectedValueOnce(Error('mail_timeout_account'));
+  await expect(f.mail.collect('r', f.scope, f.signal)).rejects.toThrow('mail_timeout_account');
+  expect(reads()).toBe(3);
+  expect((await f.mail.collect('r', f.scope, f.signal)).delayedAccounts).toBeUndefined();
+});
 it('requires the entire exact approved selection and rejects cross-account mailbox IDs', async () => {
   const f = await fixture();
   await expect(
@@ -155,9 +170,31 @@ it('revocation cancels every account read and discards all late results', async 
       }),
   );
   const pending = f.mail.collect('r', f.scope, f.signal);
-  expect(signals).toHaveLength(2);
+  await Promise.resolve();
+  // Accounts are read one at a time, so only the first reader is active when revocation happens.
+  expect(signals).toHaveLength(1);
   f.mail.revoke('r');
   expect(signals.every((s) => s.aborted)).toBe(true);
   complete.forEach((done) => done());
   await expect(pending).rejects.toThrow(/source_cancelled|mail_scope_required/);
+  expect(signals).toHaveLength(1);
+});
+it('reads selected accounts one at a time so a slow account cannot starve the others', async () => {
+  const f = await fixture();
+  let active = 0,
+    peak = 0;
+  const base = f.read.getMockImplementation()!;
+  f.read.mockImplementation(async (q, signal, progress) => {
+    active++;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    try {
+      return await base(q, signal, progress);
+    } finally {
+      active--;
+    }
+  });
+  const result = await f.mail.collect('r', f.scope, f.signal);
+  expect(result.items).toHaveLength(2);
+  expect(peak).toBe(1);
 });

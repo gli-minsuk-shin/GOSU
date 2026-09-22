@@ -86,7 +86,13 @@ describe('Desktop Project Chat session updates', () => {
       1,
     );
     expect(source).toContain("routedModel(modelRouting.policy, 'projectChat')");
-    expect(source).toContain("loaded.status === 'missing' && modelRouting.ready");
+    // A chat follows Settings → Agent unless its own menu picked a model; opening a chat no longer
+    // saves the default of the day as if it were that pick.
+    expect(source).toContain(
+      "const followsSettings = loaded.status === 'missing' || loaded.status === 'inherited';",
+    );
+    expect(source).not.toContain("loaded.status === 'missing' && modelRouting.ready");
+    expect(source).toContain('if (selection !== saved && !followsSettings) {');
     expect(source).toContain("activeTab === 'lecture' && modelRouting.ready");
     expect(source.match(/loadScopedProjectChatModelSelection\(/gu)).toHaveLength(2);
     expect(source).toContain(

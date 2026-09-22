@@ -58,3 +58,32 @@ it('keeps finalization distinct from completed scientific summaries', () => {
   expect(html).toContain('완료 상태를 확인');
   expect(html).not.toContain('100%');
 });
+
+it('says which kind is being summarized, which batches run now and what waits', () => {
+  const html = renderToStaticMarkup(
+    <BriefingGenerationProgress
+      job={{
+        ...job,
+        progress: { stage: 'summarize', completed: 6, total: 28 },
+        quickBriefingState: 'saved',
+        summaryKinds: [
+          {
+            kind: 'email',
+            total: 18,
+            saved: 6,
+            failed: 1,
+            running: ['7–12', '13–18'],
+            state: 'running',
+          },
+          { kind: 'papers', total: 10, saved: 0, failed: 0, running: [], state: 'waiting' },
+        ],
+      }}
+    />,
+  );
+  const [summary, detail] = html.split('</summary>');
+  expect(summary).toContain('AI 요약 · 이메일');
+  expect(detail).toContain('빠른 1차 브리핑 · 표시됨');
+  expect(detail).toContain('이메일 요약 중 · 6/18통 저장 · 지금 7–12, 13–18번째 · 실패 1통');
+  expect(detail).toContain('논문 요약 · 10편 대기 (이메일 요약 후 시작)');
+  expect(GenerationStatusSchema.parse({ ...job, summaryKinds: [] }).summaryKinds).toEqual([]);
+});

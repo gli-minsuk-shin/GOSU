@@ -8,7 +8,9 @@ import {
 } from './model-chat-markdown';
 import {
   formatModelChatTime,
+  modelChatReadingPositionFromScroll,
   modelChatScrollState,
+  modelChatScrollTarget,
   modelCopilotProviderLabel,
 } from './model-lab-app';
 
@@ -75,7 +77,7 @@ $$
     expect(appSource).toContain('<span className="chat-message__provenance">');
   });
 
-  it('keeps chat cards, long code, provenance, and display math inside the Copilot width', () => {
+  it('keeps chat cards, long code, provenance, and display math inside the Assistant width', () => {
     const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
 
     expect(styles).toMatch(
@@ -99,7 +101,7 @@ $$
     const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
     const appSource = readFileSync(new URL('./model-lab-app.tsx', import.meta.url), 'utf8');
 
-    expect(appSource).toContain("aria-label={uiText('Model Copilot conversation history')}");
+    expect(appSource).toContain("aria-label={uiText('Model Assistant conversation history')}");
     expect(appSource).toMatch(/\{messages\.map\(\(message(?:,\s*messageIndex)?\) => \(/);
     expect(appSource).not.toContain('messages.slice(-4)');
     expect(styles).toMatch(
@@ -134,8 +136,8 @@ $$
         clientHeight: 400,
       }),
     ).toEqual({ canScroll: true, atTop: false, nearBottom: true });
-    expect(appSource).toContain('Scroll to earlier Model Copilot messages');
-    expect(appSource).toContain('Jump to the latest Model Copilot message');
+    expect(appSource).toContain('Scroll to earlier Model Assistant messages');
+    expect(appSource).toContain('Jump to the latest Model Assistant message');
     expect(styles).toContain('.model-chat__scroll-jump {');
   });
 
@@ -143,7 +145,7 @@ $$
     const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
     const appSource = readFileSync(new URL('./model-lab-app.tsx', import.meta.url), 'utf8');
 
-    expect(appSource).toContain('Live Model Copilot agent activity');
+    expect(appSource).toContain('Live Model Assistant agent activity');
     expect(appSource).toContain("progress.tool.replaceAll('_', ' ')");
     const composerSource = readFileSync(
       new URL('./model-chat-composer.tsx', import.meta.url),
@@ -151,14 +153,18 @@ $$
     );
     expect(appSource).toContain('busy={answering}');
     expect(composerSource).toContain("{busy ? uiText('Stop') : uiText('Send')}");
-    expect(appSource).toContain('copilotTurnAbortRef.current?.abort()');
+    expect(appSource).toContain('onStop={stopCopilotTurn}');
+    expect(appSource).toContain('copilotRuns.owns(activeChatSessionKey, turnController)');
+    expect(appSource).not.toContain(
+      'isCurrentModelLabTurn(turn, turnSequenceRef.current, activeModelRef.current)',
+    );
     expect(appSource).toContain('message.usage.inputTokens.toLocaleString()');
     expect(styles).toContain('.model-chat__agent-progress {');
     expect(styles).toContain('.model-chat__stop-button {');
     expect(styles).toContain('.chat-message__usage {');
   });
 
-  it('uses the GOSU Project Chat interaction structure in Model Copilot', () => {
+  it('uses the GOSU Project Chat interaction structure in Model Assistant', () => {
     const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
     const appSource = readFileSync(new URL('./model-lab-app.tsx', import.meta.url), 'utf8');
 
@@ -173,8 +179,8 @@ $$
       'utf8',
     );
     expect(appSource).toContain('<ModelChatComposer');
-    expect(composerSource).toContain("aria-label={uiText('Message GOSU Model Copilot')}");
-    expect(appSource).toContain('Jump to the latest Model Copilot message');
+    expect(composerSource).toContain("aria-label={uiText('Message GOSU Model Assistant')}");
+    expect(appSource).toContain('Jump to the latest Model Assistant message');
     expect(styles).toMatch(
       /\.model-chat__composer-row \{[\s\S]*?grid-template-columns: 54px minmax\(0, 1fr\) 76px;/u,
     );
@@ -204,5 +210,33 @@ $$
     );
     expect(styles).toContain('.model-chat__catalog-refresh {');
     expect(styles).toContain('.model-chat__toolbar-badges > span.warning {');
+  });
+});
+
+describe('Model Assistant reading position', () => {
+  it('opens a conversation where it was left, and at the latest message when it was never scrolled', () => {
+    expect(modelChatScrollTarget(undefined)).toEqual({ kind: 'bottom' });
+    expect(modelChatScrollTarget({ top: 900, atBottom: true })).toEqual({ kind: 'bottom' });
+    expect(modelChatScrollTarget({ top: 420, atBottom: false })).toEqual({
+      kind: 'offset',
+      top: 420,
+    });
+  });
+
+  it('records where the reader is only while the log has a box and nothing is moving it for them', () => {
+    const viewport = { scrollTop: 420, scrollHeight: 3_000, clientHeight: 600 };
+
+    expect(modelChatReadingPositionFromScroll(viewport, false)).toEqual({
+      top: 420,
+      atBottom: false,
+    });
+    expect(
+      modelChatReadingPositionFromScroll({ ...viewport, scrollTop: 2_390 }, false)?.atBottom,
+    ).toBe(true);
+    // A frame hidden by the desktop reports no height and a reset position.
+    expect(
+      modelChatReadingPositionFromScroll({ scrollTop: 0, scrollHeight: 0, clientHeight: 0 }, false),
+    ).toBeNull();
+    expect(modelChatReadingPositionFromScroll(viewport, true)).toBeNull();
   });
 });

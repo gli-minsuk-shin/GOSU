@@ -213,6 +213,32 @@ describe('Notification bell and inbox controls', () => {
     expect(JSON.stringify(renderer!.toJSON())).toContain('1 day overdue');
     expect(JSON.stringify(renderer!.toJSON())).not.toContain('1 days overdue');
   });
+  it('presents mark-all-read as a real button that stays readable when nothing is unread', () => {
+    const css = readFileSync(
+      new URL('../src/renderer/src/notification-center.css', import.meta.url),
+      'utf8',
+    );
+    const rule = (selector: string) =>
+      css.slice(css.indexOf(`${selector} {`), css.indexOf('}', css.indexOf(`${selector} {`)));
+    const enabled = rule('.notification-toolbar .notification-mark-all');
+    const disabled = rule('.notification-toolbar .notification-mark-all:disabled');
+
+    expect(enabled).toContain('font-size: var(--font-control)');
+    expect(enabled).toContain('border: 1px solid');
+    expect(enabled).toContain('color: var(--green)');
+    expect(enabled).toContain('font-weight: 600');
+    expect(disabled).toContain('opacity: 1');
+    expect(disabled).toContain('color: var(--muted)');
+
+    mount();
+    act(() =>
+      buttons()
+        .find((button) => button.props['aria-haspopup'])!
+        .props.onClick(),
+    );
+    const markAll = buttons().find((button) => text(button.props.children) === 'Mark all as read')!;
+    expect(markAll.props.className).toBe('notification-mark-all');
+  });
   it('shows unread count, opens a popover and marks all read without resolving sources', () => {
     mount();
     const button = buttons().find((button) => button.props['aria-haspopup'])!;

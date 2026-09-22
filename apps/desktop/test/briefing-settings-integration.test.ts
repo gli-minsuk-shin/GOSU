@@ -59,6 +59,10 @@ it('declares macOS Mail automation and Calendar access reasons in the packaged h
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   expect(pkg.build.mac.extendInfo.NSAppleEventsUsageDescription).toContain('Apple Mail');
   expect(pkg.build.mac.extendInfo.NSCalendarsFullAccessUsageDescription).toContain('캘린더');
+  // macOS attributes the bundled bridge's Reminders request to this host app, so the prompt only
+  // appears when the host itself declares a reason; without it Reminders silently stays denied.
+  expect(pkg.build.mac.extendInfo.NSRemindersFullAccessUsageDescription).toContain('미리 알림');
+  expect(pkg.build.mac.extendInfo.NSRemindersUsageDescription).toContain('미리 알림');
   expect(
     readFileSync(new URL('../build/entitlements.mac.plist', import.meta.url), 'utf8'),
   ).toContain('com.apple.security.automation.apple-events');

@@ -71,6 +71,28 @@ export function sameVerifiedMail(a: DuplicateMail, b: DuplicateMail) {
     x.length === y.length,
   );
 }
+/**
+ * One message delivered to several of the user's accounts: a verified source match, or the same
+ * Message-ID (the canonical `message://` link) and subject in different accounts. Many copies never
+ * get a source proof (attachments, bodies Mail has not downloaded, a read cut short), which left
+ * identical rows side by side. Copies whose verified sources differ are never merged.
+ */
+export function sameDeliveredMail(a: DuplicateMail, b: DuplicateMail) {
+  if (sameVerifiedMail(a, b)) return true;
+  const x = a.mailContentProof,
+    y = b.mailContentProof;
+  return Boolean(
+    a.kind === 'email' &&
+    b.kind === 'email' &&
+    a.mailAccount &&
+    b.mailAccount &&
+    a.mailAccount.id !== b.mailAccount.id &&
+    a.title === b.title &&
+    a.mailMessageUrl &&
+    a.mailMessageUrl === b.mailMessageUrl &&
+    !(x && y && (x.digest !== y.digest || x.previewDigest !== y.previewDigest)),
+  );
+}
 export function deduplicateVerifiedMail<T extends DuplicateMail>(items: readonly T[]): T[] {
   const out: T[] = [];
   const identity = (copy: MailCopy) =>
@@ -106,7 +128,7 @@ export function deduplicateVerifiedMail<T extends DuplicateMail>(items: readonly
     if (representative && representative !== item && representative.id !== item.id) continue;
     const index = out.findIndex(
       (other) =>
-        sameVerifiedMail(other, item) &&
+        sameDeliveredMail(other, item) &&
         copies(other).length + copies(item).length <= 5 &&
         !copies(other).some((a) => copies(item).some((b) => a.account.id === b.account.id)),
     );

@@ -6,19 +6,34 @@ import type { Plugin } from 'vite';
 import { routineModels, runRoutineWithGosuLanguage } from './briefing-native';
 import { RoutineRequestSchema, routineErrorMessage } from './src/routine-builder';
 import { LiveSourceService } from './live-source-service';
+import { BriefingWorkspaceStore } from './briefing-workspace-store';
 import { briefingClientContext } from './briefing-client-context';
 import { ASSISTANT_TURN_TIMEOUT_MS } from './briefing-tool-policy';
 import { SharedPaperSummaryLibrary } from './paper-summary-library';
 import { classifySavedPaperTexts } from './paper-classification';
 import type { TodoReader } from './src/briefing-todos';
+import type { BriefingTaskActions } from './src/briefing-task-actions';
 import { defaultModelRouting, type ModelRouting } from '@gosu/contracts';
+import { BriefingGuidanceStore } from './briefing-guidance-store';
 
-function productionSources(consent?: (message: string, signal: AbortSignal) => Promise<void>) {
-  const service = new LiveSourceService(undefined, undefined, consent);
+function productionSources(
+  consent?: (message: string, signal: AbortSignal) => Promise<void>,
+  reuseApprovedScopes?: () => boolean,
+) {
+  const service = new LiveSourceService(
+    undefined,
+    undefined,
+    consent,
+    undefined,
+    undefined,
+    new BriefingWorkspaceStore(undefined, undefined, reuseApprovedScopes),
+  );
   service.sharedPaperLibrary = new SharedPaperSummaryLibrary(undefined, undefined, undefined, () =>
     service.modelRouting ? service.modelRouting() : Promise.resolve(defaultModelRouting()),
   );
   service.paperClassifier = classifySavedPaperTexts;
+  service.quickBriefingRunner = runRoutineWithGosuLanguage;
+  service.guidance = new BriefingGuidanceStore();
   service.enableGeneration(undefined, false);
   return service;
 }
@@ -41,9 +56,12 @@ export function createBriefingMiddleware(
   consent?: (message: string, signal: AbortSignal) => Promise<void>,
   projectBridge?: ProjectBridge,
   attachments?: ProjectChatAttachmentService,
+  reuseApprovedScopes?: () => boolean,
+  taskActions?: BriefingTaskActions,
 ) {
-  const sources = sourceService ?? productionSources(consent);
+  const sources = sourceService ?? productionSources(consent, reuseApprovedScopes);
   if (todoReader) sources.todoReader = todoReader;
+  if (taskActions) sources.taskActions = taskActions;
   if (modelRouting) sources.modelRouting = modelRouting;
   if (projectBridge) sources.projectBridge = projectBridge;
   if (attachments) sources.setAttachments(attachments);
@@ -150,6 +168,7 @@ export function createBriefingMiddleware(
   return {
     middleware,
     desktopConfiguration: () => sources.desktopConfiguration(),
+    hostReads: sources.hostReads(),
     notificationSnapshot: () => sources.notificationSnapshot(),
     startScheduling: () => sources.generation?.startTimer(),
     close: () => {

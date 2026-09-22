@@ -1,5 +1,26 @@
 # Sidebar icon design — GOSU 0.58.3
 
+2026-09-15 [AI activity](SIDEBAR_AI_ACTIVITY.md) adds an 11px status star beside—not a resize of—the
+existing icon. The static decorative assistant sparkle is suppressed only while its status star is
+visible, avoiding two overlapping stars. Activity, reduced-motion and acknowledgement are described
+separately from the historical icon-only changes below.
+
+2026-09-14 [installed 0.58.63](releases/0.58.63.md) restores the assistant drawing to the same
+18×18px dimensions as Search/Notifications. The previous 28px override below is superseded.
+Keep the 22px alignment slot, button hit target, bubble/sparkle paths, colors and navigation.
+Real-render metrics across light/dark and two sidebar widths confirm equal sizes and zero
+centering error. Light/dark screenshots were directly inspected for visual balance.
+
+2026-09-14 [installed 0.58.51](releases/0.58.51.md) replaces the rejected 0.58.50 composition:
+the assistant alone uses a 28px drawing centered in the unchanged 22px slot. Keep a full-size
+speech bubble, three dots and a larger green sparkle badge with a surface-colored separator.
+Other icons and all button geometry remain unchanged. Actual chat-panel dimensions are not changed.
+
+2026-09-14 [0.58.50 candidate](releases/0.58.50.md): enlarge the sparkle to 10.5×10.5 units from
+6×6 and use the existing theme-aware green accent. Inset the closed bubble/dots to preserve a
+clear gap. The common 18px graphic and 22px slot remain unchanged; no animated glow is added.
+This supersedes the small same-color sparkle below.
+
 2026-09-14 [0.58.46 candidate](releases/0.58.46.md): the AI assistant shortcut adds a small solid
 four-point sparkle at the upper right of a closed, three-dot speech bubble. The bubble is inset within
 the same 24-unit viewBox so the sparkle does not obscure the outline or clip at 18px. No pulsing,

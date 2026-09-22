@@ -64,9 +64,17 @@ export function weatherPlot(hours: WeatherSeries['hours'], width = 580) {
     .join(' ');
   return { path, low, high, points };
 }
+/** The hour whose plotted x is nearest to a pointer x in chart units; null without hours. */
+export function nearestHourIndex(points: readonly { x: number }[], x: number) {
+  let nearest: number | null = null;
+  for (const [index, point] of points.entries())
+    if (nearest === null || Math.abs(point.x - x) < Math.abs(points[nearest]!.x - x))
+      nearest = index;
+  return nearest;
+}
 export function precipitationBarHeight(probability: number | null) {
   if (probability === null || probability <= 0) return 0;
-  return Math.max(3, Math.min(100, probability) * 0.52);
+  return Math.min(100, probability) * 0.64;
 }
 export function WeatherCard({
   weather,
@@ -77,7 +85,12 @@ export function WeatherCard({
 }) {
   const id = useId();
   const [active, setActive] = useState<number | null>(null);
-  const minimumWidth = Math.max(580, weather.hours.length * 25 + 70);
+  const allZero = weather.hours.length > 0 && weather.hours.every((h) => h.precipitation === 0);
+  const allMissing =
+    weather.hours.length > 0 && weather.hours.every((h) => h.precipitation === null);
+  const chartHeight = 210,
+    baseline = chartHeight - 26;
+  const minimumWidth = 340;
   const [chartWidth, setChartWidth] = useState(minimumWidth);
   const [scrollable, setScrollable] = useState(false);
   const chart = useRef<HTMLDivElement | null>(null);
@@ -91,9 +104,8 @@ export function WeatherCard({
     });
     observer.observe(chart.current);
     return () => observer.disconnect();
-  }, [weather.hours.length]);
+  }, [minimumWidth]);
   const plot = weatherPlot(weather.hours, chartWidth);
-  const staggerLabels = (chartWidth - 70) / Math.max(1, weather.hours.length - 1) < 34;
   const valid = weather.hours.flatMap((h) => (h.temperature === null ? [] : [h.temperature]));
   const current = active === null ? null : weather.hours[active];
   const condition = weatherCondition(weather.code),
@@ -159,20 +171,21 @@ export function WeatherCard({
         <div
           ref={chart}
           className="weather-chart-scroll"
+          style={{ minHeight: chartHeight }}
           role="region"
           aria-label="시간별 예보 그래프 · 좁은 화면에서는 좌우로 스크롤"
           tabIndex={0}
         >
           <svg
             className="weather-chart"
-            style={{ fontSize: 11, minWidth: minimumWidth }}
-            viewBox={`0 0 ${chartWidth} 218`}
+            style={{ fontSize: 11, minWidth: minimumWidth, height: chartHeight }}
+            viewBox={`0 0 ${chartWidth} ${chartHeight}`}
             role="img"
             aria-labelledby={id}
           >
             <title
               id={id}
-            >{`시간별 기온과 강수확률 예보. ${weather.hours.length}개 시간대. 결측 기온 구간은 연결하지 않습니다.`}</title>
+            >{`시간별 기온과 강수확률 예보. ${weather.hours.length}개 시간대. ${allZero ? '예보 구간 강수확률 0%. ' : allMissing ? '강수확률 미제공. ' : ''}결측 기온 구간은 연결하지 않습니다.`}</title>
             {[plot.low, (plot.high + plot.low) / 2, plot.high].map((t) => (
               <g key={t}>
                 <path
@@ -189,15 +202,69 @@ export function WeatherCard({
               </g>
             ))}
             <path d={plot.path} stroke="#5c803a" strokeWidth="2.5" fill="none" />
+            {/* Anywhere on the chart selects the nearest hour, so the cursor need not land on a
+                point; the points and bars above keep their own focus and click handling. */}
+            <rect
+              className="weather-hit-layer"
+              x="42"
+              y="0"
+              width={Math.max(0, chartWidth - 67)}
+              height={baseline}
+              fill="transparent"
+              onPointerMove={(event) => {
+                const svg = event.currentTarget.ownerSVGElement;
+                const box = svg?.getBoundingClientRect();
+                if (!box || box.width <= 0) return;
+                const x = ((event.clientX - box.left) * chartWidth) / box.width;
+                setActive(nearestHourIndex(plot.points, x));
+              }}
+              onPointerLeave={() => setActive(null)}
+            />
+            {current && active !== null && plot.points[active] ? (
+              <g className="weather-crosshair" aria-hidden="true">
+                <path
+                  d={`M${plot.points[active]!.x} 14V${baseline}`}
+                  stroke="#5c803a"
+                  strokeDasharray="3 3"
+                />
+                {(() => {
+                  const label = `${hour(current.time)} · ${current.temperature ?? '—'}°C · 강수 ${current.precipitation ?? '—'}%`;
+                  const width = label.length * 7 + 14;
+                  const x = Math.min(
+                    Math.max(plot.points[active]!.x - width / 2, 42),
+                    chartWidth - 25 - width,
+                  );
+                  return (
+                    <>
+                      <rect x={x} y="1" width={width} height="18" rx="5" />
+                      <text x={x + width / 2} y="14" textAnchor="middle">
+                        {label}
+                      </text>
+                    </>
+                  );
+                })()}
+              </g>
+            ) : null}
             <rect
               className="weather-rain-band"
-              x="30"
-              y="103"
-              width={chartWidth - 43}
-              height="92"
+              x="42"
+              y="120"
+              width={chartWidth - 67}
+              height="64"
               rx="6"
             />
-            <path d={`M42 192H${chartWidth - 25}`} stroke="#d4e1ec" />
+            {[0, 50, 100].map((value) => (
+              <g key={value} className="weather-probability-axis">
+                <path
+                  d={`M42 ${baseline - precipitationBarHeight(value)}H${chartWidth - 25}`}
+                  stroke="#d4e1ec"
+                  strokeDasharray={value === 0 ? undefined : '3 4'}
+                />
+                <text x="32" y={baseline - precipitationBarHeight(value) + 4} textAnchor="end">
+                  {value}%
+                </text>
+              </g>
+            ))}
             {weather.hours.map((h, i) => {
               const p = plot.points[i]!;
               const precipitation =
@@ -210,7 +277,7 @@ export function WeatherCard({
               return (
                 <g key={h.time}>
                   {i % 6 === 0 || i === weather.hours.length - 1 ? (
-                    <text x={p.x} y="211" textAnchor="middle">
+                    <text x={p.x} y={baseline + 19} textAnchor="middle">
                       {hour(h.time)}
                     </text>
                   ) : null}
@@ -236,10 +303,10 @@ export function WeatherCard({
                       className={`weather-precipitation-bar${precipitation === 0 ? ' is-zero' : ''}`}
                       data-probability={precipitation}
                       x={p.x - precipitationWidth / 2}
-                      y={precipitation === 0 ? 192 : 192 - precipitationHeight}
+                      y={precipitation === 0 ? baseline : baseline - precipitationHeight}
                       width={precipitationWidth}
                       height={precipitation === 0 ? 2 : precipitationHeight}
-                      rx="3"
+                      rx="1"
                       tabIndex={0}
                       onMouseEnter={() => setActive(i)}
                       onMouseLeave={() => setActive(null)}
@@ -250,14 +317,6 @@ export function WeatherCard({
                       <title>{`${hour(h.time)} · 강수확률 ${precipitation}% · 기온 ${h.temperature ?? '미제공'}°C`}</title>
                     </rect>
                   )}
-                  <text
-                    className={`weather-probability-label${precipitation === 0 ? ' is-zero' : ''}`}
-                    x={p.x}
-                    y={staggerLabels && i % 2 ? 130 : 117}
-                    textAnchor="middle"
-                  >
-                    {precipitation === null ? '—' : `${precipitation}%`}
-                  </text>
                 </g>
               );
             })}
@@ -269,7 +328,7 @@ export function WeatherCard({
       <div className="weather-footnote">
         {current
           ? `${hour(current.time)} · ${current.temperature ?? '—'}°C · 체감 ${current.apparent ?? '—'}°C · 강수확률 ${current.precipitation ?? '—'}%`
-          : `파란 숫자·막대: 강수확률 · 0%는 기준선, —는 미제공 · 아주 낮은 확률은 최소 높이로 표시${scrollable ? ' · 좌우로 스크롤해 모든 시간대 확인' : ''}`}
+          : `그래프 위에 커서를 올리면 그 시각의 기온·강수확률 표시${scrollable ? ' · 좌우로 스크롤' : ''}`}
       </div>
       <small className="weather-source">
         Open-Meteo 예보 · 기준{' '}

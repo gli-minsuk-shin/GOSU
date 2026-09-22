@@ -6,7 +6,8 @@ import type {
   TensorDimension,
   TensorShape,
 } from './model-lab-schema';
-import { renderFormulaResult } from './formula';
+import { formulaDisplayRows, renderFormulaResult } from './formula';
+import { isSymbolicDimension, generatedGraphPresentationError } from './graph-presentation';
 import { modelShapeConsistencyFindings } from './model-lab-domain';
 import { modelFormulaConsistencyFindings } from './model-formula-consistency';
 import {
@@ -249,9 +250,10 @@ function tensorShape(value: unknown, field: string): TensorShape {
     }
     if (
       typeof dimension === 'string' &&
-      /^(?:[1-9]\d*)?[A-Za-z][A-Za-z0-9_]{0,13}'?(?:[+-][1-9]\d*)?$/.test(dimension)
+      (isSymbolicDimension(dimension) ||
+        /^(?:[1-9]\d*)?[A-Za-z][A-Za-z0-9_]{0,13}'?(?:[+-][1-9]\d*)?$/.test(dimension))
     ) {
-      return dimension;
+      return dimension.replace(/\s+/g, '');
     }
     throw new Error(`${field}[${index}] is not a bounded symbolic or positive dimension.`);
   });
@@ -306,6 +308,46 @@ function moduleFrom(value: unknown, index: number): ModelModule {
   }
   const inputPorts = modulePorts(value.inputPorts, `modules[${index}].inputPorts`);
   const outputPorts = modulePorts(value.outputPorts, `modules[${index}].outputPorts`);
+  let presentation: ModelModule['presentation'];
+  if (value.presentation !== undefined && value.presentation !== null) {
+    const p = value.presentation;
+    if (!isRecord(p) || !Array.isArray(p.uncertainties) || p.uncertainties.length > 4)
+      throw Error('Graph presentation must contain a bounded uncertainty list.');
+    presentation = {
+      purpose: boundedString(p.purpose, 'presentation.purpose', 180),
+      keyEquation: boundedString(
+        p.keyEquationIndex !== undefined && typeof value.formula === 'string'
+          ? formulaDisplayRows(value.formula)[
+              boundedInteger(p.keyEquationIndex, 'presentation.keyEquationIndex', 0, 32)
+            ]
+          : p.keyEquation,
+        'presentation.keyEquation',
+        600,
+      ),
+      shapeNotes: boundedString(p.shapeNotes, 'presentation.shapeNotes', 600),
+      uncertainties: p.uncertainties.map((s) =>
+        boundedString(s, 'presentation.uncertainties', 240),
+      ),
+    };
+    const normalize = (s: string) => s.replace(/\s+/g, '');
+    if (
+      typeof value.formula === 'string' &&
+      /unresolved|unspecified/i.test(value.formula) &&
+      !presentation.uncertainties.length
+    )
+      throw Error('An explicitly unresolved formula needs a specific uncertainty explanation.');
+    const keyEquation = normalize(presentation.keyEquation);
+    if (
+      typeof value.formula !== 'string' ||
+      !formulaDisplayRows(value.formula).some((row) => normalize(row) === keyEquation)
+    )
+      throw Error('The card key equation must be grounded in the stored module formula.');
+    if (
+      !/(?:=|\\(?:in|mapsto|to)\b)/.test(presentation.keyEquation) ||
+      !renderFormulaResult(presentation.keyEquation).valid
+    )
+      throw Error('The card key equation must render as a complete equation.');
+  }
   return {
     id: boundedString(value.id, `modules[${index}].id`, 120),
     name: boundedString(value.name, `modules[${index}].name`, 160),
@@ -327,6 +369,7 @@ function moduleFrom(value: unknown, index: number): ModelModule {
         : boundedString(value.activation, `modules[${index}].activation`, 160),
     formula: boundedString(value.formula, `modules[${index}].formula`, 2_000),
     explanation: boundedString(value.explanation, `modules[${index}].explanation`, 2_000),
+    ...(presentation ? { presentation } : {}),
     parameterCount: boundedNumber(value.parameterCount, `modules[${index}].parameterCount`),
     codeReference: boundedString(value.codeReference, `modules[${index}].codeReference`, 300),
     ...(value.repeat === undefined || value.repeat === null
@@ -439,6 +482,7 @@ export function parseModelImportJson(
   text: string,
   options: Readonly<{
     enforceSourceOutputContracts?: boolean;
+    enforceReadableNames?: boolean;
     allowSubgraphs?: boolean;
     sourceArtifactNames?: readonly string[];
   }> = {},
@@ -466,7 +510,7 @@ export function parseModelImportJson(
     const moduleIds = new Set(modules.map((module) => module.id));
     const moduleById = new Map(modules.map((module) => [module.id, module]));
     if (moduleIds.size !== modules.length) throw new Error('module ids must be unique.');
-    const connections = value.connections.map(connectionFrom);
+    let connections = value.connections.map(connectionFrom);
     const connectionIds = new Set(connections.map((connection) => connection.id));
     if (connectionIds.size !== connections.length)
       throw new Error('connection ids must be unique.');
@@ -499,6 +543,28 @@ export function parseModelImportJson(
         throw new Error(`${connection.id} binds targetPort on a module without inputPorts.`);
       }
     }
+    // A matching loop-carried pair already represents the feedback relation. Some
+    // generators also emit its arrow as an ordinary edge; canonicalize only that
+    // exact redundant edge after validating endpoints/shapes, never external edges.
+    connections = connections.filter((connection) => {
+      const source = moduleById.get(connection.source)!;
+      const target = moduleById.get(connection.target)!;
+      const output = source.outputPorts?.find((p) => p.name === connection.sourcePort);
+      const input = target.inputPorts?.find((p) => p.name === connection.targetPort);
+      const sameOwner =
+        (source.id === target.id && source.repeat) ||
+        (source.block &&
+          target.block &&
+          source.block.id === target.block.id &&
+          source.block.repeatCount === target.block.repeatCount);
+      return !(
+        sameOwner &&
+        output?.binding === 'loop-carried' &&
+        input?.binding === 'loop-carried' &&
+        output.bindingId &&
+        output.bindingId === input.bindingId
+      );
+    });
     const sourceArtifacts = Array.isArray(value.sourceArtifacts)
       ? value.sourceArtifacts.slice(0, 16).map((artifact, index) => {
           if (!isRecord(artifact) || typeof artifact.verified !== 'boolean') {
@@ -534,6 +600,9 @@ export function parseModelImportJson(
       gradientEvidence: null,
     };
     let model = splitIndependentLambdaSummary(rawModel);
+    const presentationFinding = options.enforceReadableNames
+      ? generatedGraphPresentationError(model)
+      : null;
     const expectedSourceArtifactNames = [
       ...new Set(
         (options.sourceArtifactNames ?? [])
@@ -617,6 +686,7 @@ export function parseModelImportJson(
         ]),
       ];
       const auditSections = [
+        ...(presentationFinding ? [presentationFinding] : []),
         ...(shapeFindings.length > 0 || strictPortFindings.length > 0
           ? [
               `Graph structure failed: ${[...strictPortFindings, ...shapeFindings]
@@ -644,6 +714,7 @@ export function parseModelImportJson(
     if (formulaFindings.length > 0) {
       throw new Error(`Formula consistency failed: ${formulaFindings.slice(0, 3).join(' | ')}`);
     }
+    if (presentationFinding) throw new Error(presentationFinding);
     return { ok: true, model };
   } catch (error) {
     return {

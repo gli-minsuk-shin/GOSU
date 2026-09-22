@@ -1,5 +1,31 @@
 # Model Lab conversation context and native token accounting
 
+## Graph-edit failure isolation (2026-09-14, source only)
+
+Native chat and the subsequent full-ModelIR edit are separate calls. Previously the edit inherited
+the general runner's 120-second/96-KiB output cap; its failure discarded the completed chat answer
+and the renderer mapped most errors to generic connection failure. Full ModelIR schema jobs now use
+the existing builder ceiling of 300 seconds/2 MiB for Codex and Claude; ordinary calls retain their
+smaller ceilings. This is bounded output/time headroom, not larger automatic context or permissions.
+
+The server emits an editing stage, validates the result and stable root ID, and keeps analysis with
+an explicit edit-only failure if generation/validation fails. No invalid proposal is returned and no
+graph is applied. Cancellation still aborts; it is not converted into a successful answer. Known native
+completion/process/size/time errors remain distinguishable without exposing raw stderr. Stdin pipe
+failure is handled and pre-aborted requests do not spawn subprocesses.
+
+Synthetic live Astra/high: ordinary model explanation completed in about 5.8 seconds; a second
+explanation plus complete five-module edit validated in about 66 seconds total. No user model or
+workspace was changed. This does not prove the exact historical failure in the screenshot, whose
+specific cause was lost in the generic message, or guarantee arbitrary imported models will validate.
+Focused tests cover 150-KB output, bounded limits, malformed/stable-ID edits, cancellation, preserved
+analysis, and safe error mapping. The new edit tests are included in the named Agent Runtime gate.
+Installed app verification remains pending normal quit and a rebuilt/signed package.
+Verification: full `pnpm check` 4,150 passed / eight existing environment skips; named Agent Runtime
+1,545 passed (119 + 816 + 545 + 65). Final Model Lab recheck 396 passed, typecheck/lint/format and
+production build passed. Docs regression 2 passed. New focused edit suite 11 passed; the existing
+large-chunk build warning is unchanged. No new installed binary or private-model repair is claimed.
+
 2026-09-14 source candidate [0.58.41](releases/0.58.41.md). Uses the same
 [context planner, compactor and meter](CONTEXT_BUDGET_AND_USAGE.md) as the assistant/Project Chat.
 This changes Model Copilot chat and automatic revision review; ModelIR compilation, Python import,
@@ -34,6 +60,14 @@ Model changes do not reuse another provider's checkpoint. Original records remai
 the bounded read-only `search_conversation` tool, including continuation beyond the first excerpt.
 Relevant existing model-lineage permanent memories are still supplied and are never reset/replaced by
 this checkpoint. Graph/source evidence remains authoritative over remembered assistant hypotheses.
+
+Since 0.58.143 `/new` and `/compact` are handled by `POST /api/model-copilot/context`, which takes the
+answer route's conversation identity plus the action and derives the question from the action.
+`/new` sets `contextStartsAt` to the number of stored records and empties the checkpoints: later turns
+plan, and `search_conversation` reads, only the records after it, while every record stays in the file
+and on screen above a divider. `/compact` runs `compactConversationNow` with the planning, scope,
+summarizer and busy guard of a normal turn. Neither starts an answer turn or appends a message. The
+renderer sends only the messages after the divider as the bootstrap conversation.
 
 The stable history prefix precedes changing graph/module/request context. Current question and source
 data remain separate from trusted instructions. Attachments are still current-turn bounded evidence;

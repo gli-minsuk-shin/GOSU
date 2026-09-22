@@ -8,7 +8,7 @@ import { parseModelImportJson } from './src/model-lab-import';
 import type { ModelSpec } from './src/model-lab-schema';
 
 export const MODEL_BUILDER_PIPELINE_VERSION =
-  'model-ir-canonical-v1-semantic-harness-v8-complete-callable-source-20260907';
+  'model-ir-canonical-v1-semantic-harness-v9-tensor-narrative-20260914';
 export const MODEL_BUILDER_CACHE_ENTRY_VERSION = 1 as const;
 export const MODEL_BUILDER_CACHE_MAX_BYTES = 2_000_000;
 

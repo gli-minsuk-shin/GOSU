@@ -7,9 +7,12 @@ export { appleMailMessageUrl, safeAppleMailUrl } from './apple-mail-url';
 export function AppleMailLink({
   url,
   target,
+  onOpened,
 }: {
   url?: string | undefined;
   target?: MailOpenTarget | undefined;
+  /** Called once Apple Mail accepted the open request. */
+  onOpened?: (() => void) | undefined;
 }) {
   const available = Boolean(
     safeAppleMailUrl(url) && MailOpenRequestSchema.safeParse(target).success,
@@ -63,6 +66,7 @@ export function AppleMailLink({
             if (result.status !== 'requested')
               throw new Error('열기 요청의 전달 여부를 확인하지 못했습니다.');
             if (!cancel.signal.aborted) setNotice('Apple Mail에 열기 요청을 전달했습니다.');
+            onOpened?.();
           } catch (error) {
             if (!cancel.signal.aborted) {
               setFailed(true);

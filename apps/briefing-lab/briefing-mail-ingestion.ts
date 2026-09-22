@@ -6,12 +6,47 @@ export const mailSummaryKey = (id: string, receivedAt: string, title: string) =>
     .update(JSON.stringify([id, new Date(receivedAt).toISOString(), title]))
     .digest('hex');
 
+/** A delivery known by its source id and received time, checkable before subject or sender. */
+export const mailDeliveryKey = (id: string, receivedAt: string) =>
+  createHash('sha256')
+    .update(JSON.stringify([id, new Date(receivedAt).toISOString()]))
+    .digest('hex');
+/** Re-read this much below the previous coverage: Mail can sync a message after its received time. */
+export const MAIL_COVERAGE_OVERLAP_MS = 6 * 3_600_000;
+
 export type MailReadPlan = {
   recheckCount?: number;
   budgets: { accountId: string; limit: number }[];
   firstAccountIds: string[];
   initial: boolean;
   excludeKeys: string[];
+  excludeDeliveries?: string[];
+  /** Per selected mailbox: read down to here (never below the approved days window). */
+  coverage?: { accountId: string; mailboxId: string; stopAt: string }[];
+};
+/** What one mailbox read examined, for the run to commit after summaries are saved. */
+export type MailTargetCoverage = {
+  accountId: string;
+  mailboxId: string;
+  accountName: string;
+  since: string;
+  startedAt: string;
+  /** The mailbox read failed, or returned a partial result without coverage information. */
+  failed?: boolean;
+  partial?: boolean;
+  read: {
+    ordered: boolean;
+    floorReached: boolean;
+    stoppedBy: 'floor' | 'end' | 'limit' | 'budget' | 'scan';
+    newest: string | null;
+    oldest: string | null;
+    floor: string;
+    examined: number;
+    known: number;
+    pending?: number;
+    pendingComplete?: boolean;
+  } | null;
+  items: { id: string; receivedAt: string; bodyUnavailable: boolean; copyIds: string[] }[];
 };
 export function planMailRead(
   scope: MailScope,
@@ -39,7 +74,13 @@ export function planMailRead(
   }
   return { budgets, firstAccountIds, initial, excludeKeys };
 }
+/**
+ * A notice only when the read range is not the usual one (the first connection or a newly added
+ * account read only three messages). The routine "이미 요약한 메일은 제외하고 …" paragraph was removed at
+ * the user's request: it restated the settings on every run.
+ */
 export function mailReadNotice(plan: MailReadPlan, scope: MailScope, skipped: number) {
+  if (!plan.initial && !plan.firstAccountIds.length) return '';
   const start = plan.initial
     ? `첫 연결에서는 한꺼번에 많은 메일이 표시되지 않도록 전체 최대 ${Math.min(3, scope.limit)}개만 가져옵니다. 연결 확인 후 다음 브리핑부터 설정한 전체 최대 ${scope.limit}개를 조회합니다.`
     : plan.firstAccountIds.length
@@ -110,4 +151,78 @@ export function nativeMailHash(value: string): string {
     for (let i = 0; i < 8; i++) state[i] = (state[i]! + v[i]!) | 0;
   }
   return state.map((n) => ('00000000' + (n >>> 0).toString(16)).slice(-8)).join('');
+}
+
+/** A saved email whose body was requested but could not be read must be read again. */
+export function needsMailReread(
+  item: { kind?: string | undefined; readScope: string },
+  scope: { bodyPreview: boolean } | null | undefined,
+) {
+  return Boolean(
+    scope?.bodyPreview &&
+    (item.kind === 'email' || (!item.kind && item.readScope.startsWith('mail'))) &&
+    item.readScope === 'mail-metadata',
+  );
+}
+
+type CoverageRecord = { coveredFrom: string; coveredTo: string; gapFrom: string | null };
+/**
+ * Advances one mailbox's verified coverage from a read. Coverage only extends through messages that
+ * were examined in received-time order and then handled (summarized, merged into a summarized copy,
+ * or filtered out by the user's settings); the first unhandled message, an out-of-order mailbox or a
+ * read that stopped early leaves a gap for the next run. Returns null when the read failed.
+ */
+export function nextMailCoverage(
+  previous: CoverageRecord | null,
+  report: MailTargetCoverage,
+  handled: ReadonlySet<string>,
+) {
+  const read = report.read;
+  if (!read) return null;
+  const since = Date.parse(report.since),
+    startedAt = Date.parse(report.startedAt),
+    floor = Date.parse(read.floor);
+  const unhandled = report.items.filter(
+    (item) =>
+      item.bodyUnavailable || !(handled.has(item.id) || item.copyIds.some((id) => handled.has(id))),
+  );
+  let reached = read.ordered ? read.floorReached : read.stoppedBy === 'end';
+  let lower = read.ordered && read.oldest ? Date.parse(read.oldest) : startedAt;
+  if (unhandled.length) {
+    reached = false;
+    lower = Math.max(lower, ...unhandled.map((item) => Date.parse(item.receivedAt)));
+  }
+  const priorGap = previous?.gapFrom ? Date.parse(previous.gapFrom) : null;
+  let agedOutFrom = priorGap !== null && priorGap < since ? priorGap : null;
+  let coveredFrom: number, gapFrom: number | null;
+  if (reached) {
+    coveredFrom =
+      previous && !previous.gapFrom ? Math.min(Date.parse(previous.coveredFrom), floor) : floor;
+    gapFrom = null;
+  } else {
+    coveredFrom = Math.min(lower, startedAt);
+    const needed = previous ? Date.parse(previous.gapFrom ?? previous.coveredTo) : since;
+    if (needed < since && agedOutFrom === null) agedOutFrom = needed;
+    gapFrom = Math.max(needed, since);
+    if (gapFrom >= coveredFrom) gapFrom = null;
+  }
+  // Why a gap remains, so the warning can say what the user should expect.
+  const reason: 'limit' | 'body' | 'incomplete' | null =
+    gapFrom === null
+      ? null
+      : read.stoppedBy === 'limit'
+        ? 'limit'
+        : unhandled.length && unhandled.every((item) => item.bodyUnavailable)
+          ? 'body'
+          : 'incomplete';
+  return {
+    coveredFrom: new Date(coveredFrom).toISOString(),
+    coveredTo: new Date(startedAt).toISOString(),
+    gapFrom: gapFrom === null ? null : new Date(gapFrom).toISOString(),
+    agedOutFrom: agedOutFrom === null ? null : new Date(agedOutFrom).toISOString(),
+    reason,
+    pending: read.pending ?? 0,
+    pendingComplete: read.pendingComplete ?? true,
+    bodyWaiting: report.items.filter((item) => item.bodyUnavailable).length,
+  };
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  MODEL_USAGE_WORKLOAD_KINDS,
   ModelUsageAnalyticsQuerySchema,
   ModelUsageAnalyticsReportSchema,
   ModelUsageAggregateSchema,
@@ -152,5 +153,112 @@ describe('model usage contracts', () => {
       },
     });
     expect(parsed.success).toBe(false);
+  });
+
+  it('accepts a report with or without the feature-by-model breakdown, and checks its rows strictly', () => {
+    const report = {
+      schemaVersion: 1,
+      generatedAt: '2026-08-20T02:00:00.000Z',
+      trackingStartedAt: '2026-08-01T00:00:00.000Z',
+      localOnly: true,
+      rangeCoverage: 'complete',
+      range: {
+        period: 'day',
+        anchorDate: '2026-08-20',
+        timeZone: 'UTC',
+        fromInclusive: '2026-08-20T00:00:00.000Z',
+        toExclusive: '2026-08-21T00:00:00.000Z',
+      },
+      totals: zeroAggregate,
+      series: [],
+      byProject: [],
+      byConnection: [],
+      byModel: [],
+      byWorkload: [],
+      lectureGenerations: {
+        items: [],
+        total: 0,
+        offset: 0,
+        limit: 25,
+        snapshotAt: '2026-08-20T02:00:00.000Z',
+      },
+    };
+    const part = {
+      ...zeroAggregate,
+      workloadKind: 'briefing_summary',
+      connectionKey: 'codex:native',
+      connectionLabel: 'codex · GOSU',
+      providerId: 'codex',
+      upstreamProviderId: null,
+      resolvedModelId: 'gpt-5.6-luna',
+    };
+    // Reports from before 0.58.138 have no such field.
+    expect(ModelUsageAnalyticsReportSchema.safeParse(report).success).toBe(true);
+    expect(
+      ModelUsageAnalyticsReportSchema.safeParse({ ...report, byWorkloadModel: [part] }).success,
+    ).toBe(true);
+    for (const bad of [
+      { ...part, workloadKind: 'something_else' },
+      { ...part, usd: 1 },
+      { ...part, resolvedModelId: '' },
+    ])
+      expect(
+        ModelUsageAnalyticsReportSchema.safeParse({ ...report, byWorkloadModel: [bad] }).success,
+      ).toBe(false);
+    // Cut at 1,000 rows like the other model breakdowns; more is a bug in the producer.
+    expect(
+      ModelUsageAnalyticsReportSchema.safeParse({
+        ...report,
+        byWorkloadModel: Array.from({ length: 1001 }, () => part),
+      }).success,
+    ).toBe(false);
+  });
+  it('knows paper summaries as a feature of their own and accepts the daily feature-by-model rows', () => {
+    expect(MODEL_USAGE_WORKLOAD_KINDS).toContain('paper_summary');
+    const report = {
+      schemaVersion: 1,
+      generatedAt: '2026-08-20T02:00:00.000Z',
+      trackingStartedAt: '2026-08-01T00:00:00.000Z',
+      localOnly: true,
+      rangeCoverage: 'complete',
+      range: {
+        period: 'day',
+        anchorDate: '2026-08-20',
+        timeZone: 'UTC',
+        fromInclusive: '2026-08-20T00:00:00.000Z',
+        toExclusive: '2026-08-21T00:00:00.000Z',
+      },
+      totals: zeroAggregate,
+      series: [],
+      byProject: [],
+      byConnection: [],
+      byModel: [],
+      byWorkload: [],
+      lectureGenerations: {
+        items: [],
+        total: 0,
+        offset: 0,
+        limit: 25,
+        snapshotAt: '2026-08-20T02:00:00.000Z',
+      },
+    };
+    const day = {
+      ...zeroAggregate,
+      bucketKey: '2026-08-20',
+      workloadKind: 'paper_summary',
+      connectionKey: 'codex:native',
+      connectionLabel: 'codex · GOSU',
+      providerId: 'codex',
+      upstreamProviderId: null,
+      resolvedModelId: 'gpt-5.6-luna',
+    };
+    const parse = (rows: unknown) =>
+      ModelUsageAnalyticsReportSchema.safeParse({ ...report, byDayWorkloadModel: rows }).success;
+    expect(parse([day])).toBe(true);
+    // Reports from before 0.58.140 have no such field.
+    expect(ModelUsageAnalyticsReportSchema.safeParse(report).success).toBe(true);
+    expect(parse([{ ...day, bucketKey: '20 August' }])).toBe(false);
+    expect(parse([{ ...day, extra: 1 }])).toBe(false);
+    expect(parse(Array.from({ length: 1001 }, () => day))).toBe(false);
   });
 });

@@ -32,12 +32,15 @@ import type { SaveOverleafPersonalTokenInput } from '../../shared/overleaf-perso
 import {
   AgentAddOnsSection,
   type AgentProviderConnectionUiState,
+  type ClaudeCodeLoginControls,
   type CodexConnectionControls,
   type HermesProjectChatConnectionUiState,
 } from './agent-addons-section';
 import { AgentSettingsSection } from './agent-settings-section';
 import { AiDefaultSettings } from './ai-default-settings';
 import { ModelRoutingSettings, type useModelRouting } from './model-routing-settings';
+import { ApprovalPolicySettings } from './approval-policy-settings';
+import { ShortcutSettings } from './shortcut-settings';
 import { BoardSettingsForm } from './board-settings-form';
 import {
   LectureDocumentFeaturesEditor,
@@ -102,6 +105,7 @@ const TEXT_SIZE_CHOICES: ReadonlyArray<{
 ];
 
 export type SettingsCategory =
+  | 'shortcuts'
   | 'appearance'
   | 'board'
   | 'lecture'
@@ -151,6 +155,7 @@ export function SettingsView({
   onRefreshHermesConnection,
   claudeCodeConnection,
   onRefreshClaudeCodeConnection,
+  claudeCodeLogin,
   codexConnection,
 }: {
   preferences: UserPreferences;
@@ -194,6 +199,7 @@ export function SettingsView({
   onRefreshHermesConnection?: () => Promise<unknown>;
   claudeCodeConnection?: AgentProviderConnectionUiState;
   onRefreshClaudeCodeConnection?: () => Promise<unknown>;
+  claudeCodeLogin?: ClaudeCodeLoginControls | undefined;
 }) {
   useUiText();
   const [localCategory, setLocalCategory] = useState<SettingsCategory>(initialCategory);
@@ -247,6 +253,16 @@ export function SettingsView({
   return (
     <section className="settings-shell" aria-label={uiText('Application settings')}>
       <nav className="settings-category-nav" aria-label={uiText('Settings categories')}>
+        <button
+          type="button"
+          className={activeCategory === 'shortcuts' ? 'active' : ''}
+          aria-current={activeCategory === 'shortcuts' ? 'page' : undefined}
+          onClick={() => selectCategory('shortcuts')}
+        >
+          <i aria-hidden="true">⌨</i>
+          <strong>단축키</strong>
+          <span>AI 비서 바로 열기</span>
+        </button>
         <button
           type="button"
           className={activeCategory === 'briefing' ? 'active' : ''}
@@ -340,7 +356,9 @@ export function SettingsView({
       </nav>
 
       <div className="settings-category-content">
-        {activeCategory === 'briefing' ? (
+        {activeCategory === 'shortcuts' ? (
+          <ShortcutSettings />
+        ) : activeCategory === 'briefing' ? (
           <div aria-label="Briefing Lab 설정">공용 Briefing Lab 설정</div>
         ) : activeCategory === 'appearance' ? (
           <div className="settings-layout">
@@ -722,6 +740,7 @@ export function SettingsView({
           </article>
         ) : (
           <>
+            <ApprovalPolicySettings />
             {modelRouting && (
               <ModelRoutingSettings
                 policy={modelRouting.policy}
@@ -748,6 +767,7 @@ export function SettingsView({
               {...(onRefreshHermesConnection ? { onRefreshHermesConnection } : {})}
               {...(claudeCodeConnection ? { claudeCodeConnection } : {})}
               {...(onRefreshClaudeCodeConnection ? { onRefreshClaudeCodeConnection } : {})}
+              claudeCodeLogin={claudeCodeLogin}
             />
             <AgentSettingsSection
               project={agentProject}

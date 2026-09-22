@@ -48,7 +48,7 @@ describe('repository project navigation', () => {
 
     expect(html).toContain('Git Workspace sections');
     expect(html).toMatch(
-      /class="active" aria-current="page"[^>]*><span[^>]*><svg[^>]*data-sidebar-icon="repository"[^>]*>[\s\S]*?<\/svg><\/span>Repository<\/button>/u,
+      /class="active" aria-current="page"[^>]*><span[^>]*><svg[^>]*data-sidebar-icon="repository"[^>]*>[\s\S]*?<\/svg><\/span><span class="sidebar-row-label"><span>Repository<\/span><\/span><\/button>/u,
     );
     expect(html).not.toContain('>⌘</span>Repository');
   });
@@ -62,13 +62,13 @@ describe('repository project navigation', () => {
     });
 
     expect(html).not.toContain('Git Workspace sections');
-    expect(html).not.toContain('>Repository</button>');
+    expect(html).not.toContain('<span class="sidebar-row-label"><span>Repository</span>');
   });
 
   it('does not mark Repository active while project settings are open', () => {
     const html = renderSidebar({ settingsActive: true });
 
-    expect(html).toContain('>Repository</button>');
+    expect(html).toContain('<span class="sidebar-row-label"><span>Repository</span>');
     expect(html).not.toMatch(/class="active" aria-current="page"[^>]*>.*Repository/);
   });
 });

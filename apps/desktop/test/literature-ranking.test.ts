@@ -39,8 +39,149 @@ function rankingInput(
 }
 
 describe('balanced literature ranking', () => {
-  it('uses the eligibility-gated policy v2', () => {
-    expect(BALANCED_LITERATURE_POLICY_VERSION).toBe(3);
+  it('uses the query-gated policy v4', () => {
+    expect(BALANCED_LITERATURE_POLICY_VERSION).toBe(4);
+  });
+
+  describe('query-term gate (policy v4)', () => {
+    const queryTerms = ['tabpfn', 'class', 'expansion', 'label', 'embedding'];
+    const onTopic = (id: string, rank: number, poolSize: number) =>
+      rankingInput(
+        candidate(id, {
+          title: `TabPFN label embedding study ${id}`,
+          abstractText: 'We expand the class capacity of a tabular foundation model.',
+        }),
+        { relevanceRank: rank, relevancePoolSize: poolSize },
+      );
+    const offTopic = (id: string, rank: number, poolSize: number) =>
+      rankingInput(
+        candidate(id, {
+          title: `Soil moisture retrieval over farmland ${id}`,
+          topics: ['hydrology'],
+        }),
+        { relevanceRank: rank, relevancePoolSize: poolSize },
+      );
+
+    it('saves only papers whose own text mentions the search terms, and never tops up with the rest', () => {
+      const inputs = [
+        offTopic('junk-1', 1, 40),
+        onTopic('relevant-1', 2, 40),
+        ...Array.from({ length: 37 }, (_, index) => offTopic(`junk-${index + 2}`, index + 3, 40)),
+        onTopic('relevant-2', 40, 40),
+      ];
+
+      const result = rankLiteratureCandidates(inputs, 50, 2026, { queryTerms });
+
+      expect(result.retrievedCount).toBe(40);
+      expect(result.candidates.map(({ providerId }) => providerId).sort()).toEqual([
+        'relevant-1',
+        'relevant-2',
+      ]);
+      expect(result.selectedCount).toBe(2);
+      expect(result.tierCounts).toEqual({ core: 0, rising: 0, broad: 2 });
+    });
+
+    it('selects nothing when no paper mentions the terms, such as a Korean sentence against English papers', () => {
+      const inputs = Array.from({ length: 30 }, (_, index) =>
+        onTopic(`english-${index}`, index + 1, 30),
+      );
+
+      const result = rankLiteratureCandidates(inputs, 50, 2026, {
+        queryTerms: ['고차원', '공분산', '추정'],
+      });
+
+      expect(result.retrievedCount).toBe(30);
+      expect(result.candidates).toEqual([]);
+      expect(result.selectedCount).toBe(0);
+      expect(result.tierCounts).toEqual({ core: 0, rising: 0, broad: 0 });
+    });
+
+    it('asks a specific query for two distinct terms so one shared everyday word is not enough', () => {
+      const oneWord = rankingInput(
+        candidate('one-word', { title: 'Class struggle in nineteenth century labour markets' }),
+        { relevanceRank: 1, relevancePoolSize: 2 },
+      );
+      const result = rankLiteratureCandidates([oneWord, onTopic('two-words', 2, 2)], 10, 2026, {
+        queryTerms,
+      });
+
+      expect(result.candidates.map(({ providerId }) => providerId)).toEqual(['two-words']);
+    });
+
+    it('gates the citation-lane classics too, so a famous unrelated paper cannot become Core', () => {
+      const famous = rankingInput(
+        candidate('famous', {
+          title: 'Deep residual learning for image recognition',
+          publishedYear: 2016,
+          citationCount: 200_000,
+        }),
+        { citationRank: 1, citationPoolSize: 5 },
+      );
+      const result = rankLiteratureCandidates([famous, onTopic('relevant', 1, 1)], 10, 2026, {
+        queryTerms,
+      });
+
+      expect(result.candidates.map(({ providerId }) => providerId)).toEqual(['relevant']);
+    });
+
+    it('asks a sorted-lane leftover to mention at least half of the terms before Broad keeps it', () => {
+      const leftover = (id: string, title: string) =>
+        rankingInput(candidate(id, { title, publishedYear: 2024, citationCount: 3 }), {
+          citationRank: 4,
+          citationPoolSize: 5,
+        });
+      const result = rankLiteratureCandidates(
+        [
+          leftover('two-of-five', 'TabPFN label leftovers'),
+          leftover('three-of-five', 'TabPFN label embedding leftovers'),
+          onTopic('ranked', 1, 1),
+        ],
+        10,
+        2026,
+        { queryTerms },
+      );
+
+      expect(result.candidates.map(({ providerId }) => providerId)).toEqual([
+        'ranked',
+        'three-of-five',
+      ]);
+      expect(result.candidates[1]?.discovery?.tier).toBe('broad');
+    });
+
+    it('still fills the requested limit when enough papers are on topic', () => {
+      const inputs = Array.from({ length: 70 }, (_, index) =>
+        onTopic(`paper-${index}`, index + 1, 70),
+      );
+
+      const result = rankLiteratureCandidates(inputs, 50, 2026, { queryTerms });
+
+      expect(result.selectedCount).toBe(50);
+      expect(result.tierCounts).toEqual({ core: 0, rising: 0, broad: 50 });
+      expect(result.candidates[0]?.providerId).toBe('paper-0');
+    });
+
+    it('reads the venue and provider topics as part of the paper text', () => {
+      const byTopic = rankingInput(
+        candidate('by-topic', { title: 'A note', topics: ['Graphical lasso'] }),
+        { relevanceRank: 1, relevancePoolSize: 2 },
+      );
+      const byVenue = rankingInput(
+        candidate('by-venue', {
+          title: 'Another note',
+          containerTitle: 'Journal of Lasso Methods',
+        }),
+        { relevanceRank: 2, relevancePoolSize: 2 },
+      );
+
+      const result = rankLiteratureCandidates([byTopic, byVenue], 10, 2026, {
+        queryTerms: ['lasso'],
+      });
+
+      expect(result.candidates.map(({ providerId }) => providerId)).toEqual([
+        'by-topic',
+        'by-venue',
+      ]);
+    });
   });
 
   it('fills deterministic bounded Core, Rising, and Broad allocations for eligible papers', () => {
@@ -328,9 +469,10 @@ describe('balanced literature ranking', () => {
     const result = rankLiteratureCandidates([citedOnly, recentOnly, relevant], 3, 2026);
     const byId = new Map(result.candidates.map((paper) => [paper.providerId, paper]));
 
+    expect(byId.get('cited-only')?.discovery?.tier).toBe('core');
     expect(byId.get('cited-only')?.discovery?.relevanceScore).toBe(0.12);
-    expect(byId.get('recent-only')?.discovery?.relevanceScore).toBe(0.12);
-    expect(byId.get('recent-only')?.discovery?.tier).not.toBe('rising');
+    // Policy v4: a newest-only leftover that the provider never ranked for relevance is not saved.
+    expect(byId.has('recent-only')).toBe(false);
     expect(byId.get('relevance-result')?.discovery?.relevanceScore).toBe(1);
   });
 

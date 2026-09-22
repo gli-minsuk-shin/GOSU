@@ -26,7 +26,11 @@ import type { classifySavedPaperTexts } from './paper-classification';
 import { BriefingGenerationStore } from './briefing-generation-store';
 import { defaultModelRouting } from '@gosu/contracts';
 import { savedPaperKey } from './src/paper-library-index';
-import { routedBriefingPreferences } from './briefing-model-routing';
+import {
+  briefingProviderSummary,
+  briefingRoutedProviders,
+  routedBriefingPreferences,
+} from './briefing-model-routing';
 vi.mock('./briefing-paper-evidence', () => ({
   enrichPaper: vi.fn(),
   loadPaperFigure: vi.fn(),
@@ -171,10 +175,35 @@ it('routes actual summary execution while preserving cached summaries, explicit 
   await f.analyze();
   expect(f.analyzer).toHaveBeenCalledTimes(1);
   const prefs = { ...defaultAssistantPreferences(), modelId: 'explicit-model' };
-  expect(routedBriefingPreferences(prefs, policy, 'briefing')).toBe(prefs);
+  // Settings → Agent decides every Briefing usage: a model stored with the routine (from the picker
+  // Briefing had until 0.58.135) wins nowhere, not even in the assistant chat.
+  expect(routedBriefingPreferences(prefs, policy, 'briefing')).toMatchObject({
+    modelId: 'other-fast-fixture',
+    reasoning: 'low',
+  });
+  policy.strong = { providerId: 'claude-code', modelId: 'strong-fixture', reasoningOptionId: null };
+  expect(routedBriefingPreferences(prefs, policy, 'briefingAssistant')).toMatchObject({
+    providerId: 'claude-code',
+    modelId: 'strong-fixture',
+    reasoning: null,
+  });
+  // A role without a model leaves the stored selection running.
+  expect(routedBriefingPreferences(prefs, policy, 'lightweightTasks')).toBe(prefs);
+  expect(routedBriefingPreferences(prefs, undefined, 'briefing')).toBe(prefs);
+  expect(briefingRoutedProviders(policy).sort()).toEqual(['claude-code', 'codex']);
+  expect(briefingRoutedProviders(undefined)).toEqual([]);
+  expect(briefingProviderSummary(prefs, policy)).toBe(
+    '설정 → Agent의 작업별 AI 모델을 따름 (현재 Codex, Claude Code)',
+  );
+  // The summary role on another provider runs there: the stored provider is only a fallback.
   policy.fast.providerId = 'claude-code';
-  await expect(f.analyze(true)).rejects.toThrow('model_routing_provider_permission_required');
-  expect(f.analyzer).toHaveBeenCalledTimes(1);
+  await f.analyze(true);
+  expect(f.analyzer).toHaveBeenCalledTimes(2);
+  expect(f.analyzer.mock.calls.at(-1)).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ providerId: 'claude-code', modelId: 'other-fast-fixture' }),
+    ]),
+  );
   expect((await f.workspace.profile('r'))!.preferences.providerId).toBe('codex');
 });
 it('passes persisted exact summary identities into candidate selection before applying the arXiv display limit', async () => {
@@ -559,6 +588,17 @@ it('retains searchable paper summaries across more than 60 briefing runs, includ
   expect(await f.memory.feedbackChoices('r', [saved.item.id])).toEqual({
     [saved.item.id]: 'important',
   });
+  const cleared = await owner(() =>
+    saveHistoryFeedback(
+      { routineId: 'r', historyId: saved.historyId, itemId: saved.item.id, decision: null },
+      reopened,
+      f.memory,
+      async () => undefined,
+      new AbortController().signal,
+    ),
+  );
+  expect(cleared.decision).toBeNull();
+  expect(await f.memory.feedbackChoices('r', [saved.item.id])).toEqual({});
   expect(library.papers[0]?.item.provenance?.summarizedAt).toBe(
     first.provenance[f.item.id]?.summarizedAt,
   );
@@ -742,4 +782,37 @@ it('bounds cached image bytes without deleting older summaries or captions', () 
   expect(result[0]!.items[0]!.figures![0]).not.toHaveProperty('imageData');
   expect(result[0]!.items[0]!.summary).toBe('Keep summary');
   expect(older.items[0]!.figures![0]!.imageData).toBeTruthy();
+});
+
+// 2026-09-22 user request: the Usage screen gets a tab for paper summaries, so their model calls
+// are recorded as a feature of their own instead of inside "브리핑·요약".
+it('records the model calls of a paper-only summary as paper_summary usage', async () => {
+  const { configureNativeUsageObserver, observeNativeUsage } =
+    await import('./native-usage-observer');
+  const seen: string[] = [];
+  configureNativeUsageObserver(async (event) => {
+    seen.push(event.workloadKind);
+  });
+  try {
+    const s = await setup();
+    // The real analyzer reports its usage from inside the call; the scope must reach it there.
+    s.analyzer.mockImplementation(async () => {
+      await observeNativeUsage({
+        invocation: {} as never,
+        usage: undefined,
+        completedAt: '2026-09-22T00:00:00.000Z',
+        successful: true,
+      });
+      return {
+        overview: 'Overview',
+        items: [s.insight],
+        invocation: { providerId: 'codex', model: 'test', reasoning: null },
+        memoryUsed: [],
+      };
+    });
+    await s.analyze();
+    expect(seen).toEqual(['paper_summary']);
+  } finally {
+    configureNativeUsageObserver(undefined);
+  }
 });

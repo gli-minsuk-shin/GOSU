@@ -65,6 +65,19 @@ const patches = [
 ];
 
 describe('targeted Model Builder narrative repair', () => {
+  it('invalidates stale card reasoning when its supporting formula is repaired', () => {
+    const input = {
+      ...candidate,
+      modules: candidate.modules.map((m) => ({ ...m, presentation: { keyEquation: m.formula } })),
+    };
+    const plan = planModelBuilderNarrativeRepair(JSON.stringify(input), reason)!;
+    const repaired = JSON.parse(
+      applyModelBuilderNarrativeRepair(plan, JSON.stringify({ patches })),
+    );
+    expect(repaired.modules[0]).not.toHaveProperty('presentation');
+    expect(repaired.modules[1]).not.toHaveProperty('presentation');
+    expect(repaired.modules[2].presentation).toEqual(input.modules[2]!.presentation);
+  });
   it('plans both actual concat and sigmoid findings by exact module ID', () => {
     const plan = planModelBuilderNarrativeRepair(JSON.stringify(candidate), reason);
     expect(plan?.moduleIds).toEqual(['newton_blend', 'newton_system']);

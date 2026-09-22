@@ -7,7 +7,9 @@
     "apps/briefing-lab/src/paper-summary-offer.tsx",
     "apps/briefing-lab/src/paper-summary-offer.css",
     "apps/briefing-lab/paper-summary-library.ts",
-    "apps/briefing-lab/briefing-system-key.ts"
+    "apps/briefing-lab/briefing-system-key.ts",
+    "scripts/lab-bundles.mjs",
+    "scripts/lab-bundles.d.mts"
   ],
   "globalEnv": ["CI", "NODE_ENV"],
   "tasks": {

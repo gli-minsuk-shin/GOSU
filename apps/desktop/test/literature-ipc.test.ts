@@ -89,6 +89,42 @@ describe('Literature IPC boundary', () => {
     expect(reportUnexpected).not.toHaveBeenCalled();
   });
 
+  it('bounds the undo and search-plan commands and reports a missing AI service as a code', async () => {
+    const undoSearchAdditions = vi.fn(async () => ({
+      projectId: 'unused',
+      removedCount: 2,
+      keptCount: 1,
+    }));
+    const { handlers } = fixture({ undoSearchAdditions });
+    const projectId = randomUUID();
+    const runId = randomUUID();
+
+    await expect(
+      handlers.get(LITERATURE_IPC_CHANNELS.undoSearch)?.({ projectId, runIds: [] }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_literature_input' } });
+    await expect(
+      handlers.get(LITERATURE_IPC_CHANNELS.undoSearch)?.({
+        projectId,
+        runIds: Array.from({ length: 4 }, () => randomUUID()),
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_literature_input' } });
+    expect(undoSearchAdditions).not.toHaveBeenCalled();
+    await expect(
+      handlers.get(LITERATURE_IPC_CHANNELS.undoSearch)?.({ projectId, runIds: [runId] }),
+    ).resolves.toMatchObject({ ok: true, value: { removedCount: 2, keptCount: 1 } });
+    expect(undoSearchAdditions).toHaveBeenCalledWith({ projectId, runIds: [runId] });
+
+    await expect(
+      handlers.get(LITERATURE_IPC_CHANNELS.planSearch)?.({ projectId, question: 'x' }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_literature_input' } });
+    await expect(
+      handlers.get(LITERATURE_IPC_CHANNELS.planSearch)?.({
+        projectId,
+        question: 'TabPFN 클래스 확장 관련 논문 찾아줘',
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'literature_ai_unavailable' } });
+  });
+
   it('maps unexpected failures to a generic result without reflecting private diagnostics', async () => {
     const exportRecords = vi.fn(async () => {
       throw new Error('/Users/researcher/private-library.json');

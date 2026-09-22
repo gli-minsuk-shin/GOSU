@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   defaultAssistantPreferences,
   defaultLiveSettings,
   type BriefingRoutine,
   type LiveSettings,
 } from '@gosu/briefing-core';
-import { createRoutineClient, type RoutineConnection } from './routine-client';
 import { sourceRequest } from './live-client';
 import type { CalendarInfo } from './workspace-contracts';
+import { ReminderSettings } from './reminder-settings';
+import { BriefingAgentModels } from './briefing-agent-models';
 
 export function AssistantSettings({
   routine,
@@ -18,33 +19,11 @@ export function AssistantSettings({
 }) {
   const live = routine.live ?? defaultLiveSettings(),
     prefs = live.assistant ?? defaultAssistantPreferences();
-  const [connections, setConnections] = useState<RoutineConnection[]>([]),
-    [calendars, setCalendars] = useState<CalendarInfo[]>([]);
-  const [message, setMessage] = useState('GOSU 모델 목록 연결 중…'),
+  const [calendars, setCalendars] = useState<CalendarInfo[]>([]);
+  const [message, setMessage] = useState(''),
     [connecting, setConnecting] = useState(false);
   const patch = (value: Partial<typeof prefs>) =>
     onChange({ ...live, assistant: { ...prefs, ...value } });
-  useEffect(() => {
-    const c = new AbortController();
-    void createRoutineClient()
-      .models(c.signal)
-      .then((v) => {
-        if (!c.signal.aborted) {
-          setConnections(v);
-          setMessage('GOSU와 동일한 로컬 CLI 엔진 · API 키 자동 fallback 없음');
-        }
-      })
-      .catch(() => {
-        if (!c.signal.aborted)
-          setMessage('LLM 연결을 확인하지 못했습니다. 설정을 다시 열어주세요.');
-      });
-    return () => c.abort();
-  }, []);
-  const catalog = connections.find((c) => c.providerId === prefs.providerId)?.catalog;
-  const model =
-    catalog?.models.find((m) => m.modelId === prefs.modelId) ??
-    catalog?.models.find((m) => m.isDefault) ??
-    catalog?.models[0];
   const connect = async () => {
     setConnecting(true);
     setMessage('Apple Calendar 연결 확인 중… macOS 접근 요청이 표시되면 직접 확인해주세요.');
@@ -77,54 +56,8 @@ export function AssistantSettings({
           </p>
         </div>
       </header>
+      <BriefingAgentModels routineId={routine.id} />
       <div className="briefing-form-grid">
-        <label className="briefing-field">
-          <span>GOSU AI 엔진</span>
-          <select
-            value={prefs.providerId}
-            onChange={(e) =>
-              patch({
-                providerId: e.target.value as typeof prefs.providerId,
-                modelId: null,
-                reasoning: null,
-              })
-            }
-          >
-            <option value="codex">OpenAI · Codex</option>
-            <option value="claude-code">Anthropic · Claude Code</option>
-          </select>
-        </label>
-        <label className="briefing-field">
-          <span>모델</span>
-          <select
-            value={prefs.modelId ?? ''}
-            onChange={(e) => patch({ modelId: e.target.value || null, reasoning: null })}
-          >
-            <option value="">GOSU / CLI 기본 모델{model ? ` · ${model.displayName}` : ''}</option>
-            {prefs.modelId && !catalog?.models.some((m) => m.modelId === prefs.modelId) && (
-              <option value={prefs.modelId}>{prefs.modelId} · 연결 확인 필요</option>
-            )}
-            {catalog?.models.map((m) => (
-              <option key={m.modelId} value={m.modelId}>
-                {m.displayName}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="briefing-field">
-          <span>Reasoning</span>
-          <select
-            value={prefs.reasoning ?? ''}
-            onChange={(e) => patch({ reasoning: e.target.value || null })}
-          >
-            <option value="">모델 기본값</option>
-            {model?.reasoningOptions.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.label}
-              </option>
-            ))}
-          </select>
-        </label>
         <label className="briefing-field">
           <span>Briefing 요청 확인</span>
           <select
@@ -166,7 +99,8 @@ export function AssistantSettings({
         <span>
           <b>논문 자동 AI 요약</b>
           <small>
-            자료 조회 후 논문을 별도로 요약합니다. 한 번에 최대 6개씩 · 선택한 GOSU 모델 사용.
+            자료 조회 후 논문을 별도로 요약합니다. 한 번에 최대 6개씩 · 설정 → Agent의 ‘Briefing ·
+            이메일·논문 요약’ 모델 사용.
           </small>
         </span>
       </label>
@@ -192,8 +126,9 @@ export function AssistantSettings({
         <span>
           <b>허용한 메일·일정·할 일·프로젝트·비공개 memory를 LLM에 전달</b>
           <small>
-            요약·중요도·검색·이력 답변에 사용합니다. 선택한 제공자의 서버 및 CLI 보관 정책이
-            적용됩니다. 끄면 새 비공개 AI 처리를 차단합니다.
+            요약·중요도·검색·이력 답변에 사용합니다. 설정 → Agent에서 Briefing 작업에 지정한 모델의
+            제공자에게 전달되며, 그 제공자의 서버 및 CLI 보관 정책이 적용됩니다. 끄면 새 비공개 AI
+            처리를 차단합니다.
           </small>
         </span>
       </label>
@@ -211,6 +146,13 @@ export function AssistantSettings({
           </small>
         </span>
       </label>
+      {prefs.mailAi && !prefs.mailRead && (
+        <p role="status" className="briefing-alert">
+          AI 전달은 허용되어 있지만 메일 읽기가 꺼져 있어 이메일 조회·다시 요약은 실행되지 않습니다.
+          이메일도 요약하려면 위의 ‘설정한 Apple Mail 범위 읽기’를 켜고 설정을 저장해주세요. 일정·할
+          일 등 다른 자료의 AI 허용은 그대로 유지됩니다.
+        </p>
+      )}
       <label className="briefing-setting-toggle">
         <input
           type="checkbox"
@@ -292,9 +234,12 @@ export function AssistantSettings({
           </p>
         )}
       </fieldset>
-      <p role="status" className="briefing-muted">
-        {message}
-      </p>
+      {message && (
+        <p role="status" className="briefing-muted">
+          {message}
+        </p>
+      )}
+      <ReminderSettings key={routine.id} routineId={routine.id} />
     </section>
   );
 }

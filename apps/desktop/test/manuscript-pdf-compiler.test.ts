@@ -643,7 +643,8 @@ describe.skipIf(process.platform === 'win32')('manuscript PDF command process gr
       timeoutMs: 2_000,
       maxBytes: 1024,
     });
-    for (let attempt = 0; attempt < 50 && !existsSync(ready); attempt += 1) {
+    // Up to 1.5 s for a newly written script to start (macOS scans new executables first).
+    for (let attempt = 0; attempt < 150 && !existsSync(ready); attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
 

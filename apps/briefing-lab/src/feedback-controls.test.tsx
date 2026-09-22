@@ -71,12 +71,21 @@ it.each(['live', 'history'] as const)(
     await act(async () => finish());
     expect(button('관심 있음').props['aria-pressed']).toBe(true);
     expect(JSON.stringify(ui!.toJSON())).toContain('관심 있음 · 저장됨');
-    await act(() => button('관심 있음').props.onClick(clickEvent()));
-    expect(save).toHaveBeenCalledOnce();
     save.mockRejectedValueOnce(new Error('저장 실패'));
+    await act(async () => button('관심 있음').props.onClick(clickEvent()));
+    expect(save).toHaveBeenLastCalledWith(null, ...(mode === 'live' ? [[]] : []));
+    expect(button('관심 있음').props['aria-pressed']).toBe(true);
+    save.mockResolvedValueOnce(undefined);
+    await act(async () => button('관심 있음').props.onClick(clickEvent()));
+    expect(button('관심 있음').props['aria-pressed']).toBe(false);
+    expect(button('관심 없음').props['aria-pressed']).toBe(false);
+    save.mockResolvedValueOnce(undefined);
+    await act(async () => button('관심 없음').props.onClick(clickEvent()));
+    expect(button('관심 없음').props['aria-pressed']).toBe(true);
+    save.mockResolvedValueOnce(undefined);
     await act(async () => button('관심 없음').props.onClick(clickEvent()));
     expect(button('관심 없음').props['aria-pressed']).toBe(false);
-    expect(button('관심 있음').props['aria-pressed']).toBe(true);
-    expect(JSON.stringify(ui!.toJSON())).toContain('저장 실패');
+    expect(button('관심 있음').props['aria-pressed']).toBe(false);
+    expect(JSON.stringify(ui!.toJSON())).not.toContain('· 저장됨');
   },
 );

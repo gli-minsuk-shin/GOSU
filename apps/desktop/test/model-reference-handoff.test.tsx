@@ -1,4 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
+import { act, create } from 'react-test-renderer';
+import { readFileSync } from 'node:fs';
 import { ProjectChatView } from '../src/renderer/src/project-chat-view';
 import { defaultProjectChatProfile } from '../src/shared/project-chat-contracts';
 import { expect, it, vi } from 'vitest';
@@ -95,20 +97,51 @@ it('accepts only the exact iframe source and origin, never a sender-supplied pro
     ),
   ).toBeNull();
 });
-it('shows two labeled model buttons only when hosted and never dispatches during render', () => {
-  const onProject = vi.fn(),
-    onLocal = vi.fn();
-  const html = renderToStaticMarkup(
-    <ModelReferenceActions name="Model A" hosted onProject={onProject} onLocal={onLocal} />,
-  );
-  expect(html).toContain('Model A · Ask in Project Chat');
-  expect(html).toContain('Model A · Ask in Model Lab');
-  const standalone = renderToStaticMarkup(
-    <ModelReferenceActions name="Model A" hosted={false} onProject={onProject} onLocal={onLocal} />,
-  );
-  expect(standalone).not.toContain('Ask in Project Chat');
-  expect(onProject).not.toHaveBeenCalled();
+it('shows one unambiguous Model Copilot action and never dispatches during render', () => {
+  const onLocal = vi.fn();
+  const html = renderToStaticMarkup(<ModelReferenceActions name="Model A" onLocal={onLocal} />);
+  expect(html).toContain('Model A · Ask in Model Assistant');
+  expect(html).toContain('AI conversation');
+  expect(html).not.toContain('Ask in Project Chat');
   expect(onLocal).not.toHaveBeenCalled();
+});
+it('routes AI conversation to local model context while keeping explicit Project Chat access separate', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const onLocal = vi.fn();
+  let view: ReturnType<typeof create> | undefined;
+  try {
+    await act(() => {
+      view = create(<ModelReferenceActions name="Model A" onLocal={onLocal} />);
+    });
+    expect(view!.root.findAllByType('button')).toHaveLength(1);
+    await act(() => view!.root.findByType('button').props.onClick());
+    expect(onLocal).toHaveBeenCalledOnce();
+    await act(() =>
+      view!.update(<ModelReferenceActions name="Model A" onLocal={onLocal} disabled />),
+    );
+    expect(view!.root.findByType('button').props.disabled).toBe(true);
+    const source = readFileSync(
+      new URL('../../model-lab/src/model-lab-app.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain('onLocal={() => openModelDiscussion(candidate.id)}');
+    expect(source).toContain('onLocal={() => openModelDiscussion(model.id)}');
+    const open = source.slice(
+      source.indexOf('const openModelDiscussion'),
+      source.indexOf('const openProjectDiscussion'),
+    );
+    expect(open).toContain('setModelId(id)');
+    expect(open).toContain('setCopilotCollapsed(false)');
+    expect(open).toContain('setModelChatFocusRequest');
+    expect(open).not.toContain('postMessage');
+    expect(source).toContain('className="model-reference-tag"');
+    expect(source).toContain('englishGraphName(model.name, model.id)');
+    expect(source).toContain('· r{modelRevision}');
+    expect(source).toContain("type: 'gosu:model-lab:project-chat'");
+  } finally {
+    await act(() => view?.unmount());
+    vi.unstubAllGlobals();
+  }
 });
 it('accepts only a model selection on creation, preserving the server-owned hash/name on stored sessions', () => {
   expect(

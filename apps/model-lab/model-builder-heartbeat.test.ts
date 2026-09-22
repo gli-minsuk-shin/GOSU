@@ -4,6 +4,23 @@ import { startModelBuilderHeartbeat } from './model-builder-heartbeat';
 afterEach(() => vi.useRealTimers());
 
 describe('model import connection heartbeat', () => {
+  it('continues reporting past five minutes with the actual extended deadline', async () => {
+    vi.useFakeTimers();
+    const onProgress = vi.fn();
+    const stop = startModelBuilderHeartbeat({
+      phase: 'llm-running',
+      attempt: 1,
+      timeoutMs: 900000,
+      onProgress,
+    });
+    await vi.advanceTimersByTimeAsync(360000);
+    expect(onProgress).toHaveBeenCalledTimes(24);
+    expect(onProgress.mock.lastCall?.[0].message).toContain(
+      '360 seconds elapsed · 15 minute limit',
+    );
+    stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it('describes narrow repairs without claiming to regenerate the whole graph', async () => {
     vi.useFakeTimers();
     const onProgress = vi.fn();

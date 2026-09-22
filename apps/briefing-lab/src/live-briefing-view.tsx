@@ -24,7 +24,7 @@ import { BriefingHistoryView } from './briefing-history-view';
 import { BriefingRunDelete } from './briefing-history-delete';
 import { briefingDate } from './briefing-agenda-days';
 import { BriefingSectionNavigation } from './briefing-section-navigation';
-import { BriefingBottomCollapse } from './briefing-disclosure-collapse';
+import { BriefingBottomCollapse, BriefingSectionRail } from './briefing-disclosure-collapse';
 const labels = { weather: '날씨', email: '이메일', papers: '연구 논문' };
 export function LiveBriefingView({
   routine,
@@ -309,6 +309,7 @@ export function LiveBriefingView({
                 <small>실제 조회 · {new Date(result.fetchedAt).toLocaleString()}</small>
                 <span className="briefing-source-toggle" aria-hidden="true" />
               </summary>
+              <BriefingSectionRail label={`${labels[result.kind]} 섹션 접기`} />
               <div className="briefing-live-source-body">
                 {result.notice && (
                   <p className="briefing-mail-collection-notice" role="note">

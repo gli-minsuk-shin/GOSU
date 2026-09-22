@@ -12,6 +12,7 @@ import {
   resolveEditedMessageBranchPoint,
   resolveFailedTurnRecoveryMode,
   resolveEffectiveCodexModel,
+  projectChatInitialScrollTarget,
   resolveInitialProjectChatScrollTop,
   resolveLatestMessageScrollTop,
   resolveProjectChatScrollIntent,
@@ -278,7 +279,13 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('9,100');
     expect(html).toContain('828,400');
     expect(html).toContain('캐시 입력 / 추론 출력');
-    expect(html).toContain('<details class="briefing-context-meter">');
+    // The chip opens its details as a popover in the top layer: the Project Chat shell is the only
+    // positioned ancestor and clips its content, so a panel positioned against it was never visible.
+    expect(html).toContain('<span class="briefing-context-meter">');
+    expect(html).toMatch(
+      /<button[^>]*class="briefing-context-chip"[^>]*popoverTarget="context-usage-/iu,
+    );
+    expect(html).toMatch(/<div[^>]*popover="auto"[^>]*class="briefing-context-detail"/u);
   });
 
   it('surfaces the project-wide rule list from the Project Chat toolbar', () => {
@@ -984,6 +991,12 @@ describe('advanced Project Chat controls', () => {
       false,
     );
     expect(shouldPersistProjectChatScrollPosition(sessionKey, sessionKey)).toBe(true);
+    // While the opening position is still being held against a growing transcript, the view's own
+    // scrollTop is a clamped, temporary value: saving it would replace the reader's real position.
+    expect(shouldPersistProjectChatScrollPosition(sessionKey, sessionKey, true)).toBe(false);
+    expect(projectChatInitialScrollTarget(null)).toEqual({ kind: 'bottom' });
+    expect(projectChatInitialScrollTarget(Number.NaN)).toEqual({ kind: 'bottom' });
+    expect(projectChatInitialScrollTarget(420)).toEqual({ kind: 'offset', top: 420 });
     expect(shouldInitializeProjectChatScroll(true, false)).toBe(false);
     expect(shouldInitializeProjectChatScroll(false, false)).toBe(false);
     expect(shouldInitializeProjectChatScroll(false, true)).toBe(true);
@@ -1229,7 +1242,7 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('Answer verbosity');
     expect(html).toContain('Personality');
     expect(html).toContain('Board + Objective');
-    expect(html).toContain('Board / To-do + Objective read tools');
+    expect(html).toContain('Board / To-do + Objective + Briefing calendar, mail, briefings');
     expect(html).toContain('Research Notes not authorized');
     expect(html).toContain('Cached web');
     expect(html).toContain('Authorize…');

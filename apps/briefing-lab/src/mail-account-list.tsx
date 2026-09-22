@@ -357,7 +357,9 @@ export function MailAccountList({
           </h4>
           <div className="briefing-form-grid">
             <label className="briefing-field">
-              <span>메일 검색 기간 (최근 일수)</span>
+              <span title="브리핑을 만들 때만 적용됩니다. AI 비서에게는 이보다 이전 메일도 찾아 달라고 할 수 있습니다.">
+                브리핑 메일 조회 기간 (최근 일수)
+              </span>
               <input
                 type="number"
                 min={1}

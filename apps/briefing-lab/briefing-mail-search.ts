@@ -21,6 +21,8 @@ export type MailSearch = {
   from: string;
   to: string;
 };
+/** "All mail" arrives as a very early date; older than this is kept to a sane floor. */
+export const MAIL_SEARCH_EARLIEST = Date.UTC(1990, 0, 1);
 export function resolveMailSearch(
   request: MailSearchRequest,
   scope: MailScope,
@@ -39,11 +41,15 @@ export function resolveMailSearch(
       throw new Error('mail_search_range_invalid');
     }
   };
+  // The saved days are the briefing's collection window. For a search they are only the default:
+  // a request that names an earlier `from` is searched as asked (2026-09-22 user decision: "메일 조회
+  // 범위는 Briefing 만들 때만 적용"). Accounts, mailboxes and the saved filters still bound it.
   const requestedStart = parse(input.from, now - scope.days * 86400000),
     requestedEnd = parse(input.to, now + 60000);
   if (requestedEnd <= requestedStart) throw new Error('mail_search_range_invalid');
-  const start = Math.max(requestedStart, now - scope.days * 86400000),
+  const start = Math.max(requestedStart, MAIL_SEARCH_EARLIEST),
     end = Math.min(requestedEnd, now + 60000);
+  // Nothing can have arrived in a window that lies wholly in the future.
   if (end <= start) throw new Error('mail_search_outside_scope');
   return {
     query: input.query.trim().toLowerCase().replace(/\s+/g, ' '),
@@ -79,7 +85,7 @@ export function nativeMailSearchPredicate(
     );
   return { _and: rules };
 }
-/** Independent host recheck. Search never weakens the saved date/filter/unread scope. */
+/** Independent host recheck. A search never weakens the saved sender/subject/unread filters. */
 export function matchesMailSearch(
   item: { title: string; sender: string; date: string },
   search: MailSearch,
@@ -95,4 +101,21 @@ export function matchesMailSearch(
       .filter(Boolean)
       .every((term) => text.includes(term.toLowerCase()))
   );
+}
+/**
+ * The words a search must contain, for narrowing candidates in Mail's index before Mail is asked.
+ * The saved scope filters are included: the reader applies them to every message anyway.
+ */
+export function mailSearchIndexTerms(
+  search: MailSearch,
+  scope: Pick<MailScope, 'sender' | 'subject'>,
+) {
+  const clean = (values: readonly string[]) => [
+    ...new Set(values.map((value) => value.trim().toLowerCase()).filter(Boolean)),
+  ];
+  return {
+    sender: clean([scope.sender, search.sender]),
+    subject: clean([scope.subject, search.subject]),
+    any: clean(search.query.split(/\s+/)),
+  };
 }

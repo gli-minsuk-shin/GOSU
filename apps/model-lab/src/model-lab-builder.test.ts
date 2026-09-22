@@ -7,6 +7,38 @@ import {
   prepareModelCopilotAttachment,
   prepareModelBuildArtifact,
 } from './model-lab-builder';
+it('does not start a cancelled import and forwards cancellation to the source request', async () => {
+  const c = new AbortController();
+  c.abort();
+  const fetchImpl = vi.fn();
+  await expect(
+    createModelBuilder(fetchImpl).build([], undefined, { signal: c.signal }),
+  ).rejects.toThrow('model_copilot_aborted');
+  expect(fetchImpl).not.toHaveBeenCalled();
+});
+it('rejects a late response after Stop rather than registering it as a new graph', async () => {
+  const c = new AbortController();
+  let reply!: (r: Response) => void;
+  const fetchImpl = vi.fn<typeof fetch>(
+    () =>
+      new Promise<Response>((resolve) => {
+        reply = resolve;
+      }),
+  );
+  const pending = createModelBuilder(fetchImpl).build([], undefined, { signal: c.signal });
+  const rejected = expect(pending).rejects.toThrow('model_copilot_aborted');
+  c.abort();
+  reply(new Response('{}'));
+  await rejected;
+  expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ signal: c.signal });
+});
+it('wires the visible import Stop control to the same controller as the builder', () => {
+  const source = readFileSync(new URL('./model-lab-app.tsx', import.meta.url), 'utf8');
+  expect(source).toContain('modelImportAbortRef.current?.abort()');
+  expect(source).toContain('signal: controller.signal');
+  expect(source).toContain('Stop model generation');
+  expect(source).toContain('checkImportCancelled()');
+});
 
 const builtModel = {
   schemaVersion: 1,
@@ -151,7 +183,7 @@ Output [N,1]}`;
     expect(extractRtfText(cocoaRtf)).toBe('Model 모델\nInput [N,P]\nOutput [N,1]');
   });
 
-  it('treats JSON attached in Model Copilot as chat evidence rather than a ModelIR import', async () => {
+  it('treats JSON attached in Model Assistant as chat evidence rather than a ModelIR import', async () => {
     const file = new File(['{"question":"compare this config"}'], 'experiment.json', {
       type: 'application/json',
     });

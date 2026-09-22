@@ -25,6 +25,18 @@ export function removeSshApproval(current: readonly SshApprovalRequest[], approv
   return current.filter((request) => request.id !== approvalId);
 }
 
+/** Main-process validated requests remain owned by their original scope even when hidden. */
+export function enqueueBackgroundSshApproval(
+  current: readonly SshApprovalRequest[],
+  request: SshApprovalRequest,
+  resolvedApprovalIds: ReadonlySet<string>,
+  now = Date.now(),
+) {
+  return !resolvedApprovalIds.has(request.id) && Date.parse(request.expiresAt) > now
+    ? upsertSshApproval(current, request)
+    : current;
+}
+
 export function shouldPresentSshApproval(
   request: SshApprovalRequest,
   scope: SshApprovalScope | null,
@@ -75,11 +87,7 @@ export function mergeHydratedSshApprovals(
   const byId = new Map(
     current
       .filter(
-        (request) =>
-          request.projectId === scope.projectId &&
-          request.sessionId === scope.sessionId &&
-          !resolvedApprovalIds.has(request.id) &&
-          Date.parse(request.expiresAt) > now,
+        (request) => !resolvedApprovalIds.has(request.id) && Date.parse(request.expiresAt) > now,
       )
       .map((request) => [request.id, request]),
   );

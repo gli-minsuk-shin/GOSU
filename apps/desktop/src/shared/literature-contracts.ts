@@ -6,6 +6,8 @@ import {
   LiteratureSearchTagsSchema,
 } from './literature-search-tags';
 
+/** One planned search runs at most this many provider queries. */
+export const LITERATURE_MAX_PLANNED_QUERIES = 3;
 export const LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT = 500;
 export const LITERATURE_MAX_RECORDS_PER_PAGE = LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT;
 export const LITERATURE_MAX_SEARCH_RESULTS = 50;
@@ -271,6 +273,19 @@ export const LiteratureSearchInputSchema = z
     }
   });
 
+/**
+ * Why a provider was dropped from one search. It travels only in the receipt of that search: stored
+ * runs keep the coarse degradation reason, so an older GOSU build can still read them.
+ */
+export const LiteratureProviderFailureSchema = z
+  .object({
+    provider: z.enum(['semantic-scholar', 'crossref', 'hugging-face']),
+    cause: z.enum(['rate_limited', 'timeout', 'unavailable', 'invalid_response']),
+    attempts: z.number().int().min(1).max(5),
+  })
+  .strict();
+export type LiteratureProviderFailure = z.infer<typeof LiteratureProviderFailureSchema>;
+
 export const LiteratureSearchReceiptSchema = z
   .object({
     run: LiteratureSearchRunSchema,
@@ -283,6 +298,7 @@ export const LiteratureSearchReceiptSchema = z
     selectedCount: z.number().int().nonnegative().optional(),
     tierCounts: LiteratureTierCountsSchema.optional(),
     coverage: LiteratureDiscoveryCoverageSchema.optional(),
+    providerFailures: z.array(LiteratureProviderFailureSchema).max(3).optional(),
   })
   .strict();
 
@@ -321,6 +337,22 @@ export const DeleteLiteratureRecordInputSchema = z
 
 export const DeleteLiteratureRecordReceiptSchema = z
   .object({ projectId: uuidSchema, recordId: uuidSchema, deleted: z.literal(true) })
+  .strict();
+
+/** Takes back what one search (or the queries of one planned search) added, if nobody touched it. */
+export const UndoLiteratureSearchInputSchema = z
+  .object({
+    projectId: uuidSchema,
+    runIds: z.array(uuidSchema).min(1).max(LITERATURE_MAX_PLANNED_QUERIES),
+  })
+  .strict();
+
+export const UndoLiteratureSearchReceiptSchema = z
+  .object({
+    projectId: uuidSchema,
+    removedCount: z.number().int().nonnegative(),
+    keptCount: z.number().int().nonnegative(),
+  })
   .strict();
 
 export const LiteratureImportRequestSchema = z
@@ -466,12 +498,76 @@ export const LiteratureOrganizeReceiptSchema = z
   })
   .strict();
 
+/** JSON schema handed to the provider for a search plan; GOSU re-validates the answer itself. */
+export const LITERATURE_SEARCH_PLAN_OUTPUT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    queries: {
+      type: 'array',
+      maxItems: LITERATURE_MAX_PLANNED_QUERIES,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          query: { type: 'string', minLength: 2, maxLength: 200 },
+          topics: {
+            type: 'array',
+            maxItems: 3,
+            items: { type: 'string', minLength: 1, maxLength: 240 },
+          },
+          keywords: {
+            type: 'array',
+            maxItems: 6,
+            items: { type: 'string', minLength: 1, maxLength: 240 },
+          },
+        },
+        required: ['query', 'topics', 'keywords'],
+      },
+    },
+  },
+  required: ['queries'],
+} as const;
+
+export const LiteratureSearchPlanQuerySchema = z
+  .object({
+    query: z.string().trim().min(2).max(200),
+    topics: z.array(z.string().trim().max(240)).max(3),
+    keywords: z.array(z.string().trim().max(240)).max(6),
+  })
+  .strict();
+
+export const LiteratureSearchPlanResponseSchema = z
+  .object({
+    queries: z.array(LiteratureSearchPlanQuerySchema).min(1).max(LITERATURE_MAX_PLANNED_QUERIES),
+  })
+  .strict();
+
+export const PlanLiteratureSearchInputSchema = z
+  .object({
+    projectId: uuidSchema,
+    question: z.string().trim().min(2).max(500),
+    requestedModelId: boundedText(256).nullable().optional(),
+    reasoningOptionId: boundedText(128).nullable().optional(),
+  })
+  .strict();
+
+export const LiteratureSearchPlanReceiptSchema = z
+  .object({
+    projectId: uuidSchema,
+    queries: z.array(LiteratureSearchPlanQuerySchema).min(1).max(LITERATURE_MAX_PLANNED_QUERIES),
+    invocation: ModelInvocationSchema,
+    completedAt: timestampSchema,
+  })
+  .strict();
+
 export const LITERATURE_IPC_ERROR_CODES = [
   'invalid_literature_input',
   'literature_project_not_found',
   'literature_project_unavailable',
   'literature_provider_unavailable',
   'literature_rate_limited',
+  'literature_query_without_topic',
   'literature_record_not_found',
   'literature_record_conflict',
   'literature_record_limit_reached',
@@ -482,6 +578,9 @@ export const LITERATURE_IPC_ERROR_CODES = [
   'literature_ai_busy',
   'literature_ai_interrupted',
   'literature_ai_unavailable',
+  'literature_ai_start_failed',
+  'literature_ai_turn_failed',
+  'literature_ai_timeout',
   'literature_ai_invalid_response',
   'literature_ai_conflict',
   'literature_unavailable',
@@ -527,6 +626,11 @@ export type CancelLiteratureAiInput = z.infer<typeof CancelLiteratureAiInputSche
 export type LiteratureOrganizeReceipt = z.infer<typeof LiteratureOrganizeReceiptSchema>;
 export type LiteratureAiCancelReceipt = z.infer<typeof LiteratureAiCancelReceiptSchema>;
 export type LiteratureIpcErrorCode = (typeof LITERATURE_IPC_ERROR_CODES)[number];
+export type UndoLiteratureSearchInput = z.infer<typeof UndoLiteratureSearchInputSchema>;
+export type UndoLiteratureSearchReceipt = z.infer<typeof UndoLiteratureSearchReceiptSchema>;
+export type LiteratureSearchPlanQuery = z.infer<typeof LiteratureSearchPlanQuerySchema>;
+export type PlanLiteratureSearchInput = z.infer<typeof PlanLiteratureSearchInputSchema>;
+export type LiteratureSearchPlanReceipt = z.infer<typeof LiteratureSearchPlanReceiptSchema>;
 export type LiteratureIpcResult<T> =
   | Readonly<{ ok: true; value: T }>
   | Readonly<{ ok: false; error: Readonly<{ code: LiteratureIpcErrorCode }> }>;

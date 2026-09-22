@@ -26,6 +26,8 @@ function displayTitle(path: string) {
 type VaultState = Readonly<{
   reader: VaultReader;
   selection: VaultSelection;
+  /** The identity this vault had before 0.58.147, so grants saved then still match. */
+  legacyId: string;
 }>;
 
 type MaybePromise<T> = T | Promise<T>;
@@ -35,8 +37,21 @@ export type VaultRootStorage = Readonly<{
   saveRoot(root: string): MaybePromise<void>;
 }>;
 
+/** Why the saved vault could not be reopened, so the screen can say it instead of looking unset. */
+export type VaultRestoreFailure = 'missing' | 'permission_denied' | 'unreadable';
+
+function vaultRestoreFailure(error: unknown): VaultRestoreFailure {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code === 'ENOENT' || code === 'ENOTDIR') return 'missing';
+  if (error instanceof Error && error.message === 'vault_directory_required') return 'missing';
+  if (code === 'EPERM' || code === 'EACCES') return 'permission_denied';
+  return 'unreadable';
+}
+
 export class VaultAccess {
   private state?: VaultState;
+  private restoring: Promise<VaultSelection | null> | undefined;
+  private restoreFailure: VaultRestoreFailure | null = null;
 
   constructor(private readonly storage?: VaultRootStorage) {}
 
@@ -49,24 +64,68 @@ export class VaultAccess {
     return this.connect(result.filePaths[0]);
   }
 
-  async restore() {
-    const root = await this.storage?.loadRoot();
-    if (!root) return null;
-    return this.connect(root, false);
+  /**
+   * Reconnects the saved vault. It runs at startup and again whenever something needs the vault
+   * and it is not connected yet, so a slow startup or one failed attempt does not leave every
+   * project looking as if no vault had ever been chosen. Concurrent callers share one attempt,
+   * and a vault the user chose meanwhile is never replaced by the saved one.
+   */
+  async restore(): Promise<VaultSelection | null> {
+    if (this.state) return structuredClone(this.state.selection);
+    if (this.restoring) return this.restoring;
+    const attempt = (async () => {
+      const root = await this.storage?.loadRoot();
+      if (!root) {
+        this.restoreFailure = null;
+        return null;
+      }
+      try {
+        const opened = await this.open(root);
+        this.state ??= opened;
+        this.restoreFailure = null;
+        return structuredClone(this.state.selection);
+      } catch (error) {
+        this.restoreFailure = vaultRestoreFailure(error);
+        throw error;
+      }
+    })();
+    this.restoring = attempt;
+    try {
+      return await attempt;
+    } finally {
+      if (this.restoring === attempt) this.restoring = undefined;
+    }
   }
 
-  async connect(root: string, persist = true) {
+  /** Set while a saved vault exists but the last attempt to reopen it failed. */
+  restoreError() {
+    return this.state ? null : this.restoreFailure;
+  }
+
+  private async open(root: string): Promise<VaultState> {
     const reader = await VaultReader.open(root);
     const files = await reader.listDocuments();
     const selection: VaultSelection = {
-      id: sha256(`${reader.root}\0${reader.identityKey()}`),
+      // The canonical path alone. Before 0.58.147 this also hashed the root's device and inode,
+      // which macOS changes on its own: iCloud evicting and re-materializing Documents, a volume
+      // remounting, a restore from a backup. Every one of those silently invalidated a saved
+      // Research Notes grant and asked the user to authorize the same folder again. The device
+      // and inode are still captured and re-checked during a read, which is what they are for:
+      // noticing that the directory was swapped while GOSU was working in it.
+      id: sha256(reader.root),
       name: basename(reader.root).slice(0, 256) || 'Obsidian Vault',
       root: reader.root,
       files,
     };
-    if (persist) await this.storage?.saveRoot(reader.root);
-    this.state = { reader, selection };
-    return structuredClone(selection);
+    return { reader, selection, legacyId: sha256(`${reader.root}\0${reader.identityKey()}`) };
+  }
+
+  async connect(root: string, persist = true) {
+    const opened = await this.open(root);
+    if (persist) await this.storage?.saveRoot(opened.reader.root);
+    this.state = opened;
+    this.restoreFailure = null;
+    return structuredClone(opened.selection);
   }
 
   current() {
@@ -78,8 +137,9 @@ export class VaultAccess {
     return state ? { id: state.selection.id, name: state.selection.name } : null;
   }
 
+  /** A grant saved before 0.58.147 keeps working while the root is still the same object. */
   matchesGrant(vaultId: string) {
-    return this.state?.selection.id === vaultId;
+    return this.state?.selection.id === vaultId || this.state?.legacyId === vaultId;
   }
 
   async validateGrant(expectedVaultId: string) {

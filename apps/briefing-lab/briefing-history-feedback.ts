@@ -17,7 +17,7 @@ export async function saveHistoryFeedback(
       routineId: z.string().min(1).max(128),
       historyId: z.string().min(1).max(128),
       itemId: z.string().min(1).max(160),
-      decision: z.enum(['important', 'not-interested']),
+      decision: z.enum(['important', 'not-interested']).nullable(),
     })
     .strict()
     .parse(raw);

@@ -61,7 +61,7 @@ const host = {
   storage: { 'gosu.model-lab.test': 'A' },
 };
 describe('project Model Lab environment', () => {
-  it('keeps desktop Copilot beside the graph only in embedded project workspaces', () => {
+  it('keeps desktop Assistant beside the graph only in embedded project workspaces', () => {
     const css = readFileSync(new URL('./model-lab-embedded.css', import.meta.url), 'utf8');
     expect(css).toContain('@media (min-width: 901px) and (max-width: 1200px)');
     expect(css).toContain('.model-lab-shell[data-project-id]:not(.model-lab-shell--focus)');

@@ -269,6 +269,26 @@
   color: var(--green);
   box-shadow: 0 1px 4px #0001;
 }
+/* The one action of this panel: a real button, one text size above the filter tabs. Disabled (nothing
+   unread) it stays readable instead of fading into the background. */
+.notification-toolbar .notification-mark-all {
+  border: 1px solid color-mix(in srgb, var(--green) 45%, var(--line));
+  background: color-mix(in srgb, var(--green) 8%, var(--surface));
+  color: var(--green);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: var(--font-control);
+  font-weight: 600;
+}
+.notification-toolbar .notification-mark-all:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--green) 16%, var(--surface));
+}
+.notification-toolbar .notification-mark-all:disabled {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--muted);
+  opacity: 1;
+}
 .notification-list-scroll {
   min-height: 0;
   overflow-y: auto;

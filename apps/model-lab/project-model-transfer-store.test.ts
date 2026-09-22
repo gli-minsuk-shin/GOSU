@@ -12,6 +12,7 @@ import {
 } from './src/sample-models';
 import {
   initialModelPseudocodeWorkspace,
+  modelToPseudocode,
   serializeModelPseudocodeWorkspace,
   MODEL_PSEUDOCODE_WORKSPACE_STORAGE_KEY,
   type ModelPseudocodeWorkspace,
@@ -178,5 +179,83 @@ describe('independent cross-project model copies', () => {
     );
     await writeFile(paths.sourcePath, 'tampered');
     await expect(setup.store.create(a, request())).rejects.toThrow('verification failed');
+  });
+});
+
+describe('models added from a chat', () => {
+  const pseudocode = (id = residualClassifier.id) =>
+    modelToPseudocode({ ...residualClassifier, id, name: 'GCSA beta ABCD v3 axial' });
+
+  it('validates chat pseudocode and queues it for the project Model Lab to adopt', async () => {
+    const f = await fixture(initialModelPseudocodeWorkspace([]));
+    const requestId = randomUUID();
+    const copy = await f.store.addFromChat(a, {
+      requestId,
+      pseudocode: pseudocode('gcsa-beta-abcd-v3'),
+      origin: 'project-chat',
+    });
+    expect(copy).toMatchObject({
+      id: requestId,
+      targetProjectId: a,
+      rootModelId: 'gcsa-beta-abcd-v3',
+      modelName: 'GCSA beta ABCD v3 axial',
+      status: 'pending',
+    });
+    expect(copy.entries![0]!.label).toBe('Added from project chat');
+    // The open Model Lab merges it like a copy from another project.
+    const merged = mergeProjectModelCopies(
+      projectModelLabInitialWorkspace(null),
+      await f.store.pending(a),
+    );
+    expect(merged.histories['gcsa-beta-abcd-v3']?.[0]?.model.name).toBe('GCSA beta ABCD v3 axial');
+    // The same request again is the same entry; a different model under that request is refused.
+    expect(
+      (
+        await f.store.addFromChat(a, {
+          requestId,
+          pseudocode: pseudocode('gcsa-beta-abcd-v3'),
+          origin: 'project-chat',
+        })
+      ).id,
+    ).toBe(requestId);
+    expect(await f.store.pending(a)).toHaveLength(1);
+    await expect(
+      f.store.addFromChat(a, {
+        requestId,
+        pseudocode: pseudocode('other'),
+        origin: 'project-chat',
+      }),
+    ).rejects.toThrow('model_lab_request_conflict');
+  });
+
+  it('keeps an existing model: a clashing id gets its own suffix', async () => {
+    const f = await fixture();
+    const copy = await f.store.addFromChat(a, {
+      requestId: randomUUID(),
+      pseudocode: pseudocode(residualClassifier.id),
+      origin: 'ai-assistant',
+    });
+    expect(copy.rootModelId).not.toBe(residualClassifier.id);
+    expect(copy.rootModelId.startsWith(`${residualClassifier.id}-chat-`)).toBe(true);
+    expect(copy.entries![0]!.label).toBe('Added from AI assistant');
+  });
+
+  it('explains invalid pseudocode and unknown projects instead of queueing them', async () => {
+    const f = await fixture();
+    await expect(
+      f.store.addFromChat(a, {
+        requestId: randomUUID(),
+        pseudocode: '# GOSU Model Pseudocode v2\nMODEL broken "Broken"\nEND MODEL',
+        origin: 'project-chat',
+      }),
+    ).rejects.toThrow(/^model_lab_pseudocode_invalid: /);
+    await expect(
+      f.store.addFromChat('33333333-3333-4333-8333-333333333333', {
+        requestId: randomUUID(),
+        pseudocode: pseudocode(),
+        origin: 'project-chat',
+      }),
+    ).rejects.toThrow('model_lab_project_unavailable');
+    expect(await f.store.pending(a)).toEqual([]);
   });
 });

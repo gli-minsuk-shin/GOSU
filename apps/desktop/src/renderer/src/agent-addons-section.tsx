@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { uiText, useUiText } from '@gosu/ui/language';
 import type {
   AgentAddOnId,
@@ -19,6 +20,14 @@ export type CodexConnectionControls = {
   onRefresh: () => void;
   onDisconnect: () => void;
 };
+export type ClaudeCodeLoginControls = {
+  phase: 'idle' | 'signing-in' | 'failed';
+  message: string | null;
+  onLogin: () => void;
+  onCancel: () => void;
+  onOpenSignInPage: () => void;
+  onSubmitCode: (code: string) => void;
+};
 export function enabledAgentAddOnIds(preferences: AgentAddOnPreferences): readonly AgentAddOnId[] {
   return preferences['claude-code'] === 'connect-local' ? ['claude-code'] : [];
 }
@@ -28,6 +37,7 @@ export function AgentAddOnsSection({
   codexConnection,
   claudeCodeConnection = { phase: 'disabled', status: null },
   onRefreshClaudeCodeConnection = async () => undefined,
+  claudeCodeLogin,
 }: {
   preferences: AgentAddOnPreferences;
   onChange: (preferences: AgentAddOnPreferences) => void;
@@ -36,10 +46,13 @@ export function AgentAddOnsSection({
   onRefreshHermesConnection?: () => Promise<unknown>;
   claudeCodeConnection?: AgentProviderConnectionUiState;
   onRefreshClaudeCodeConnection?: () => Promise<unknown>;
+  claudeCodeLogin?: ClaudeCodeLoginControls | undefined;
 }) {
   useUiText();
+  const [loginCode, setLoginCode] = useState('');
   const connected = claudeCodeConnection.status?.connected === true;
-  const checking = claudeCodeConnection.phase === 'checking';
+  const signingIn = claudeCodeLogin?.phase === 'signing-in';
+  const checking = claudeCodeConnection.phase === 'checking' || signingIn;
   const selectClaude = () => {
     if (preferences['claude-code'] === 'connect-local') void onRefreshClaudeCodeConnection();
     else onChange({ ...preferences, 'claude-code': 'connect-local' });
@@ -103,13 +116,15 @@ export function AgentAddOnsSection({
           <header>
             <h3>Claude</h3>
             <span role="status">
-              {checking
-                ? uiText('연결 확인 중…')
-                : connected
-                  ? uiText('연결됨')
-                  : claudeCodeConnection.phase === 'unavailable'
-                    ? uiText('연결 확인 필요')
-                    : uiText('연결 안 됨')}
+              {signingIn
+                ? uiText('로그인 진행 중…')
+                : checking
+                  ? uiText('연결 확인 중…')
+                  : connected
+                    ? uiText('연결됨')
+                    : claudeCodeConnection.phase === 'unavailable'
+                      ? uiText('연결 확인 필요')
+                      : uiText('연결 안 됨')}
             </span>
           </header>
           <p>
@@ -117,6 +132,37 @@ export function AgentAddOnsSection({
               'Claude.ai 구독 · 이 Mac의 Claude Code 로그인 사용. 연결 해제는 Claude 계정에서 로그아웃하지 않습니다.',
             )}
           </p>
+          {claudeCodeLogin?.message ? (
+            <p role="status" aria-label="Claude 로그인 상태">
+              {uiText(claudeCodeLogin.message)}
+            </p>
+          ) : null}
+          {signingIn ? (
+            <form
+              className="codex-actions"
+              aria-label="Claude 인증 코드 입력"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const code = loginCode.trim();
+                if (!code) return;
+                claudeCodeLogin?.onSubmitCode(code);
+                setLoginCode('');
+              }}
+            >
+              <input
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                aria-label="Claude 인증 코드"
+                placeholder={uiText('브라우저의 Authentication code 붙여넣기')}
+                value={loginCode}
+                onChange={(event) => setLoginCode(event.target.value)}
+              />
+              <button type="submit" className="secondary-button" disabled={!loginCode.trim()}>
+                {uiText('코드 입력')}
+              </button>
+            </form>
+          ) : null}
           <div className="codex-actions">
             <button
               type="button"
@@ -134,14 +180,38 @@ export function AgentAddOnsSection({
             >
               {uiText('모델 새로고침')}
             </button>
-            <a
-              className="secondary-button"
-              href="https://docs.anthropic.com/en/docs/claude-code/getting-started"
-              target="_blank"
-              rel="noreferrer"
-            >
-              {uiText('Claude 로그인 안내')} ↗
-            </a>
+            {signingIn ? (
+              <>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={claudeCodeLogin?.onOpenSignInPage}
+                >
+                  {uiText('로그인 페이지 다시 열기')}
+                </button>
+                <button type="button" className="ghost-button" onClick={claudeCodeLogin?.onCancel}>
+                  {uiText('로그인 취소')}
+                </button>
+              </>
+            ) : claudeCodeLogin ? (
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={checking}
+                onClick={claudeCodeLogin.onLogin}
+              >
+                {uiText('Claude 로그인')}
+              </button>
+            ) : (
+              <a
+                className="secondary-button"
+                href="https://docs.anthropic.com/en/docs/claude-code/getting-started"
+                target="_blank"
+                rel="noreferrer"
+              >
+                {uiText('Claude 로그인 안내')} ↗
+              </a>
+            )}
             <button
               type="button"
               className="ghost-button"

@@ -80,10 +80,10 @@ describe('usage view truth-preserving model', () => {
       },
     ];
     const buckets = usageSeriesChartBuckets(rows, 'Asia/Seoul');
-    const chart = buildUsageTokenChart(buckets);
 
+    // The bars carry no mark of their own; the lower bound is said in each bar's label.
+    expect(buildUsageTokenChart(buckets).bars).toHaveLength(2);
     expect(buckets.map(({ lowerBound }) => lowerBound)).toEqual([true, true]);
-    expect(chart.bars.map(({ incomplete }) => incomplete)).toEqual([true, true]);
     expect(buckets[0]!.accessibleLabel).toContain('known lower bound');
     expect(buckets[0]!.accessibleLabel).toContain('1 of 2 turns reported');
   });

@@ -46,4 +46,8 @@ it('projects delivery facts without exposing opaque account IDs or substituting 
     receivingAccount: { name: 'Work', addresses: ['work@example.test'] },
   });
   expect(emailDeliveryForPrompt({})).toEqual({ receivedAt: null, receivingAccount: null });
+  // With the routine time zone, the local receipt day and weekday are added for date resolution.
+  expect(
+    emailDeliveryForPrompt({ publishedAt: '2026-09-09T04:22:00Z' }, 'Asia/Seoul').receivedLocal,
+  ).toBe('2026-09-09 (Wed) 13:22');
 });

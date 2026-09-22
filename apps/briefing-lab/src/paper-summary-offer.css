@@ -86,3 +86,13 @@
   width: 15px;
   height: 15px;
 }
+/* Under an answer that asked the question itself: just the two answers, no card. */
+.gosu-paper-save-offer.is-answer {
+  margin: 6px 0 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.gosu-paper-save-offer.is-answer > strong {
+  margin-bottom: 2px;
+}

@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { normalizedMailSender } from './src/email-presentation';
 import {
   AssistantQueuedMessageSchema,
   type AssistantQueuedMessage,
@@ -39,6 +40,7 @@ import { PaperInsightSchema } from './src/briefing-intelligence';
 import type { LiveItem, LiveSourceResult } from './src/live-types';
 import { BriefingSnapshotSchema, type BriefingSnapshot } from './src/briefing-history-snapshot';
 import { secretPattern } from './briefing-memory-store';
+import { isCredentialMail } from './briefing-credential-mail';
 import { safeAppleMailUrl } from './src/apple-mail-url';
 import { MailNativeIdSchema } from './src/mail-open-contract';
 import { MailAccountContextSchema, MailReceivedAtSchema } from './src/mail-account';
@@ -46,13 +48,24 @@ import { SummaryProvenanceSchema, type SummaryProvenance } from './src/summary-p
 import { indexSavedPapers, savedPaperKey, type SavedPaper } from './src/paper-library-index';
 import { classificationKey, classificationDigest } from './paper-classification-data';
 import { briefingLocalDay } from './src/briefing-generation-contract';
+import type { ModelRouting } from '@gosu/contracts';
+import { briefingProviderSummary, briefingRoutedProviders } from './briefing-model-routing';
 import {
   ClassificationRecordSchema,
   PaperClassificationSchema,
   type PaperClassification,
 } from './src/paper-classification';
 import { assignPaperTags, buildPaperTagCatalog } from './src/paper-tags';
-import { mailSummaryKey, planMailRead } from './briefing-mail-ingestion';
+import {
+  MAIL_COVERAGE_OVERLAP_MS,
+  mailDeliveryKey,
+  mailSummaryKey,
+  needsMailReread,
+  nextMailCoverage,
+  planMailRead,
+  type MailTargetCoverage,
+} from './briefing-mail-ingestion';
+import { recoverLegacyEmailTask } from './legacy-email-task';
 import {
   RemovedBriefingSchema,
   removedHistoryKeys,
@@ -91,6 +104,7 @@ const HistorySchema = z
           bibliography: PaperBibliographySchema.optional(),
           discoverySource: z.literal('google-scholar-alert').optional(),
           mailAccount: MailAccountContextSchema.optional(),
+          mailSender: z.string().max(1000).optional(),
           mailContentProof: MailContentProofSchema.optional(),
           mailDuplicateCheckedAt: z.string().datetime().optional(),
           mailCopies: z.array(MailCopySchema).max(5).optional(),
@@ -119,6 +133,7 @@ const HistorySchema = z
           reportedResults: PaperInsightSchema.shape.reportedResults,
           importanceReason: PaperInsightSchema.shape.importanceReason.optional(),
           action: PaperInsightSchema.shape.action.optional(),
+          preparedActions: PaperInsightSchema.shape.preparedActions,
           provenance: SummaryProvenanceSchema.optional(),
           classification: PaperClassificationSchema.optional(),
           figures: z
@@ -207,6 +222,12 @@ const Schema = z
           routineId: z.string(),
           scope: z.string(),
           messages: z.array(ConversationMessageSchema).max(10000),
+          /**
+           * `/new`: the model is given the records from this index on. Earlier records stay for the
+           * screen and for search_conversation; nothing is deleted. Absent means the whole list.
+           */
+          contextStartsAt: z.number().int().nonnegative().optional(),
+          contextStartedAt: z.string().datetime().optional(),
           checkpoint: z
             .object({
               through: z.number().int().nonnegative(),
@@ -237,6 +258,24 @@ const Schema = z
       )
       .max(5000)
       .default([]),
+    // Per mailbox: every message received in (coveredFrom, coveredTo] was examined and handled.
+    // gapFrom marks the unexamined interval (gapFrom, coveredFrom] a later run must still read.
+    mailCoverage: z
+      .array(
+        z
+          .object({
+            routineId: z.string().max(128),
+            accountId: z.string().max(128),
+            mailboxId: z.string().max(128),
+            coveredFrom: z.string().datetime(),
+            coveredTo: z.string().datetime(),
+            gapFrom: z.string().datetime().nullable(),
+            updatedAt: z.string().datetime(),
+          })
+          .strict(),
+      )
+      .max(5000)
+      .default([]),
   })
   .strict();
 const scopeDigest = (profile: AssistantProfile) =>
@@ -254,6 +293,15 @@ const scopeDigest = (profile: AssistantProfile) =>
       }),
     )
     .digest('hex');
+/** The records a model turn may be given: everything after the latest `/new`. */
+function modelFacingMessages(
+  conversation:
+    { messages: ConversationMessage[]; contextStartsAt?: number | undefined } | undefined,
+) {
+  if (!conversation) return [];
+  const start = Math.min(conversation.contextStartsAt ?? 0, conversation.messages.length);
+  return start ? conversation.messages.slice(start) : conversation.messages;
+}
 function appendHistory(history: BriefingHistory[], entry: BriefingHistory) {
   const itemKey = (h: BriefingHistory) =>
     h.items
@@ -301,11 +349,33 @@ function archivePapers(history: BriefingHistory[]) {
   // store's byte ceiling rejects a new oversized save atomically instead of erasing images.
   return [...entries.values()];
 }
+/** What the GOSU host may read from a routine on the user's behalf. */
+export type BriefingHostReadKind = 'calendar' | 'mail' | 'briefings' | 'papers';
+
+function hostReadAllowed(kind: BriefingHostReadKind, profile: AssistantProfile) {
+  if (kind === 'mail')
+    return Boolean(profile.preferences.mailRead && profile.preferences.mailAi && profile.live.mail);
+  if (kind === 'calendar')
+    return Boolean(profile.preferences.calendarRead && profile.preferences.calendarIds.length);
+  return true;
+}
+
 export class BriefingWorkspaceStore {
   private state: SealedStateStore<z.infer<typeof Schema>>;
+  /**
+   * Settings → Agent, wired by the service that owns this store. Briefing has no provider picker of
+   * its own: a provider the user assigned to a Briefing usage there may receive what the routine
+   * allows for AI. Without a policy only the provider stored with the routine is accepted.
+   */
+  modelRouting?: (() => Promise<ModelRouting | undefined>) | undefined;
+  private async providerAllowed(profile: AssistantProfile, provider: string) {
+    if (provider === profile.preferences.providerId) return true;
+    return briefingRoutedProviders(await this.modelRouting?.()).includes(provider);
+  }
   constructor(
     directory = join(homedir(), 'Library', 'Application Support', 'GOSU', 'briefing-lab'),
     keyProvider = systemBriefingKey,
+    private readonly reuseApprovedScopes: () => boolean = () => false,
   ) {
     this.state = new SealedStateStore(
       directory,
@@ -327,6 +397,7 @@ export class BriefingWorkspaceStore {
           removedBriefings: [],
           actions: [],
           mailCollections: [],
+          mailCoverage: [],
         }),
         parse: (value) => Schema.parse(value),
       },
@@ -525,10 +596,10 @@ export class BriefingWorkspaceStore {
     const current = state.profiles.find((p) => p.routineId === profile.routineId);
     if (!current || !this.owns(current) || scopeDigest(current) !== scopeDigest(profile))
       throw new Error('assistant_settings_changed');
-    return (
+    return modelFacingMessages(
       state.conversations.find(
         (c) => c.routineId === current.routineId && c.scope === scopeDigest(current),
-      )?.messages ?? []
+      ),
     );
   }
   async recordBriefingNotification(
@@ -625,12 +696,47 @@ export class BriefingWorkspaceStore {
     const messages = histories
       .flatMap((c) => c.messages)
       .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    const contextStartedAt = histories.find(
+      (c) => c.scope === scopeDigest(current),
+    )?.contextStartedAt;
     return {
       messages,
       otherScopeMessages: histories
         .filter((c) => c.scope !== scopeDigest(current))
         .reduce((sum, c) => sum + c.messages.length, 0),
+      // Where the screen draws the "new conversation" line. Display only, never an approval.
+      ...(contextStartedAt ? { contextStartedAt } : {}),
     };
+  }
+  /**
+   * `/new`: later turns start from an empty context. Records are kept; the checkpoint summarized
+   * the context that just ended, so it goes with it.
+   */
+  async startNewConversationContext(profile: AssistantProfile) {
+    let result = { started: false, contextStartedAt: '', setAside: 0 };
+    await this.state.mutate((state) => {
+      const current = state.profiles.find((p) => p.routineId === profile.routineId);
+      if (!current || !this.owns(current) || scopeDigest(current) !== scopeDigest(profile))
+        throw new Error('assistant_settings_changed');
+      const conversation = state.conversations.find(
+        (c) => c.routineId === current.routineId && c.scope === scopeDigest(current),
+      );
+      const setAside = modelFacingMessages(conversation).length;
+      if (!conversation || !setAside) {
+        result = {
+          started: false,
+          contextStartedAt: conversation?.contextStartedAt ?? '',
+          setAside: 0,
+        };
+        return;
+      }
+      const contextStartedAt = new Date().toISOString();
+      conversation.contextStartsAt = conversation.messages.length;
+      conversation.contextStartedAt = contextStartedAt;
+      delete conversation.checkpoint;
+      result = { started: true, contextStartedAt, setAside };
+    });
+    return result;
   }
   async appendConversation(profile: AssistantProfile, message: ConversationMessage) {
     const parsed = ConversationMessageSchema.parse(message);
@@ -662,10 +768,12 @@ export class BriefingWorkspaceStore {
       const conversation = state.conversations.find(
         (c) => c.routineId === profile.routineId && c.scope === scopeDigest(profile),
       );
+      // A checkpoint counts from the start of the current context, like the list the model gets.
+      const facing = modelFacingMessages(conversation);
       if (
         !conversation ||
-        checkpoint.through > conversation.messages.length ||
-        conversationDigest(conversation.messages.slice(0, checkpoint.through)) !== checkpoint.digest
+        checkpoint.through > facing.length ||
+        conversationDigest(facing.slice(0, checkpoint.through)) !== checkpoint.digest
       )
         throw new Error('assistant_compaction_stale');
       if ((conversation.checkpoint?.through ?? 0) > checkpoint.through) return;
@@ -704,7 +812,10 @@ export class BriefingWorkspaceStore {
     return profile.approvedScope === scopeDigest(profile);
   }
   requiresPerRequestConfirmation(profile: AssistantProfile) {
-    return profile.preferences.confirmationPolicy === 'ask';
+    return (
+      profile.preferences.confirmationPolicy === 'ask' &&
+      !(this.approved(profile) && this.reuseApprovedScopes())
+    );
   }
   owns(profile: AssistantProfile) {
     const hash = briefingClientHash();
@@ -747,9 +858,9 @@ export class BriefingWorkspaceStore {
     if (widening || !old || !this.owns(old))
       await approve(
         (next.preferences.projectRead
-          ? 'GOSU의 모든 활성 프로젝트 대화·기억 접근을 허용합니다. 선택한 제공자에 비공개 AI 자료가 전달될 수 있습니다.\n\n'
+          ? 'GOSU의 모든 활성 프로젝트 대화·기억 접근을 허용합니다. 설정 → Agent에서 정한 모델의 제공자에 비공개 AI 자료가 전달될 수 있습니다.\n\n'
           : '') +
-          `Briefing 설정 저장\n${next.name}\n메일 조회 ${next.preferences.mailRead ? '허용' : '차단'} / 메일·이 루틴의 private memory AI 사용 ${next.preferences.mailAi ? '허용' : '차단'}\n메일 범위: ${next.live.mail ? `선택한 ${mailTargets(next.live.mail).length}개 계정·메일함, 최근 ${next.live.mail.days}일 전체 최대 ${next.live.mail.limit}개, 본문 ${next.live.mail.bodyPreview ? '포함' : '제외'}` : '없음'}\nAI 제공자 ${next.preferences.providerId}\nCalendar 조회 ${next.preferences.calendarRead ? `${next.preferences.calendarIds.length}개 캘린더` : '차단'}\nGOSU 할 일 조회 ${next.preferences.todoRead ? '허용' : '차단'}\n요청 확인 정책: ${next.preferences.confirmationPolicy === 'always' ? '설정한 범위는 항상 허용' : '매번 확인'}\n일정 쓰기와 macOS 권한은 별도 확인합니다.`,
+          `Briefing 설정 저장\n${next.name}\n메일 조회 ${next.preferences.mailRead ? '허용' : '차단'} / 메일·이 루틴의 private memory AI 사용 ${next.preferences.mailAi ? '허용' : '차단'}\n메일 범위: ${next.live.mail ? `선택한 ${mailTargets(next.live.mail).length}개 계정·메일함, 최근 ${next.live.mail.days}일 전체 최대 ${next.live.mail.limit}개, 본문 ${next.live.mail.bodyPreview ? '포함' : '제외'}` : '없음'}\nAI 모델: ${briefingProviderSummary(next.preferences, await this.modelRouting?.())}\nCalendar 조회 ${next.preferences.calendarRead ? `${next.preferences.calendarIds.length}개 캘린더` : '차단'}\nGOSU 할 일 조회 ${next.preferences.todoRead ? '허용' : '차단'}\n요청 확인 정책: ${next.preferences.confirmationPolicy === 'always' ? '설정한 범위는 항상 허용' : '매번 확인'}\n일정 쓰기와 macOS 권한은 별도 확인합니다.`,
       );
     next.approvedScope = this.requiresApproval(next) ? digest : null;
     next.owners = [...new Set([...(old?.owners ?? []), clientHash])].slice(-8);
@@ -783,7 +894,7 @@ export class BriefingWorkspaceStore {
       !this.owns(p) ||
       !p.preferences.mailRead ||
       (ai && !p.preferences.mailAi) ||
-      (provider && provider !== p.preferences.providerId) ||
+      (provider && !(await this.providerAllowed(p, provider))) ||
       JSON.stringify(p.live.mail) !== JSON.stringify(scope)
     )
       throw new Error('assistant_mail_permission_required');
@@ -795,7 +906,10 @@ export class BriefingWorkspaceStore {
     const initialized = new Set(
       state.mailCollections.filter((r) => r.routineId === id).map((r) => r.accountId),
     );
-    const excluded = new Set<string>();
+    // Summary key -> delivery key, so every exclusion can also be checked cheaply by the reader.
+    const excluded = new Map<string, string>();
+    const exclude = (itemId: string, receivedAt: string, title: string) =>
+      excluded.set(mailSummaryKey(itemId, receivedAt, title), mailDeliveryKey(itemId, receivedAt));
     for (const history of state.history) {
       if (history.routineId !== id || history.kind !== 'briefing') continue;
       for (const item of history.items) {
@@ -805,14 +919,15 @@ export class BriefingWorkspaceStore {
         )
           continue;
         if (item.mailAccount) initialized.add(item.mailAccount.id);
+        // A body that could not be read is read again rather than trusted as summarized.
+        if (needsMailReread(item, scope)) continue;
         for (const copy of item.mailCopies ?? []) {
           initialized.add(copy.account.id);
-          if (/^[a-f0-9]{64}$/.test(copy.id))
-            excluded.add(mailSummaryKey(copy.id, copy.receivedAt, copy.title));
+          if (/^[a-f0-9]{64}$/.test(copy.id)) exclude(copy.id, copy.receivedAt, copy.title);
         }
         // A title alone, a failed run or an unsummarized collection is never a duplicate.
         if (/^[a-f0-9]{64}$/.test(item.id) && item.receivedAt)
-          excluded.add(mailSummaryKey(item.id, item.receivedAt, item.title));
+          exclude(item.id, item.receivedAt, item.title);
       }
     }
     let recheckCount = 0;
@@ -844,10 +959,120 @@ export class BriefingWorkspaceStore {
       for (const item of candidates)
         if (item.receivedAt) excluded.delete(mailSummaryKey(item.id, item.receivedAt, item.title));
     }
+    const coverage = mailTargets(scope).flatMap((t) => {
+      const record = state.mailCoverage.find(
+        (r) => r.routineId === id && r.accountId === t.accountId && r.mailboxId === t.mailboxId,
+      );
+      return record
+        ? [
+            {
+              accountId: t.accountId,
+              mailboxId: t.mailboxId,
+              stopAt: new Date(
+                Date.parse(record.gapFrom ?? record.coveredTo) - MAIL_COVERAGE_OVERLAP_MS,
+              ).toISOString(),
+            },
+          ]
+        : [];
+    });
     return {
-      ...planMailRead(scope, [...initialized], [...excluded]),
+      ...planMailRead(scope, [...initialized], [...excluded.keys()]),
+      excludeDeliveries: [...new Set(excluded.values())],
+      ...(coverage.length ? { coverage } : {}),
       ...(recheckCount ? { recheckCount } : {}),
     };
+  }
+  /**
+   * Commits what a run proved it examined, after its summaries were saved. A mailbox advances only
+   * as far as the read reached without an unhandled message; anything below is recorded as a gap
+   * that the next run reads first. Returns the gaps (and intervals that aged out of the approved
+   * days window) so the run can warn instead of silently missing mail.
+   */
+  async commitMailCoverage(
+    profile: AssistantProfile,
+    reports: readonly MailTargetCoverage[],
+    handled: ReadonlySet<string>,
+    signal: AbortSignal,
+  ) {
+    const gaps: {
+      accountName: string;
+      from: string;
+      to: string;
+      agedOut: boolean;
+      reason: 'limit' | 'body' | 'incomplete' | 'read-failed';
+      pending?: number;
+      pendingComplete?: boolean;
+      bodyWaiting?: number;
+    }[] = [];
+    if (!reports.length) return gaps;
+    const allowed = new Set(
+      mailTargets(profile.live.mail).map((t) => `${t.accountId}|${t.mailboxId}`),
+    );
+    if (reports.some((r) => !allowed.has(`${r.accountId}|${r.mailboxId}`)))
+      throw new Error('mail_scope_response_invalid');
+    await this.state.mutate((state) => {
+      if (
+        JSON.stringify(state.profiles.find((p) => p.routineId === profile.routineId)) !==
+        JSON.stringify(profile)
+      )
+        throw new Error('assistant_settings_changed');
+      for (const report of reports) {
+        const index = state.mailCoverage.findIndex(
+          (r) =>
+            r.routineId === profile.routineId &&
+            r.accountId === report.accountId &&
+            r.mailboxId === report.mailboxId,
+        );
+        const previous = index >= 0 ? state.mailCoverage[index]! : null;
+        const next = nextMailCoverage(previous, report, handled);
+        if (!next) {
+          // A reader without coverage information (not the Apple Mail reader) proves nothing and
+          // changes nothing; a failed or partial read is always reported, even before coverage exists.
+          if (!report.failed && !report.partial) continue;
+          gaps.push({
+            accountName: report.accountName,
+            from: previous ? (previous.gapFrom ?? previous.coveredTo) : report.since,
+            to: report.startedAt,
+            agedOut: false,
+            reason: report.failed ? 'read-failed' : 'incomplete',
+          });
+          continue;
+        }
+        const record = {
+          routineId: profile.routineId,
+          accountId: report.accountId,
+          mailboxId: report.mailboxId,
+          coveredFrom: next.coveredFrom,
+          coveredTo: next.coveredTo,
+          gapFrom: next.gapFrom,
+          updatedAt: new Date().toISOString(),
+        };
+        if (index >= 0) state.mailCoverage[index] = record;
+        else state.mailCoverage.push(record);
+        if (next.agedOutFrom)
+          gaps.push({
+            accountName: report.accountName,
+            from: next.agedOutFrom,
+            to: report.since,
+            agedOut: true,
+            reason: 'incomplete',
+          });
+        if (next.gapFrom)
+          gaps.push({
+            accountName: report.accountName,
+            from: next.gapFrom,
+            to: next.coveredFrom,
+            agedOut: false,
+            reason: next.reason ?? 'incomplete',
+            pending: next.pending,
+            pendingComplete: next.pendingComplete,
+            bodyWaiting: next.bodyWaiting,
+          });
+      }
+      if (state.mailCoverage.length > 5000)
+        state.mailCoverage.splice(0, state.mailCoverage.length - 5000);
+    }, signal);
+    return gaps;
   }
   async completeMailRead(profile: AssistantProfile, accountIds: string[], signal: AbortSignal) {
     if (!accountIds.length) return;
@@ -884,6 +1109,33 @@ export class BriefingWorkspaceStore {
     )
       throw new Error('assistant_calendar_permission_required');
     return p;
+  }
+  /**
+   * The GOSU app itself reading on the user's behalf (Project Chat), not a browser page: there is no
+   * client token to own the routine, so the app's own trust boundary replaces `owns` while the saved
+   * approval, scope and per-permission flags still gate every read.
+   */
+  async hostReadProfile(kind: BriefingHostReadKind) {
+    const profiles = (await this.state.read()).profiles.filter(
+      (p) => this.approved(p) && hostReadAllowed(kind, p),
+    );
+    return profiles[0] ?? null;
+  }
+  /** Re-reads the routine after a host read and fails when its scope or permission changed. */
+  async assertHostRead(kind: BriefingHostReadKind, profile: AssistantProfile) {
+    const current = await this.profile(profile.routineId);
+    if (
+      !current ||
+      !this.approved(current) ||
+      !hostReadAllowed(kind, current) ||
+      scopeDigest(current) !== scopeDigest(profile)
+    )
+      throw new Error(`assistant_${kind === 'mail' ? 'mail' : kind}_permission_required`);
+    return current;
+  }
+  /** Private briefings, papers and mail reach an AI only with the saved private-AI permission. */
+  hostPrivateAllowed(profile: AssistantProfile) {
+    return Boolean(this.approved(profile) && profile.preferences.mailAi);
   }
   async assertTodoRead(id: string) {
     const p = await this.profile(id);
@@ -925,7 +1177,7 @@ export class BriefingWorkspaceStore {
       this.approved(p) &&
       this.owns(p) &&
       p.preferences.mailAi &&
-      p.preferences.providerId === provider,
+      (await this.providerAllowed(p, provider)),
     );
   }
   async saveBriefing(
@@ -959,17 +1211,19 @@ export class BriefingWorkspaceStore {
     runId?: string,
     provenance: Record<string, SummaryProvenance> = {},
   ) {
-    if (
-      secretPattern.test(JSON.stringify(result)) ||
-      sources.some(
-        (s) =>
-          (s.kind === 'email' || s.privateOrigin === 'mail') &&
-          /verification code|one[- ]time|인증번호|보안\s*코드|\botp\b|password reset/i.test(
-            `${s.title}\n${s.text ?? ''}`,
-          ),
-      )
-    )
-      return null;
+    // Withheld per item. Refusing the whole batch for one sign-in code mail lost the other five
+    // summaries and, upstream, stopped the entire run.
+    const withheld = new Set(sources.filter((s) => isCredentialMail(s)).map((s) => s.id));
+    const items = result.items.filter(
+      (i) => !withheld.has(i.id) && !secretPattern.test(JSON.stringify(i)),
+    );
+    if (result.items.length > 0 && items.length === 0) return null;
+    // The narrative covers the whole batch, so it goes when anything in the batch was withheld.
+    const overview =
+      items.length === result.items.length && !secretPattern.test(result.overview)
+        ? result.overview
+        : '';
+    result = { ...result, overview, items };
     const entry: BriefingHistory = {
       id: randomUUID(),
       routineId,
@@ -1014,6 +1268,9 @@ export class BriefingWorkspaceStore {
           ...(s?.kind === 'email' && s.mailAccount
             ? { mailAccount: MailAccountContextSchema.parse(s.mailAccount) }
             : {}),
+          ...(s?.kind === 'email' && normalizedMailSender(s.details?.[0])
+            ? { mailSender: normalizedMailSender(s.details?.[0])! }
+            : {}),
           ...(s?.kind === 'email' && MailReceivedAtSchema.safeParse(s.publishedAt).success
             ? { receivedAt: s.publishedAt! }
             : {}),
@@ -1042,6 +1299,9 @@ export class BriefingWorkspaceStore {
             : {}),
           importanceReason: i.importanceReason,
           action: i.action,
+          ...(s?.kind === 'email' && i.preparedActions !== undefined
+            ? { preparedActions: i.preparedActions }
+            : {}),
           ...(provenance[i.id] ? { provenance: provenance[i.id] } : {}),
           figures:
             s?.paper?.figures
@@ -1134,6 +1394,7 @@ export class BriefingWorkspaceStore {
     return entry.id;
   }
   async history(id: string, query = '', limit = 12, offset = 0) {
+    await this.recoverLegacyTasks(id);
     const state = await this.state.read(),
       removed = removedHistoryKeys(state.removedBriefings);
     return state.history
@@ -1145,6 +1406,95 @@ export class BriefingWorkspaceStore {
       )
       .reverse()
       .slice(offset, offset + Math.min(600, limit));
+  }
+  private async recoverLegacyTasks(id: string) {
+    const state = await this.state.read();
+    const profile = state.profiles.find((p) => p.routineId === id);
+    if (!profile || !this.owns(profile)) return;
+    const removed = removedHistoryKeys(state.removedBriefings);
+    const updates = state.history
+      .filter(
+        (h) =>
+          h.routineId === id &&
+          h.kind === 'briefing' &&
+          !removed.has(historyGroupKey(h.routineId, h.runId, h.id)),
+      )
+      .flatMap((h) =>
+        h.items.flatMap((item) => {
+          const prior = item.preparedActions?.task;
+          const missing = item.preparedActions === undefined;
+          if (
+            !(item.kind === 'email' || (!item.kind && item.readScope.startsWith('mail'))) ||
+            (!missing && (!prior?.dueDate || prior.dueAt !== undefined))
+          )
+            return [];
+          const task = recoverLegacyEmailTask({
+            title: item.title,
+            summary: item.summary,
+            action: item.action,
+            receivedAt: item.receivedAt,
+            timeZone: profile.timeZone,
+          });
+          const actions =
+            task && (missing || (prior?.dueDate === task.dueDate && task.dueAt))
+              ? missing
+                ? { event: null, task }
+                : {
+                    ...item.preparedActions!,
+                    task: {
+                      ...prior!,
+                      dueAt: task.dueAt,
+                      timeZone: task.timeZone,
+                      notice: `${prior!.notice} ${task.notice}`.slice(0, 1000),
+                    },
+                  }
+              : null;
+          return actions
+            ? [
+                {
+                  historyId: h.id,
+                  itemId: item.id,
+                  actions,
+                  source: JSON.stringify([
+                    item.title,
+                    item.summary,
+                    item.action,
+                    item.receivedAt,
+                    item.preparedActions,
+                  ]),
+                },
+              ]
+            : [];
+        }),
+      );
+    if (!updates.length) return;
+    await this.state.mutate((current) => {
+      const latest = current.profiles.find((p) => p.routineId === id);
+      if (!latest || JSON.stringify(latest) !== JSON.stringify(profile) || !this.owns(latest))
+        return;
+      const removedNow = removedHistoryKeys(current.removedBriefings);
+      for (const update of updates) {
+        const item = current.history
+          .find(
+            (h) =>
+              h.id === update.historyId &&
+              h.routineId === id &&
+              !removedNow.has(historyGroupKey(h.routineId, h.runId, h.id)),
+          )
+          ?.items.find((i) => i.id === update.itemId);
+        if (
+          item &&
+          JSON.stringify([
+            item.title,
+            item.summary,
+            item.action,
+            item.receivedAt,
+            item.preparedActions,
+          ]) === update.source
+        )
+          item.preparedActions = update.actions;
+      }
+    });
   }
   async historyRecord(routineId: string, historyId: string) {
     const state = await this.state.read(),
@@ -1265,6 +1615,35 @@ export class BriefingWorkspaceStore {
           }
     }, signal);
   }
+  async recordMailSender(
+    routineId: string,
+    itemId: string,
+    url: string,
+    sender: string,
+    profile: AssistantProfile,
+    signal: AbortSignal,
+  ) {
+    const value = normalizedMailSender(sender);
+    if (!value) throw new Error('mail_sender_unavailable');
+    await this.state.mutate((state) => {
+      if (
+        JSON.stringify(state.profiles.find((p) => p.routineId === routineId)) !==
+        JSON.stringify(profile)
+      )
+        throw new Error('assistant_settings_changed');
+      for (const h of state.history)
+        if (h.routineId === routineId)
+          for (const item of h.items) {
+            if (
+              item.id === itemId &&
+              item.mailMessageUrl === url &&
+              (item.kind === 'email' || item.readScope.startsWith('mail')) &&
+              !item.mailSender
+            )
+              item.mailSender = value;
+          }
+    }, signal);
+  }
   /** Shared local retrieval boundary for UI, Briefing chat and a future scoped GOSU host. */
   async classificationViews(routineId: string, papers: SavedPaper[]): Promise<SavedPaper[]> {
     const records = new Map(
@@ -1345,6 +1724,7 @@ export class BriefingWorkspaceStore {
     return saved;
   }
   async summaryHistory(id: string) {
+    await this.recoverLegacyTasks(id);
     const state = await this.state.read();
     const classifications = new Map(state.paperClassifications.map((r) => [r.key, r.value]));
     const removed = removedHistoryKeys(state.removedBriefings);
@@ -1398,7 +1778,14 @@ export class BriefingWorkspaceStore {
   }
   async dailyRun(profile: AssistantProfile, signal: AbortSignal, at = new Date().toISOString()) {
     const date = briefingLocalDay(at, profile.timeZone);
-    let result!: { runId: string; date: string; hasWeather: boolean; hasCalendar: boolean };
+    let result!: {
+      runId: string;
+      date: string;
+      hasWeather: boolean;
+      hasCalendar: boolean;
+      /** When today's record was last updated by an earlier run, or null for the day's first run. */
+      previousUpdatedAt: string | null;
+    };
     await this.state.mutate((state) => {
       const current = state.profiles.find((p) => p.routineId === profile.routineId);
       if (!current || !this.owns(current) || JSON.stringify(current) !== JSON.stringify(profile))
@@ -1414,6 +1801,7 @@ export class BriefingWorkspaceStore {
             !removed.has(historyGroupKey(h.routineId, h.runId, h.id)),
         )
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+      const previousUpdatedAt = entry?.snapshot?.daily?.updatedAt ?? null;
       if (!entry) {
         entry = HistorySchema.parse({
           id: randomUUID(),
@@ -1445,11 +1833,13 @@ export class BriefingWorkspaceStore {
         date,
         hasWeather: Boolean(entry.snapshot!.weather),
         hasCalendar: Boolean(entry.snapshot!.calendar),
+        previousUpdatedAt,
       };
     }, signal);
     return result;
   }
   async dailyItemKeys(routineId: string, runId: string) {
+    const scope = (await this.profile(routineId))?.live.mail ?? null;
     return latestSummaryItems(
       (await this.history(routineId, '', 10000)).filter((h) => h.runId === runId),
     )
@@ -1457,7 +1847,7 @@ export class BriefingWorkspaceStore {
         (i) =>
           !(
             (i.kind === 'email' || (!i.kind && i.readScope.startsWith('mail'))) &&
-            isPriorityOnlyEmailSummary(i.summary)
+            (isPriorityOnlyEmailSummary(i.summary) || needsMailReread(i, scope))
           ),
       )
       .map(
@@ -1517,6 +1907,37 @@ export class BriefingWorkspaceStore {
         ];
         existing.snapshot.daily.updatedAt = snapshot.collectedAt;
       } else if (!existing) state.history = appendHistory(state.history, entry);
+    }, signal);
+  }
+  /** The quick briefing already saved in today's record, which a later run continues. */
+  async dailyQuickBriefing(routineId: string, runId: string) {
+    return (
+      (await this.history(routineId, '', 10000)).find(
+        (h) => h.runId === runId && h.snapshot?.quickBriefing,
+      )?.snapshot?.quickBriefing ?? null
+    );
+  }
+  async saveQuickBriefing(
+    routineId: string,
+    runId: string,
+    value: NonNullable<BriefingSnapshot['quickBriefing']>,
+    profile: AssistantProfile,
+    signal: AbortSignal,
+  ) {
+    const quickBriefing = BriefingSnapshotSchema.shape.quickBriefing.unwrap().parse(value);
+    await this.state.mutate((state) => {
+      if (
+        JSON.stringify(state.profiles.find((p) => p.routineId === routineId)) !==
+        JSON.stringify(profile)
+      )
+        throw new Error('assistant_settings_changed');
+      const entry = state.history.find(
+        (h) => h.routineId === routineId && h.runId === runId && h.snapshot,
+      );
+      if (!entry?.snapshot) return;
+      entry.snapshot.quickBriefing = quickBriefing;
+      // Written from mail subjects and senders.
+      entry.private = true;
     }, signal);
   }
   async saveAgendaSnapshot(

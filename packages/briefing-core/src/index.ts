@@ -4,6 +4,7 @@ export {
   parseBriefingWorkspace,
   isPublicHttpsUrl,
   InterestProfileSchema,
+  BriefingScheduleSchema,
 } from './schema.js';
 export { nextOccurrences, latestDueOccurrence } from './schedule.js';
 export { rankEvidence, BRIEFING_RANKING_POLICY_VERSION } from './ranking.js';

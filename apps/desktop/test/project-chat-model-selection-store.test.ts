@@ -123,6 +123,53 @@ describe('Project Chat model selection store', () => {
     });
   });
 
+  it('treats a default saved by an older version as inherited, so Settings reach that chat again', () => {
+    const { storage, values } = memoryStorage();
+    const key = projectChatModelSelectionStorageKey(projectId, defaultSessionId)!;
+    // What 0.58.128 and earlier wrote into every chat they opened: the role model of that day.
+    values.set(
+      key,
+      JSON.stringify({
+        schemaVersion: 1,
+        providerId: 'claude-code',
+        modelId: 'claude-code:opus-5',
+        reasoningOptionId: 'xhigh',
+      }),
+    );
+    expect(loadProjectChatModelSelectionState(storage, projectId, defaultSessionId)).toEqual({
+      selection: {
+        providerId: 'claude-code',
+        modelId: 'claude-code:opus-5',
+        reasoningOptionId: 'xhigh',
+      },
+      status: 'inherited',
+    });
+    // A model picked in the chat's own menu is marked and stays pinned.
+    saveProjectChatModelSelection(storage, projectId, defaultSessionId, {
+      providerId: 'codex',
+      modelId: 'gpt-6-astra',
+      reasoningOptionId: 'high',
+    });
+    expect(JSON.parse(values.get(key)!)).toMatchObject({ origin: 'user', modelId: 'gpt-6-astra' });
+    expect(loadProjectChatModelSelectionState(storage, projectId, defaultSessionId).status).toBe(
+      'stored',
+    );
+    // Any other origin is not a record this version wrote.
+    values.set(
+      key,
+      JSON.stringify({
+        schemaVersion: 1,
+        providerId: null,
+        modelId: null,
+        reasoningOptionId: null,
+        origin: 'settings',
+      }),
+    );
+    expect(loadProjectChatModelSelectionState(storage, projectId, defaultSessionId).status).toBe(
+      'invalid',
+    );
+  });
+
   it('distinguishes new, stored, corrupt, and inaccessible scopes without overwriting them', () => {
     const { storage, values } = memoryStorage();
     const key = projectChatModelSelectionStorageKey(projectId, defaultSessionId)!;

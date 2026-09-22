@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { isPriorityOnlyEmailSummary } from './src/email-summary-quality';
+import { validateEmailPreparedActions } from './src/email-prepared-actions';
+import { alignActionsToEvidenceWeekday } from './src/email-action-weekday';
 import { assembleResearchAgentInstructions } from '@gosu/contracts';
 import type { InterestProfile } from '@gosu/briefing-core';
 import { runRoutineWithGosuLanguage } from './briefing-native';
@@ -13,6 +15,7 @@ import {
 } from './src/briefing-intelligence';
 import type { LiveItem } from './src/live-types';
 import { emailDeliveryForPrompt } from './src/mail-account';
+import { guidanceSenderRules, matchesGuidanceSender, senderAddress } from './src/briefing-guidance';
 import {
   BRIEFING_EMPHASIS_POLICY,
   BRIEFING_OVERVIEW_EMPHASIS_POLICY,
@@ -21,6 +24,7 @@ import { assignPaperTags, PAPER_TAG_POLICY, type PaperTag } from './src/paper-ta
 import {
   EMAIL_ANALYSIS_INSTRUCTIONS,
   EmailGenerationSchema,
+  EmailGenerationOutputSchema,
   expandEmailGeneration,
 } from './briefing-email-generation';
 export const AnalysisRequestSchema = z
@@ -45,6 +49,11 @@ export type FeedbackProfile = {
   kindScores: { papers: number; email: number };
   preferredKeywords: { term: string; score: number }[];
   avoidedKeywords: { term: string; score: number }[];
+  /** Addresses and institution domains of rated emails; used per email, never sent as a list. */
+  preferredSenders?: { term: string; score: number }[];
+  avoidedSenders?: { term: string; score: number }[];
+  preferredSenderDomains?: { term: string; score: number }[];
+  avoidedSenderDomains?: { term: string; score: number }[];
 };
 const emptyFeedbackProfile = (): FeedbackProfile => ({
   total: 0,
@@ -82,7 +91,113 @@ function validatePaperTemplate(result: BriefingInsight, items: readonly LiveItem
   }
   return result;
 }
-export function validateInsights(raw: unknown, items: readonly LiveItem[]): BriefingInsight {
+const QUOTE_TYPOGRAPHY: readonly [RegExp, string][] = [
+  [/[\u2018\u2019\u201A\u201B\u2032\u0060\u00B4]/g, "'"],
+  [/[\u201C\u201D\u201E\u201F\u2033\u00AB\u00BB]/g, '"'],
+  [/[\u2010-\u2015\u2212]/g, '-'],
+];
+function quoteText(value: string) {
+  let text = value.normalize('NFKC');
+  for (const [pattern, replacement] of QUOTE_TYPOGRAPHY) text = text.replace(pattern, replacement);
+  return text.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+/**
+ * The evidence quote must come from the source, in order. Typography (curly quotes, dashes, width),
+ * spacing and case do not make it a different quote, and "..." may mark an elided middle. Claude
+ * Haiku without extended thinking changed only these in most rejected quotes on 2026-09-17.
+ */
+export function quoteMatches(quote: string, source: string) {
+  const text = quoteText(source);
+  const parts = quoteText(quote)
+    .split(/\s*\.{3,}\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (!parts.length || (parts.length > 1 && parts.some((part) => part.length < 4))) return false;
+  let from = 0;
+  for (const part of parts) {
+    const at = text.indexOf(part, from);
+    if (at < 0) return false;
+    from = at + part.length;
+  }
+  return true;
+}
+export type RejectedInsight = { id: string; code: string };
+function validationCode(error: unknown) {
+  return error instanceof Error && /^briefing_analysis_/.test(error.message)
+    ? error.message
+    : 'briefing_analysis_schema_invalid';
+}
+/** Keeps a drafted calendar event or task only when it is itself valid; the summary stands alone. */
+function dropInvalidEmailActions(
+  insight: BriefingInsight['items'][number],
+  source: LiveItem,
+  expectedTimeZone?: string,
+) {
+  const actions = insight.preparedActions;
+  if (source.kind !== 'email' || !actions) return;
+  // A weekday in the evidence decides the date; the model's own arithmetic has been a day off.
+  alignActionsToEvidenceWeekday(actions, expectedTimeZone ?? 'Asia/Seoul');
+  const evidence = `${source.title}\n${source.text}`;
+  const valid = (candidate: NonNullable<typeof actions>) => {
+    try {
+      validateEmailPreparedActions(candidate, evidence);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (
+    actions.event &&
+    ((expectedTimeZone && actions.event.timeZone !== expectedTimeZone) ||
+      !valid({ ...actions, task: null }))
+  )
+    actions.event = null;
+  if (
+    actions.task &&
+    ((expectedTimeZone && actions.task.dueAt && actions.task.timeZone !== expectedTimeZone) ||
+      !valid({ ...actions, event: null }))
+  )
+    actions.task = null;
+}
+/**
+ * Validates each item on its own. Items the model was not asked for (it has summarized prior
+ * memory entries as items) or repeated are dropped and never saved; an invalid or missing requested
+ * item is reported, and the valid ones are kept instead of discarding the whole batch.
+ */
+export function screenInsights(
+  raw: unknown,
+  items: readonly LiveItem[],
+  expectedTimeZone?: string,
+): { result: BriefingInsight; rejected: RejectedInsight[] } {
+  const result = BriefingInsightSchema.parse(raw);
+  const accepted: BriefingInsight['items'] = [];
+  const rejected: RejectedInsight[] = [];
+  const seen = new Set<string>();
+  for (const insight of result.items) {
+    const source = items.find((item) => item.id === insight.id);
+    if (!source || seen.has(insight.id)) continue;
+    seen.add(insight.id);
+    try {
+      dropInvalidEmailActions(insight, source, expectedTimeZone);
+      const checked = validatePaperTemplate(
+        validateInsights({ ...result, items: [insight] }, [source], expectedTimeZone),
+        [source],
+      );
+      accepted.push(...checked.items);
+    } catch (error) {
+      rejected.push({ id: insight.id, code: validationCode(error) });
+    }
+  }
+  for (const item of items)
+    if (!seen.has(item.id))
+      rejected.push({ id: item.id, code: 'briefing_analysis_coverage_invalid' });
+  return { result: { ...result, items: accepted }, rejected };
+}
+export function validateInsights(
+  raw: unknown,
+  items: readonly LiveItem[],
+  expectedTimeZone?: string,
+): BriefingInsight {
   const result = BriefingInsightSchema.parse(raw);
   const ids = new Set<string>();
   if (result.items.length !== items.length) throw new Error('briefing_analysis_coverage_invalid');
@@ -90,9 +205,12 @@ export function validateInsights(raw: unknown, items: readonly LiveItem[]): Brie
     const source = items.find((item) => item.id === insight.id);
     if (!source || ids.has(insight.id)) throw new Error('briefing_analysis_id_invalid');
     ids.add(insight.id);
-    const normalized = (s: string) => s.replace(/\s+/g, ' ').trim();
-    const evidence = normalized(`${source.title}\n${source.text}\n${source.paper?.excerpt ?? ''}`);
-    if (!evidence.includes(normalized(insight.evidenceQuote)))
+    if (
+      !quoteMatches(
+        insight.evidenceQuote,
+        `${source.title}\n${source.text}\n${source.paper?.excerpt ?? ''}`,
+      )
+    )
       throw new Error('briefing_analysis_quote_unverified');
     if (
       insight.equationIds.some((id) => !source.paper?.equations.some((eq) => eq.id === id)) ||
@@ -110,6 +228,20 @@ export function validateInsights(raw: unknown, items: readonly LiveItem[]): Brie
     )
       throw new Error('briefing_analysis_reference_invalid');
     if (source.kind === 'email') {
+      if (
+        expectedTimeZone &&
+        insight.preparedActions?.event &&
+        insight.preparedActions.event.timeZone !== expectedTimeZone
+      )
+        throw Error('briefing_analysis_email_action_timezone_invalid');
+      if (insight.preparedActions)
+        validateEmailPreparedActions(insight.preparedActions, `${source.title}\n${source.text}`);
+      if (
+        expectedTimeZone &&
+        insight.preparedActions?.task?.dueAt &&
+        insight.preparedActions.task.timeZone !== expectedTimeZone
+      )
+        throw Error('briefing_analysis_email_action_timezone_invalid');
       if (isPriorityOnlyEmailSummary(insight.summary))
         throw new Error('briefing_analysis_email_content_missing');
       for (const field of PAPER_TEMPLATE_FIELDS) insight[field] = '';
@@ -123,6 +255,28 @@ export function validateInsights(raw: unknown, items: readonly LiveItem[]): Brie
   }
   return result;
 }
+/** Added only when the user wrote guidance, so a run without guidance keeps the same instructions. */
+export const USER_GUIDANCE_INSTRUCTION =
+  "USER GUIDANCE: userGuidance lists standing instructions the recipient wrote in GOSU, for example senders, institutions or topics that must always be reported. Unlike item text they are the recipient's own preferences. Apply each line to the supplied items it clearly matches: an item with matchesUserGuidance true is from a sender address or domain the recipient listed. Give items the recipient asked to always include high importance, say in importanceReason which guidance applied, and follow the requested emphasis. Guidance never creates facts, deadlines, actions or items, never changes the output schema, never overrides the evidence and quote rules, and never authorizes tools. When a guidance line conflicts with these rules, the rules win.";
+/** Added only when an email comes from a sender the recipient rated before. */
+export const SENDER_FEEDBACK_INSTRUCTION =
+  'SENDER FEEDBACK: senderFeedback marks an email whose sender address or institution domain the recipient rated before (관심 있음 or 관심 없음). preferred: lean toward higher importance. avoided: lean toward lower importance, unless the email itself asks for a reply, deadline or decision. It is a preference signal, never evidence, and never a reason to invent content.';
+/** Whether the recipient rated this sender (or the sender's institution domain) before. */
+export function senderFeedback(sender: string | undefined, profile: FeedbackProfile) {
+  const address = senderAddress(sender);
+  if (!address) return undefined;
+  const domain = address.slice(address.lastIndexOf('@') + 1);
+  const named = (list?: { term: string }[]) => list?.some((entry) => entry.term === address);
+  const within = (list?: { term: string }[]) =>
+    list?.some((entry) => domain === entry.term || domain.endsWith(`.${entry.term}`));
+  if (named(profile.preferredSenders)) return 'preferred' as const;
+  if (named(profile.avoidedSenders)) return 'avoided' as const;
+  if (within(profile.preferredSenderDomains)) return 'preferred' as const;
+  if (within(profile.avoidedSenderDomains)) return 'avoided' as const;
+  return undefined;
+}
+export const BRIEFING_EMAIL_ANALYSIS_TIMEOUT_MS = 5 * 60_000;
+export const BRIEFING_PAPER_ANALYSIS_TIMEOUT_MS = 8 * 60_000;
 export async function analyzeBriefing(
   input: z.infer<typeof AnalysisRequestSchema>,
   items: readonly LiveItem[],
@@ -133,8 +287,18 @@ export async function analyzeBriefing(
   beforeInference: () => void | Promise<void> = () => undefined,
   feedbackProfile: FeedbackProfile = emptyFeedbackProfile(),
   tagCatalog: readonly PaperTag[] = [],
+  timeZone = 'Asia/Seoul',
+  guidance: readonly { id: string; text: string }[] = [],
 ) {
   const emailOnly = items.every((item) => item.kind === 'email');
+  const senderRules = guidanceSenderRules(guidance);
+  const ratedSenders = new Map(
+    items.flatMap((item) => {
+      const rated =
+        item.kind === 'email' ? senderFeedback(item.details[0], feedbackProfile) : undefined;
+      return rated ? [[item.id, rated] as const] : [];
+    }),
+  );
   const parseGeneration = (answer: string) => {
     const raw: unknown = JSON.parse(answer);
     // Accept valid older full-shape responses during an in-flight provider transition.
@@ -153,10 +317,20 @@ export async function analyzeBriefing(
     items.map((item) => item.title).join(' '),
   );
   const prompt = JSON.stringify({
+    timeZone,
     task: 'Summarize and prioritize these exact items',
+    ...(guidance.length ? { userGuidance: guidance.map((entry) => entry.text) } : {}),
     interests: emailOnly ? null : interest,
-    memory: memory.map(({ kind, text, sourceId }) => ({ kind, text, sourceId })),
-    personalization: feedbackProfile,
+    // Memory source ids look like item ids; Haiku without thinking returned them as extra items.
+    memory: memory.map(({ kind, text }) => ({ kind, text })),
+    // Sender lists stay local: each email carries only its own senderFeedback below.
+    personalization: {
+      ...feedbackProfile,
+      preferredSenders: undefined,
+      avoidedSenders: undefined,
+      preferredSenderDomains: undefined,
+      avoidedSenderDomains: undefined,
+    },
     existingPaperTags: emailOnly
       ? []
       : tagCatalog
@@ -169,7 +343,11 @@ export async function analyzeBriefing(
       text: item.text,
       scope: item.readScope,
       details: item.details,
-      ...(item.kind === 'email' ? emailDeliveryForPrompt(item) : {}),
+      ...(item.kind === 'email' ? emailDeliveryForPrompt(item, timeZone) : {}),
+      ...(item.kind === 'email' && matchesGuidanceSender(item.details[0], senderRules)
+        ? { matchesUserGuidance: true }
+        : {}),
+      ...(ratedSenders.has(item.id) ? { senderFeedback: ratedSenders.get(item.id) } : {}),
       paper: item.paper
         ? {
             readScope: item.paper.readScope,
@@ -199,36 +377,73 @@ export async function analyzeBriefing(
       signal,
       (event) => progress(event.detail),
       {
+        // Six papers with five long template fields each can take Claude well over the old three
+        // minutes (a Haiku paper batch was cut at exactly 180s); email batches are much shorter.
+        timeoutMs: emailOnly
+          ? BRIEFING_EMAIL_ANALYSIS_TIMEOUT_MS
+          : BRIEFING_PAPER_ANALYSIS_TIMEOUT_MS,
         structuredJob: {
-          instructions: emailOnly ? EMAIL_ANALYSIS_INSTRUCTIONS : ANALYSIS_INSTRUCTIONS,
+          instructions:
+            (emailOnly ? EMAIL_ANALYSIS_INSTRUCTIONS : ANALYSIS_INSTRUCTIONS) +
+            (guidance.length ? `\n${USER_GUIDANCE_INSTRUCTION}` : '') +
+            (ratedSenders.size ? `\n${SENDER_FEEDBACK_INSTRUCTION}` : ''),
           prompt: jobPrompt,
-          schema: z.toJSONSchema(emailOnly ? EmailGenerationSchema : BriefingGenerationSchema),
+          schema: z.toJSONSchema(
+            emailOnly ? EmailGenerationOutputSchema : BriefingGenerationSchema,
+          ),
         },
       },
     );
   };
   let result = await invoke(prompt);
-  let parsed: BriefingInsight;
-  try {
-    parsed = validatePaperTemplate(validateInsights(parseGeneration(result.answer), items), items);
-  } catch (error) {
-    const code =
-      error instanceof Error && /^briefing_analysis_/.test(error.message)
-        ? error.message
-        : 'briefing_analysis_schema_invalid';
-    progress(`응답 근거 검증: ${code}. 원문과 대조해 한 번 수정하는 중`);
+  const screen = (answer: string, subset: readonly LiveItem[]) => {
+    try {
+      return screenInsights(parseGeneration(answer), subset, timeZone);
+    } catch (error) {
+      const code = validationCode(error);
+      return { result: null, rejected: subset.map((item) => ({ id: item.id, code })) };
+    }
+  };
+  const first = screen(result.answer, items);
+  let accepted = first.result?.items ?? [];
+  let base = first.result;
+  let rejected = first.rejected;
+  if (rejected.length) {
+    const retry = new Set(rejected.map((entry) => entry.id));
+    const retryItems = items.filter((item) => retry.has(item.id));
+    progress(
+      `응답 근거 검증: ${[...new Set(rejected.map((entry) => entry.code))].join(', ')}. 원문과 대조해 ${retryItems.length}개 항목을 한 번 수정하는 중`,
+    );
+    const original = JSON.parse(prompt) as { items: { id: string }[] };
     result = await invoke(
       JSON.stringify({
-        originalRequest: JSON.parse(prompt),
+        // Only the rejected items are corrected; the accepted summaries are kept as they are.
+        originalRequest: {
+          ...original,
+          items: original.items.filter((item) => retry.has(item.id)),
+        },
         rejectedDraft: result.answer.slice(0, 48000),
-        validationError: code,
+        validationError: rejected[0]!.code,
+        validationErrors: rejected,
         instruction: emailOnly
-          ? 'Correct this rejected EMAIL draft once using the required compact JSON schema. Include every supplied id exactly once. In summary explain the actual available email content, independently of importance. Never replace content with priority uncertainty. Copy evidenceQuote exactly from the title/text without translation or changed punctuation. Preserve explicit actions, deadlines and uncertainty; do not invent obligations or fill paper-only fields.'
-          : 'Correct this rejected draft once. Preserve only source-backed summaries. For every paper, fill researchQuestion, strengths, limitations, methodsAndAssumptions and reportedResults as five separate non-empty Markdown fields; explicitly state when the supplied evidence is insufficient. Copy evidenceQuote exactly from the supplied source title/text/excerpt. Do not rewrite punctuation or translate the quote. Include each requested id exactly once. Only supplied equation and figure IDs may be selected. Return the required JSON schema.',
+          ? 'Correct this rejected EMAIL draft once using the required compact JSON schema. Include every supplied id exactly once and no other item: prior memory entries are context, never items. In summary explain the actual available email content, independently of importance. Never replace content with priority uncertainty. Copy evidenceQuote exactly from the title/text without translation or changed punctuation. Preserve explicit actions, deadlines and uncertainty; do not invent obligations or fill paper-only fields.'
+          : 'Correct this rejected draft once. Preserve only source-backed summaries. For every paper, fill researchQuestion, strengths, limitations, methodsAndAssumptions and reportedResults as five separate non-empty Markdown fields; explicitly state when the supplied evidence is insufficient. Copy evidenceQuote exactly from the supplied source title/text/excerpt. Do not rewrite punctuation or translate the quote. Include each requested id exactly once and no other item: prior memory entries are context, never items. Only supplied equation and figure IDs may be selected. Return the required JSON schema.',
       }),
     );
-    parsed = validatePaperTemplate(validateInsights(parseGeneration(result.answer), items), items);
+    const second = screen(result.answer, retryItems);
+    accepted = [...accepted, ...(second.result?.items ?? [])];
+    // The overview comes from the draft whose summaries were kept.
+    if (!first.result?.items.length && second.result?.items.length) base = second.result;
+    base ??= second.result;
+    rejected = second.rejected;
   }
+  // Nothing usable at all is still a failed batch, with the reason of the first rejection.
+  if (!base || !accepted.length)
+    throw new Error(rejected[0]?.code ?? 'briefing_analysis_coverage_invalid');
+  const parsed: BriefingInsight = {
+    ...base,
+    items: items.flatMap((item) => accepted.filter((insight) => insight.id === item.id)),
+  };
   for (const insight of parsed.items)
     insight.tags =
       items.find((i) => i.id === insight.id)?.kind === 'papers'
@@ -238,5 +453,7 @@ export async function analyzeBriefing(
     ...parsed,
     invocation: { providerId: result.providerId, model: result.model, reasoning: result.reasoning },
     memoryUsed: memory.map((entry) => entry.id),
+    // Requested items without a valid summary after one correction; the caller retries them later.
+    ...(rejected.length ? { rejectedItems: rejected } : {}),
   };
 }

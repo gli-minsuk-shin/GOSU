@@ -1,6 +1,8 @@
 import type { ModelChatSession, ChatMessage } from './model-lab-app';
 import type { ModelLabStorage } from './model-lab-environment';
 import { ContextUsageSchema } from '../../briefing-lab/src/context-usage';
+import { readModuleQuestionRef } from './module-detail-flow';
+import { modelChatContextStart, trimmedModelChatContextStart } from './model-chat-commands';
 
 export const MODEL_LAB_CHAT_STORAGE_KEY = 'gosu.model-lab.chat-sessions.v1';
 export function modelLabConversationWorkspace(storage: ModelLabStorage | null) {
@@ -59,12 +61,19 @@ export function loadModelLabChats(
             });
           const draft =
             'draft' in raw && typeof raw.draft === 'string' ? raw.draft.slice(0, 100_000) : '';
+          // Sessions stored before "/new" existed simply have no divider.
+          const contextStartsAt = modelChatContextStart(
+            'contextStartsAt' in raw ? raw.contextStartsAt : undefined,
+            messages.length,
+          );
           return [
             [
               key,
               {
                 draft,
-                messages: messages.map(({ usage, contextUsage, ...message }) => {
+                ...(contextStartsAt ? { contextStartsAt } : {}),
+                messages: messages.map(({ usage, contextUsage, moduleRef, ...message }) => {
+                  const module = readModuleQuestionRef(moduleRef);
                   const context = ContextUsageSchema.safeParse(contextUsage);
                   const validUsage =
                     usage &&
@@ -81,6 +90,7 @@ export function loadModelLabChats(
                     );
                   return {
                     ...message,
+                    ...(module ? { moduleRef: module } : {}),
                     ...(validUsage ? { usage } : {}),
                     ...(context.success ? { contextUsage: context.data } : {}),
                   };
@@ -104,13 +114,22 @@ export function saveModelLabChats(
   const snapshot = Object.fromEntries(
     Object.entries(sessions)
       .slice(-100)
-      .map(([key, session]) => [
-        key,
-        {
-          draft: (drafts[key] ?? session.draft).slice(0, 100_000),
-          messages: session.messages.slice(-200),
-        },
-      ]),
+      .map(([key, session]) => {
+        const messages = session.messages.slice(-200);
+        const contextStartsAt = trimmedModelChatContextStart(
+          session.contextStartsAt ?? 0,
+          session.messages.length,
+          messages.length,
+        );
+        return [
+          key,
+          {
+            draft: (drafts[key] ?? session.draft).slice(0, 100_000),
+            ...(contextStartsAt ? { contextStartsAt } : {}),
+            messages,
+          },
+        ];
+      }),
   );
   const text = JSON.stringify(snapshot);
   if (text.length > 8_000_000) throw new Error('Model Lab chat storage limit reached');

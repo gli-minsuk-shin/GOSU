@@ -1,9 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { briefingClientContext } from './briefing-client-context';
 import type { AssistantProfile, BriefingWorkspaceStore } from './briefing-workspace-store';
-import { BriefingGenerationStore, generationProfileDigest } from './briefing-generation-store';
+import {
+  BriefingGenerationStore,
+  generationProfileDigest,
+  generationProfileMatches,
+  generationScheduled,
+  nextGenerationDueAt,
+} from './briefing-generation-store';
 import {
   BriefingIntervalSchema,
+  type BriefingRoutineSchedule,
   type GenerationStatus,
   type GenerationView,
 } from './src/briefing-generation-contract';
@@ -12,17 +19,20 @@ type Run = (
   signal: AbortSignal,
   update: (value: Partial<GenerationStatus>) => void,
   scheduled: boolean,
-) => Promise<void | { emailKeys: string[] }>;
+) => Promise<void | { emailKeys: string[]; retryMailInMs?: number }>;
 export class BriefingGeneration {
   private jobs = new Map<
     string,
     { value: GenerationStatus; controller: AbortController; done: Promise<void> }
   >();
   private timer?: ReturnType<typeof setInterval>;
+  /** Routines whose next automatic run is the one early look at a Mail that was not answering. */
+  private mailFollowUps = new Set<string>();
   private ticking = false;
   private schedulerError: string | null = null;
   constructor(
-    private workspace: Pick<BriefingWorkspaceStore, 'profile' | 'owns'>,
+    private workspace: Pick<BriefingWorkspaceStore, 'profile' | 'owns'> &
+      Partial<Pick<BriefingWorkspaceStore, 'requiresPerRequestConfirmation'>>,
     private run: Run,
     private errorMessage: (e: unknown) => string,
     readonly store = new BriefingGenerationStore(),
@@ -47,6 +57,7 @@ export class BriefingGeneration {
     const job = this.jobs.get(routineId)?.value ?? record?.job ?? null;
     return {
       intervalHours: record?.intervalHours ?? 0,
+      routineSchedule: record?.routineSchedule ?? null,
       nextDueAt: record?.nextDueAt ?? null,
       scheduleError: this.schedulerError ?? record?.scheduleError ?? null,
       job:
@@ -63,11 +74,23 @@ export class BriefingGeneration {
     await this.profile(id);
     return this.view(await this.store.record(id), id);
   }
-  async configure(id: string, hours: number, signal: AbortSignal) {
+  /**
+   * Saves what runs this routine automatically: the interval, the routine's own delivery times, or
+   * both. Passing `undefined` for the schedule keeps the saved one.
+   */
+  async configure(
+    id: string,
+    hours: number,
+    signal: AbortSignal,
+    routineSchedule?: BriefingRoutineSchedule | null,
+  ) {
     const intervalHours = BriefingIntervalSchema.parse(hours),
       p = await this.profile(id);
-    if (intervalHours && p.preferences.confirmationPolicy !== 'always')
-      throw new Error('generation_always_required');
+    const current = await this.store.record(id);
+    const schedule =
+      routineSchedule === undefined ? (current?.routineSchedule ?? null) : routineSchedule;
+    const scheduled = generationScheduled({ intervalHours, routineSchedule: schedule });
+    if (scheduled && this.requiresConfirmation(p)) throw new Error('generation_always_required');
     const token = briefingClientContext.getStore();
     if (!token) throw new Error('assistant_client_required');
     const digest = generationProfileDigest(p);
@@ -77,23 +100,27 @@ export class BriefingGeneration {
       id,
       (r) => {
         r.intervalHours = intervalHours;
-        r.ownerToken = intervalHours ? token : null;
-        r.profileDigest = intervalHours ? digest : null;
-        r.nextDueAt = intervalHours
-          ? new Date(this.clock() + intervalHours * 3600000).toISOString()
-          : null;
+        r.routineSchedule = schedule;
+        r.ownerToken = scheduled ? token : null;
+        r.profileDigest = scheduled ? digest : null;
+        r.nextDueAt = scheduled ? nextGenerationDueAt(r, this.clock()) : null;
         r.scheduleError = null;
       },
       signal,
     );
-    if (!intervalHours) this.jobs.get(id)?.controller.abort();
+    if (!scheduled) this.jobs.get(id)?.controller.abort();
     return this.status(id);
   }
   async start(id: string, scheduled = false) {
     const p = await this.profile(id);
     if (scheduled) {
       const schedule = await this.store.record(id);
-      if (!schedule?.intervalHours || schedule.profileDigest !== generationProfileDigest(p))
+      if (
+        !schedule ||
+        !generationScheduled(schedule) ||
+        !generationProfileMatches(p, schedule) ||
+        this.requiresConfirmation(p)
+      )
         throw new Error('generation_settings_changed');
     }
     const existing = this.jobs.get(id);
@@ -120,8 +147,9 @@ export class BriefingGeneration {
       try {
         await this.store.update(id, (r) => {
           r.job = structuredClone(value);
-          if (!scheduled && r.intervalHours)
-            r.nextDueAt = new Date(this.clock() + r.intervalHours * 3600000).toISOString();
+          // A manual run restarts the interval; a routine delivery time keeps its own clock.
+          if (!scheduled && generationScheduled(r))
+            r.nextDueAt = nextGenerationDueAt(r, this.clock());
         });
         const completedResult = await this.run(
           p,
@@ -131,6 +159,7 @@ export class BriefingGeneration {
           scheduled,
         );
         if (controller.signal.aborted) throw new Error('source_cancelled');
+        await this.followUpMail(p, value, completedResult?.retryMailInMs);
         value.state = 'complete';
         value.detail = value.error
           ? `일부 자료 확인 필요 · ${value.newCount}개 추가 · 기존 브리핑 유지`
@@ -168,6 +197,36 @@ export class BriefingGeneration {
     })();
     return this.view(await this.store.record(id), id);
   }
+  /**
+   * Mail did not answer during this run. An automatic routine looks again soon instead of leaving
+   * the email section empty until the next interval; once, so a Mail that stays broken does not
+   * turn into a run every ten minutes.
+   */
+  private async followUpMail(p: AssistantProfile, value: GenerationStatus, retryInMs?: number) {
+    const id = p.routineId;
+    if (!retryInMs || this.mailFollowUps.has(id)) {
+      this.mailFollowUps.delete(id);
+      return;
+    }
+    const at = new Date(this.clock() + retryInMs).toISOString();
+    let due: string | null = null;
+    await this.store.update(id, (r) => {
+      // No due time means nothing runs automatically, or the schedule is paused until the user
+      // confirms changed settings: neither is resumed from here.
+      if (!generationScheduled(r) || !r.ownerToken || !r.nextDueAt) return;
+      if (r.nextDueAt > at) r.nextDueAt = at;
+      due = r.nextDueAt;
+    });
+    if (!due) return;
+    this.mailFollowUps.add(id);
+    const time = new Intl.DateTimeFormat('ko-KR', {
+      timeZone: p.timeZone,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(new Date(due));
+    value.error = `${value.error ?? ''} Apple Mail은 ${time}쯤 자동으로 다시 확인합니다.`.trim();
+  }
   async cancel(id: string) {
     await this.profile(id);
     this.jobs.get(id)?.controller.abort();
@@ -184,7 +243,7 @@ export class BriefingGeneration {
       for (const record of await this.store.records()) {
         if ([...this.jobs.values()].filter((j) => j.value.state === 'running').length >= 2) break;
         if (
-          !record.intervalHours ||
+          !generationScheduled(record) ||
           !record.nextDueAt ||
           Date.parse(record.nextDueAt) > this.clock() ||
           this.jobs.get(record.routineId)?.value.state === 'running'
@@ -193,21 +252,56 @@ export class BriefingGeneration {
         const claimed = await this.store.claim(record.routineId, this.clock());
         if (!claimed?.ownerToken) continue;
         await briefingClientContext.run(claimed.ownerToken, async () => {
+          let acceptedDigest = claimed.profileDigest;
           try {
             const p = await this.profile(record.routineId);
-            if (
-              p.preferences.confirmationPolicy !== 'always' ||
-              generationProfileDigest(p) !== claimed.profileDigest
-            )
+            if (this.requiresConfirmation(p)) throw new Error('generation_confirmation_required');
+            if (!generationProfileMatches(p, claimed))
               throw new Error('generation_settings_changed');
-            await this.start(record.routineId, true);
-          } catch {
             await this.store.update(record.routineId, (r) => {
-              r.intervalHours = 0;
-              r.ownerToken = null;
-              r.nextDueAt = null;
-              r.scheduleError =
-                '설정 또는 권한이 변경되어 자동 생성을 중지했습니다. 간격을 다시 선택해주세요.';
+              if (
+                r.profileDigest === claimed.profileDigest &&
+                r.ownerToken === claimed.ownerToken &&
+                r.intervalHours === claimed.intervalHours &&
+                JSON.stringify(r.routineSchedule) === JSON.stringify(claimed.routineSchedule)
+              ) {
+                r.profileDigest = generationProfileDigest(p);
+                r.scheduleError = null;
+              }
+            });
+            acceptedDigest = generationProfileDigest(p);
+            const current = await this.store.record(record.routineId);
+            if (
+              current?.intervalHours !== claimed.intervalHours ||
+              JSON.stringify(current.routineSchedule) !== JSON.stringify(claimed.routineSchedule) ||
+              current.ownerToken !== claimed.ownerToken ||
+              current.nextDueAt !== claimed.nextDueAt
+            )
+              return;
+            await this.start(record.routineId, true);
+          } catch (error) {
+            await this.store.update(record.routineId, (r) => {
+              if (r.profileDigest !== acceptedDigest) return;
+              if (!generationScheduled(r) || r.ownerToken !== claimed.ownerToken) return;
+              const code = error instanceof Error ? error.message : '';
+              const scopeChanged = [
+                'generation_confirmation_required',
+                'generation_settings_changed',
+                'assistant_settings_changed',
+                'assistant_client_required',
+                'assistant_settings_required',
+              ].includes(code);
+              r.nextDueAt = scopeChanged ? null : new Date(this.clock() + 60000).toISOString();
+              // Reselecting the interval or the routine times resumes it, as the message says.
+              // Say which kind of approval is missing: the stored record keeps only a digest, so a
+              // scope change names the items it covers rather than guessing which one moved.
+              r.scheduleError = !scopeChanged
+                ? '일시적으로 자동 실행 설정을 확인하지 못했습니다. 저장한 간격은 유지하며 1분 후 다시 확인합니다.'
+                : code === 'generation_confirmation_required'
+                  ? '설정 또는 권한 확인이 필요해 자동 생성을 일시 중지했습니다. 요청 허용이 ‘요청마다 확인’으로 되어 있어 자동 실행할 수 없습니다. 설정에서 ‘항상 허용’으로 바꾼 뒤 같은 간격을 선택하면 재개합니다.'
+                  : code === 'generation_settings_changed'
+                    ? '설정 또는 권한 확인이 필요해 자동 생성을 일시 중지했습니다. 자동 실행을 승인한 뒤 AI 제공자, 메일 계정·메일함, 메일 읽기·AI 전달, 캘린더, 할 일·프로젝트 읽기 중 하나가 바뀌었습니다. 바뀐 설정으로 계속하려면 같은 간격을 다시 선택해주세요.'
+                    : '설정 또는 권한 확인이 필요해 자동 생성을 일시 중지했습니다. 이 앱 연결의 루틴 소유권 또는 저장된 설정을 확인하지 못했습니다. GOSU 설정의 Briefing Lab에서 설정을 저장한 뒤 같은 간격을 선택하면 재개합니다.';
             });
           }
         });
@@ -226,6 +320,12 @@ export class BriefingGeneration {
       }, 30000);
       this.timer.unref?.();
     }
+  }
+  private requiresConfirmation(p: AssistantProfile) {
+    return (
+      this.workspace.requiresPerRequestConfirmation?.(p) ??
+      p.preferences.confirmationPolicy !== 'always'
+    );
   }
   close() {
     if (this.timer) clearInterval(this.timer);

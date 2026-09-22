@@ -1,5 +1,12 @@
 # Project Model Lab in GOSU
 
+2026-09-14: [0.58.69 candidate](releases/0.58.69.md) adds a dedicated model-extraction usage in
+Settings → 작업별 AI 모델. Fast/strong apply to new source reconstruction and its repairs; existing
+preserves Model Lab's current selection. Missing role models fail visibly. Older routing files are
+not rewritten. Canonical cached graphs remain reusable without AI; an already-running identical
+project/source build is still joined without a duplicate call or changing its active model. Role
+changes apply to subsequent new LLM calls. Model Lab chat is unchanged.
+
 2026-09-14: [Model references](MODEL_REFERENCES.md) add saved-model reference buttons and a scoped
 read bridge for Project Chat and the approved global assistant; conversations remain independently owned.
 

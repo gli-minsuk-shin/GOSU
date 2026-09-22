@@ -59,6 +59,8 @@ it('saves only approved, discussed and newly resolved paper IDs, exactly once wi
   const run = vi.fn<typeof runRoutineWithGosuLanguage>(
     async (_request, signal, _progress, options) => {
       const job = options!.structuredJob!;
+      expect(job.webSearchMode).toBe('live');
+      expect(job.tools?.some((t) => t.name === 'search_images')).toBe(true);
       expect(job.tools?.some((t) => t.name === 'save_paper_summary')).toBe(true);
       const tool = job.executeTool!;
       await expect(tool('save_paper_summary', { query: paper.id }, signal)).rejects.toThrow(
@@ -153,6 +155,20 @@ vi.mock('./briefing-native', () => ({
         { id: 'live', model: 'live', displayName: 'Live model', isDefault: true },
       ]),
     },
+    {
+      providerId: 'claude-code',
+      catalog: {
+        models: [
+          {
+            providerId: 'claude-code',
+            modelId: 'claude-live',
+            displayName: 'Claude live',
+            isDefault: true,
+            reasoningOptions: [{ id: 'low', label: 'low', isDefault: true }],
+          },
+        ],
+      },
+    },
   ],
   runRoutineWithGosuLanguage: vi.fn(),
 }));
@@ -167,7 +183,7 @@ const profile: AssistantProfile = {
   owners: ['test'],
   updatedAt: 'now',
 };
-it('uses the routed assistant model and effort but rejects implicit provider changes', async () => {
+it('runs the assistant on the provider, model and effort that Settings → Agent assigned', async () => {
   const run = vi.fn<typeof runRoutineWithGosuLanguage>(async () => ({
     answer: JSON.stringify({ answer: 'Fixture', events: [], tasks: [] }),
     providerId: 'codex',
@@ -196,21 +212,29 @@ it('uses the routed assistant model and effort but rejects implicit provider cha
     reasoning: 'low',
     providerId: 'codex',
   });
-  await expect(
-    runBriefingAssistant(
-      { routineId: 'r', prompt: 'Fixture', history: [] },
-      profile,
-      store(),
-      {
-        ...operations,
-        modelPreferences: { ...operations.modelPreferences, providerId: 'claude-code' },
+  // The routine still stores Codex; the assistant role is on Claude Code, so the turn runs there.
+  await runBriefingAssistant(
+    { routineId: 'r', prompt: 'Fixture', history: [] },
+    profile,
+    store(),
+    {
+      ...operations,
+      modelPreferences: {
+        ...operations.modelPreferences,
+        providerId: 'claude-code',
+        modelId: 'claude-live',
       },
-      AbortSignal.timeout(1000),
-      vi.fn(),
-      run,
-    ),
-  ).rejects.toThrow('model_routing_provider_permission_required');
-  expect(run).toHaveBeenCalledTimes(1);
+    },
+    AbortSignal.timeout(1000),
+    vi.fn(),
+    run,
+  );
+  expect(run).toHaveBeenCalledTimes(2);
+  expect(run.mock.calls[1]?.[0]).toMatchObject({
+    providerId: 'claude-code',
+    modelId: 'claude-live',
+    reasoning: 'low',
+  });
 });
 function store() {
   return {
@@ -289,6 +313,8 @@ it('reads only discovered public paper IDs and forwards title mode separately fr
   expect(readPublicPaper).toHaveBeenCalledOnce();
   expect(answer.sources[0]?.url).toBe('https://proceedings.mlr.press/v202/test/test.pdf');
   expect(answer.sources[0]?.paperUrl).toBe(item.sourceUrl);
+  // A newly read public paper is not in the library: the offer stays for it.
+  expect(answer.sources[0]).not.toHaveProperty('saved');
 });
 it('passes only selected native images and reads selected document units through a scoped tool', async () => {
   const id = '11111111-1111-4111-8111-111111111111';
@@ -414,6 +440,62 @@ it('requires private AI and an observed project before sharing or dispatch, with
   );
   expect(result.writesPerformed).toBe(1);
   expect(projectBridge.mock.calls.map((c) => c[0])).toEqual(['model-lab', 'read', 'remember']);
+});
+it('adds a model to a project Model Lab only when the user asked for it, through the project gates', async () => {
+  const workspace = store();
+  const projectProfile = { ...profile, preferences: { ...profile.preferences, projectRead: true } };
+  workspace.profile = async () => projectProfile;
+  workspace.canPrivateAi = async () => true;
+  const projectBridge = vi.fn(async (action: string, _projectId?: string, _text?: string) =>
+    action === 'model-lab-add'
+      ? { projectId: 'p', modelId: 'gcsa', modelName: 'GCSA', status: 'added', added: true }
+      : { projects: [] },
+  );
+  const toolNames: string[][] = [];
+  const run = vi.fn<typeof runRoutineWithGosuLanguage>(async (_i, signal, _p, options) => {
+    toolNames.push((options!.structuredJob!.tools ?? []).map((tool) => tool.name));
+    const execute = options!.structuredJob!.executeTool!;
+    if (toolNames.length === 2) {
+      await execute('add_model_to_model_lab', { query: 'p', pseudocode: 'MODEL gcsa' }, signal);
+      // The same model again in this turn is the same request.
+      await execute('add_model_to_model_lab', { query: 'p', pseudocode: 'MODEL gcsa' }, signal);
+    }
+    return {
+      answer: JSON.stringify({ answer: 'done', events: [], tasks: [] }),
+      providerId: 'codex',
+      model: 'live',
+      reasoning: null,
+      proposal: null,
+      nextDates: [],
+    };
+  });
+  const operations = { projectBridge, papers: vi.fn(), mail: vi.fn(), calendar: vi.fn() };
+  await runBriefingAssistant(
+    { ...input, prompt: 'p 프로젝트 Model Lab에 있는 모델 알려줘' },
+    projectProfile,
+    workspace,
+    operations,
+    new AbortController().signal,
+    vi.fn(),
+    run,
+  );
+  expect(toolNames[0]).not.toContain('add_model_to_model_lab');
+  const result = await runBriefingAssistant(
+    { ...input, prompt: '이 모델 구조를 p 프로젝트 Model Lab에 추가해줘' },
+    projectProfile,
+    workspace,
+    operations,
+    new AbortController().signal,
+    vi.fn(),
+    run,
+  );
+  expect(toolNames[1]).toContain('add_model_to_model_lab');
+  const adds = projectBridge.mock.calls.filter((call) => call[0] === 'model-lab-add');
+  expect(adds).toHaveLength(2);
+  const first = JSON.parse(adds[0]![2] as string);
+  expect(first).toEqual({ requestId: expect.any(String), pseudocode: 'MODEL gcsa' });
+  expect(JSON.parse(adds[1]![2] as string).requestId).toBe(first.requestId);
+  expect(result.writesPerformed).toBe(2);
 });
 it('gates Todo reads independently and filters read-only task results without new proposals', async () => {
   const workspace = store();
@@ -753,7 +835,8 @@ it('searches saved tags then reads all stored paper sections without arXiv, resp
     vi.fn(),
     run,
   );
-  expect(result.sources).toMatchObject([{ id: 'p', title: 'Old Bayesian paper' }]);
+  // A paper read from the routine's own library says so, which lets the chat skip "add to library?".
+  expect(result.sources).toMatchObject([{ id: 'p', title: 'Old Bayesian paper', saved: true }]);
   expect(operations.papers).not.toHaveBeenCalled();
   expect(operations.mail).not.toHaveBeenCalled();
   expect(operations.calendar).not.toHaveBeenCalled();
@@ -879,6 +962,7 @@ it('uses the native GOSU harness with read-only tools and source-backed pending 
   const run = vi.fn<typeof runRoutineWithGosuLanguage>(
     async (_input, signal, _progress, options) => {
       expect(options?.structuredJob?.tools?.map((t) => t.name)).toEqual([
+        'search_images',
         'read_todos',
         'propose_settings',
         'search_saved_papers',
@@ -986,4 +1070,71 @@ it('rejects a late response after browser ownership is revoked and rejects inven
       run,
     ),
   ).rejects.toThrow('settings_changed');
+});
+it('creates a requested to-do and reads the project research workspace through the assistant turn', async () => {
+  const workspace = store();
+  const projectProfile = { ...profile, preferences: { ...profile.preferences, projectRead: true } };
+  workspace.profile = async () => projectProfile;
+  workspace.canPrivateAi = async () => true;
+  const projectBridge = vi.fn(async (action: string) => ({ action, records: [] }));
+  const createTodo = vi.fn(async () => ({
+    taskId: 'task-1',
+    reminderState: 'skipped' as const,
+    message: 'GOSU에 추가했습니다.',
+  }));
+  const toolNames: string[][] = [];
+  const run = vi.fn<typeof runRoutineWithGosuLanguage>(async (_i, signal, _p, options) => {
+    toolNames.push((options!.structuredJob!.tools ?? []).map((tool) => tool.name));
+    const execute = options!.structuredJob!.executeTool!;
+    if (toolNames.length === 2) {
+      await execute('create_todo', { title: '리뷰 답장 작성', dueDate: '2026-09-22' }, signal);
+      await execute('read_literature', { project: '11111111-1111-4111-8111-111111111111' }, signal);
+    }
+    return {
+      answer: JSON.stringify({ answer: 'done', events: [], tasks: [] }),
+      providerId: 'codex',
+      model: 'live',
+      reasoning: null,
+      proposal: null,
+      nextDates: [],
+    };
+  });
+  const operations = {
+    projectBridge,
+    createTodo,
+    papers: vi.fn(),
+    mail: vi.fn(),
+    calendar: vi.fn(),
+  };
+  await runBriefingAssistant(
+    { ...input, prompt: '다음 주 할 일 목록 보여줘' },
+    projectProfile,
+    workspace,
+    operations,
+    new AbortController().signal,
+    vi.fn(),
+    run,
+  );
+  expect(toolNames[0]).not.toContain('create_todo');
+  expect(toolNames[0]).toEqual(expect.arrayContaining(['read_literature', 'read_experiments']));
+  const result = await runBriefingAssistant(
+    { ...input, prompt: '리뷰 답장 작성 할 일에 추가해줘, 마감 9월 22일' },
+    projectProfile,
+    workspace,
+    operations,
+    new AbortController().signal,
+    vi.fn(),
+    run,
+  );
+  expect(toolNames[1]).toContain('create_todo');
+  expect(createTodo).toHaveBeenCalledOnce();
+  expect(projectBridge).toHaveBeenCalledWith(
+    'literature',
+    '11111111-1111-4111-8111-111111111111',
+    JSON.stringify({ query: '' }),
+    expect.anything(),
+    expect.any(Function),
+  );
+  expect(result.writesPerformed).toBe(1);
+  expect(ASSISTANT_INSTRUCTIONS).toContain('create_todo');
 });

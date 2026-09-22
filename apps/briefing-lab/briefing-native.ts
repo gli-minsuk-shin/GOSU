@@ -21,7 +21,10 @@ import {
   applicationLanguageContext,
 } from '../desktop/src/main/application-language-service';
 import { briefingToolFailure } from './briefing-tool-policy';
+import { briefingClientContext } from './briefing-client-context';
 import { codexTokenUsage, claudeTokenUsage } from './briefing-token-usage';
+import { observeNativeUsage } from './native-usage-observer';
+import { ModelInvocationSchema, type ModelInvocation } from '@gosu/contracts';
 import type { NativeTokenUsage } from './src/context-usage';
 import {
   RoutineAnswerSchema,
@@ -141,17 +144,23 @@ export async function runRoutineAgent(
     localImagePaths?: readonly string[];
     onActiveTurn?: (steer: ((message: string) => Promise<void>) | undefined) => void;
     structuredJob?: {
+      webSearchMode?: 'disabled' | 'live';
       instructions: string;
       prompt: string;
       schema: Readonly<Record<string, unknown>>;
       tools?: readonly Extract<CodexDynamicToolSpec, { type: 'function' }>[];
       executeTool?: (name: string, args: unknown, signal: AbortSignal) => Promise<unknown>;
       toolTimeouts?: Readonly<Record<string, number>>;
+      /** Claude Code only: no extended thinking, for small metadata-only jobs. */
+      thinking?: 'disabled';
     };
   } = {},
 ): Promise<RoutineResult> {
   const request = RoutineRequestSchema.parse(raw);
   if (signal.aborted) throw new Error('routine_aborted');
+  // Provider tool calls (Claude Code's MCP bridge) arrive outside this request's async context, so
+  // the tools would not know which GOSU client asked and every ownership check would fail.
+  const clientToken = briefingClientContext.getStore();
   const now = options.now ?? new Date().toISOString();
   const engine = (options.factory ?? createRoutineTransport)(request.providerId);
   let cwd: string | undefined;
@@ -161,6 +170,13 @@ export async function runRoutineAgent(
   let terminalReceived = false;
   let finalText = '';
   let nativeUsage: NativeTokenUsage | undefined;
+  let observedInvocation: ModelInvocation | undefined;
+  const captureInvocation = (event: unknown) => {
+    if (!record(event) || event.threadId !== threadId) return;
+    const parsed = ModelInvocationSchema.safeParse(event.invocation);
+    if (parsed.success) observedInvocation = parsed.data;
+  };
+  let successful = false;
   let toolCount = 0;
   let toolLimit = 12;
   const lifecycle = new AbortController();
@@ -210,6 +226,8 @@ export async function runRoutineAgent(
       }
     }
     if ((params.turnId ?? (record(params.turn) ? params.turn.id : undefined)) !== turnId) return;
+    if (event.method === 'item/started' && record(params.item) && params.item.type === 'webSearch')
+      progress({ stage: 'generating', detail: '웹 검색 중 · 공개 출처 확인' });
     const usage =
       event.method === 'thread/tokenUsage/updated'
         ? codexTokenUsage(params.tokenUsage)
@@ -240,7 +258,7 @@ export async function runRoutineAgent(
           typeof message === 'string' && /invalid[ _](?:json[ _])?schema/i.test(message)
             ? 'routine_output_schema_invalid'
             : typeof message === 'string' &&
-                /^(?:claude_code|codex)_(?:auth_required|timeout|output_too_large|result_invalid|empty_response|failed)$/.test(
+                /^(?:claude_code|codex)_(?:auth_required|timeout|output_too_large|result_invalid|empty_response|network_unavailable|failed)$/.test(
                   message,
                 )
               ? message
@@ -332,10 +350,13 @@ export async function runRoutineAgent(
     notification({ method: 'gosu/claudeUsage', params: event });
   engine.on('notification', notification);
   engine.on('usage', claudeUsage);
+  engine.on('invocation', captureInvocation);
   try {
     progress({
       stage: 'connecting',
-      detail: `${request.providerId} · GOSU 구독 연결 및 모델 확인`,
+      // Name the model that is actually about to run: a summary follows the role assigned in
+      // Settings, which can differ from the model picked in the Briefing chat.
+      detail: `${request.providerId} · ${request.modelId}${request.reasoning ? ` · ${request.reasoning}` : ''} · GOSU 구독 연결 및 모델 확인`,
     });
     const catalog = await bounded(engine.catalog());
     const model = catalog.models.find(
@@ -355,6 +376,8 @@ export async function runRoutineAgent(
         .startThread({
           cwd,
           modelId: model.modelId,
+          // A provider's own turn limit must not undercut a job that asked for a longer deadline.
+          ...(options.timeoutMs ? { turnTimeoutMs: options.timeoutMs } : {}),
           developerInstructions: options.structuredJob?.instructions ?? ROUTINE_INSTRUCTIONS,
           ...(options.structuredJob?.toolTimeouts
             ? {
@@ -383,8 +406,15 @@ export async function runRoutineAgent(
             : routineTools(request.providerId),
           ...(options.structuredJob && !options.structuredJob.tools?.length
             ? {}
-            : { dynamicToolHandler: handler }),
-          webSearchMode: 'disabled',
+            : {
+                dynamicToolHandler: clientToken
+                  ? (
+                      call: Parameters<CodexDynamicToolHandler>[0],
+                      delivery: Parameters<CodexDynamicToolHandler>[1],
+                    ) => briefingClientContext.run(clientToken, () => handler(call, delivery))
+                  : handler,
+              }),
+          webSearchMode: options.structuredJob?.webSearchMode ?? 'disabled',
         })
         .then(async (started) => {
           if (done) await engine.releaseThread(started.threadId).catch(() => undefined);
@@ -403,6 +433,7 @@ export async function runRoutineAgent(
         cwd,
         requestedModelId: model.modelId,
         reasoningOptionId: reasoning?.id ?? null,
+        ...(options.structuredJob?.thinking ? { thinking: options.structuredJob.thinking } : {}),
         outputSchema: options.structuredJob?.schema ?? ROUTINE_FINAL_SCHEMA,
         prompt:
           options.structuredJob?.prompt ??
@@ -422,6 +453,7 @@ export async function runRoutineAgent(
       }),
     );
     turnId = turn.turnId;
+    observedInvocation = turn.invocation;
     if (engine.steerTurn)
       options.onActiveTurn?.(async (message) => {
         if (done || terminalReceived || signal.aborted) throw new Error('assistant_turn_finished');
@@ -445,6 +477,7 @@ export async function runRoutineAgent(
       throw new Error('routine_proposal_invalid');
     }
     const nextDates = result.proposal ? proposalPreview(result.proposal, now) : [];
+    successful = true;
     return {
       ...result,
       nextDates,
@@ -455,11 +488,19 @@ export async function runRoutineAgent(
     };
   } finally {
     done = true;
+    if (observedInvocation)
+      await observeNativeUsage({
+        invocation: observedInvocation,
+        usage: nativeUsage,
+        completedAt: new Date().toISOString(),
+        successful,
+      });
     lifecycle.abort();
     clearTimeout(timer);
     signal.removeEventListener('abort', abort);
     engine.off('notification', notification);
     engine.off('usage', claudeUsage);
+    engine.off('invocation', captureInvocation);
     try {
       if (threadId) {
         engine.revokeDynamicTools(threadId);

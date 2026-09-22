@@ -44,6 +44,12 @@ import {
 import {
   availablePanelMaximum,
   clampPanelWidth,
+  footerHeightAfterPointerMove,
+  footerHeightAfterSeparatorKey,
+  MODEL_SESSION_FOOTER_MAX_HEIGHT,
+  MODEL_SESSION_FOOTER_MIN_HEIGHT,
+  readModelSessionFooterHeight,
+  readModelSessionSections,
   copilotContentAccessibilityProps,
   copilotRestoreAccessibilityProps,
   createImportedModelSession,
@@ -139,13 +145,16 @@ describe('Model graph interaction contract', () => {
     expect(styles).toContain('.signal-edge__row-transition {');
   });
 
-  it('fails closed when a compound operation is not consumed by an exact step parser', () => {
+  it('transcribes a compound operation literally when no exact step parser consumes it', () => {
     const compound = 'H3 = GELU(H3) + b';
-    expect(repeatedStepName(compound, 6)).toBe('Custom operation · step 7');
+    expect(repeatedStepName(compound, 6)).toBe('Update H3');
+    // The statement itself, every operand kept: never a narrower GELU-only interpretation.
     expect(repeatedStepFormula(compound, 6)).toBe(
-      String.raw`\text{Equation not deterministically derived from step 7}`,
+      String.raw`H_{3}\leftarrow \operatorname{GELU}(H_{3})+b`,
     );
-    expect(repeatedStepFormula(compound, 6)).not.toContain('GELU');
+    expect(renderFormulaResult(repeatedStepFormula(compound, 6)).valid).toBe(true);
+    // Text that is not code keeps the explicit fallback.
+    expect(repeatedStepName('custom opaque operator', 6)).toBe('Custom operation · step 7');
   });
 
   it('normalizes a general Python FiLM loop into named modules with rendered equations', () => {
@@ -431,8 +440,8 @@ describe('Model graph interaction contract', () => {
     const graphCardSource = readFileSync(new URL('./module-node.tsx', import.meta.url), 'utf8');
     const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
     expect(graphCardSource).toContain('data-repeat-count={repeat?.count}');
-    expect(graphCardSource).toContain('module-node__repeat-layers');
-    expect(graphCardSource).toContain('same block composed');
+    expect(graphCardSource).toContain('module-node__loop');
+    expect(graphCardSource).toContain('×{repeats}');
     expect(styles).toContain('.module-node__repeat-layers i:nth-child(3)');
     expect(styles).not.toContain('.module-node--stacked::before');
     expect(styles).not.toContain('.module-node--stacked::after');
@@ -452,7 +461,7 @@ describe('Model graph interaction contract', () => {
     expect(block?.detailModel.connections).toHaveLength(10);
     expect(block?.detailModel.modules.every((module) => module.block === undefined)).toBe(true);
     expect(hierarchy.model.modules).toHaveLength(6);
-    expect(hierarchy.model.connections).toHaveLength(5);
+    expect(hierarchy.model.connections).toHaveLength(7);
     expect(hierarchy.model.modules.some((module) => module.id === block?.summaryModuleId)).toBe(
       true,
     );
@@ -466,6 +475,32 @@ describe('Model graph interaction contract', () => {
           !block?.memberModuleIds.includes(connection.target),
       ),
     ).toBe(true);
+  });
+
+  it('keeps named boundary ports and parallel tensors connected when collapsing a block', () => {
+    const original = structuredClone(filmTransformerClassifier);
+    const first = composeRepeatedBlocks(original).blocks[0]!;
+    const incoming = original.connections.find(
+      (c) => !first.memberModuleIds.includes(c.source) && first.memberModuleIds.includes(c.target),
+    )!;
+    const model = {
+      ...original,
+      connections: [
+        ...original.connections,
+        { ...incoming, id: 'parallel-boundary', tensorName: 'auxiliary', targetPort: 'auxiliary' },
+      ],
+    };
+    const before = JSON.stringify(model);
+    const hierarchy = composeRepeatedBlocks(model);
+    const summary = hierarchy.model.modules.find((m) => m.id === first.summaryModuleId)!;
+    const boundary = hierarchy.model.connections.filter((c) => c.target === summary.id);
+    expect(boundary.length).toBeGreaterThanOrEqual(2);
+    for (const c of boundary)
+      expect(summary.inputPorts?.some((p) => p.name === c.targetPort)).toBe(true);
+    for (const c of hierarchy.model.connections.filter((c) => c.source === summary.id)) {
+      expect(summary.outputPorts?.some((p) => p.name === c.sourcePort)).toBe(true);
+    }
+    expect(JSON.stringify(model)).toBe(before);
   });
 
   it('expands one repeated Refinement module into an inspectable for-loop step graph', () => {
@@ -764,8 +799,8 @@ describe('Model graph interaction contract', () => {
     expect(repeatedStepFormula('Z = soft_threshold(X, Tau)', 3)).toContain(
       String.raw`\mathrm{Z}\leftarrow\operatorname{ST}\!\left(\mathrm{X};\mathrm{Tau}\right)`,
     );
-    expect(repeatedStepFormula('H1 = soft_threshold(H1, learned_threshold(H2))', 3)).toContain(
-      'Equation not deterministically derived',
+    expect(repeatedStepFormula('H1 = soft_threshold(H1, learned_threshold(H2))', 3)).toBe(
+      String.raw`H_{1}\leftarrow \operatorname{soft\_threshold}(H_{1},\operatorname{learned\_threshold}(H_{2}))`,
     );
   });
 
@@ -891,8 +926,9 @@ describe('Model graph interaction contract', () => {
     expect(repeatedTanhSaturationScale('H[:, d:] = 5 * tanh(H[:, d:] / 5)')).toBe('5');
     expect(repeatedTanhSaturationScale('H[:, d:] = 2.5 * tanh(H[:, d:] / 2.5)')).toBe('2.5');
     expect(repeatedTanhSaturationScale('H[:, d:] = 7 * tanh(H[:, d:] / 5)')).toBeNull();
+    // Mismatched scales are not normalized into the saturation form: both stay as written.
     expect(repeatedStepFormula('H[:, d:] = 7 * tanh(H[:, d:] / 5)', 12)).toBe(
-      String.raw`\text{Equation not deterministically derived from step 13}`,
+      String.raw`H_{:,d:}\leftarrow 7\,\tanh(H_{:,d:}/5)`,
     );
   });
 
@@ -929,7 +965,7 @@ describe('Model graph interaction contract', () => {
     const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
 
     expect(nodeSource).toContain('module-node--composite');
-    expect(nodeSource).toContain('Open block details →');
+    expect(nodeSource).toContain('Open block →');
     expect(graphSource).toContain('INSIDE COMPOSITE BLOCK');
     expect(graphSource).toContain('INSIDE REPEATED FOR-LOOP');
     expect(graphSource).toContain("openBlock.detailKind === 'steps'");
@@ -966,7 +1002,7 @@ describe('Model graph interaction contract', () => {
     expect(styles).toContain('.signal-edge__label--change-changed {');
   });
 
-  it('renders graph-card formulas as bounded, untrusted KaTeX with MathML', () => {
+  it('renders a bounded key equation on cards while preserving full equations in details', () => {
     const latex = String.raw`h_1 = \operatorname{GELU}(xW_p + b_p)`;
     const rendered = renderFormulaResult(latex, false);
     expect(rendered.valid).toBe(true);
@@ -977,8 +1013,12 @@ describe('Model graph interaction contract', () => {
 
     const graphCardSource = readFileSync(new URL('./module-node.tsx', import.meta.url), 'utf8');
     expect(graphCardSource).toContain('formulaDisplayRows(module.formula)');
-    expect(graphCardSource).toContain('module-node__formula-row');
-    expect(graphCardSource).toContain('<Formula latex={row}');
+    expect(graphCardSource).toContain('<Formula');
+    expect(graphCardSource).toContain('module.presentation?.keyEquation ?? formulaRows[0]');
+    expect(graphCardSource).toContain('module-node__purpose');
+    expect(graphCardSource).toContain('module-node__io');
+    const appSource = readFileSync(new URL('./model-lab-app.tsx', import.meta.url), 'utf8');
+    expect(appSource).toContain('<Formula latex={module.formula}');
     expect(graphCardSource).not.toContain('ƒ {compactFormula}');
   });
 
@@ -1062,9 +1102,7 @@ c=g(B)`;
       lane: 0,
     };
     const shortModule = { ...residualClassifier.modules[1]!, id: 'short-formula', lane: 1 };
-    expect(estimatedModuleCardHeight(tallModule)).toBeGreaterThan(
-      estimatedModuleCardHeight(shortModule),
-    );
+    expect(estimatedModuleCardHeight(tallModule)).toBe(estimatedModuleCardHeight(shortModule));
     const gridModules = [
       tallModule,
       ...Array.from({ length: 5 }, (_value, index) => ({
@@ -1477,6 +1515,27 @@ c=g(B)`;
     );
   });
 
+  it('keeps focus beside graph modes and diagnostics compact at narrow breakpoints', () => {
+    const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+    const source = readFileSync(new URL('./model-lab-app.tsx', import.meta.url), 'utf8');
+    const toolbar = source.slice(
+      source.indexOf('<div className="graph-toolbar">'),
+      source.indexOf('<ModelGraph\n'),
+    );
+    expect(toolbar).toContain('graph-toolbar__primary');
+    expect(toolbar.indexOf('focus-mode-toggle')).toBeLessThan(
+      toolbar.indexOf('graph-toolbar__diagnostics'),
+    );
+    expect(toolbar).toContain("signalMode === 'backward'");
+    expect(styles).toContain('min-block-size: max-content;');
+    expect(styles).toMatch(/\.graph-toolbar__primary \.focus-mode-toggle \{\s*margin-left: auto;/u);
+    expect(styles).toMatch(
+      /\.graph-toolbar \.graph-toolbar__primary \.segmented-control \{\s*width: auto;/u,
+    );
+    expect(styles).toMatch(/\.graph-toolbar \.graph-toolbar__diagnostics label \{\s*width: auto;/u);
+    expect(styles).toMatch(/\.graph-toolbar \.graph-toolbar__diagnostics input \{\s*width: 90px;/u);
+  });
+
   it('resizes both desktop sidebars in the correct pointer and keyboard directions', () => {
     expect(panelWidthAfterPointerMove('model-sessions', 252, 100, 140)).toBe(292);
     expect(panelWidthAfterPointerMove('copilot', 390, 100, 140)).toBe(350);
@@ -1508,6 +1567,43 @@ c=g(B)`;
         MODEL_COPILOT_MAX_WIDTH,
       ),
     ).toBe(MODEL_COPILOT_MIN_WIDTH);
+  });
+
+  it('lets the sidebar footer be dragged taller or shorter and remembers folded sections', () => {
+    // 2026-09-21: import status, builder LLM and the import button took most of the sidebar, so
+    // the model tree had a few rows. Dragging the separator up gives the footer room; arrows too.
+    expect(footerHeightAfterPointerMove(240, 500, 440)).toBe(300);
+    expect(footerHeightAfterPointerMove(240, 500, 560)).toBe(180);
+    expect(footerHeightAfterSeparatorKey(240, 'ArrowUp')).toBe(256);
+    expect(footerHeightAfterSeparatorKey(240, 'ArrowDown')).toBe(224);
+    expect(footerHeightAfterSeparatorKey(240, 'Home')).toBe(MODEL_SESSION_FOOTER_MIN_HEIGHT);
+    expect(footerHeightAfterSeparatorKey(240, 'End')).toBe(MODEL_SESSION_FOOTER_MAX_HEIGHT);
+    expect(footerHeightAfterSeparatorKey(240, 'Tab')).toBe(240);
+    expect(readModelSessionFooterHeight('300')).toBe(300);
+    expect(readModelSessionFooterHeight('12')).toBe(MODEL_SESSION_FOOTER_MIN_HEIGHT);
+    expect(readModelSessionFooterHeight('nope')).toBeNull();
+    expect(readModelSessionFooterHeight(null)).toBeNull();
+    expect(readModelSessionSections(null)).toEqual({ imports: true, builder: false });
+    expect(readModelSessionSections('{"builder":true}')).toEqual({ imports: true, builder: true });
+    expect(readModelSessionSections('broken')).toEqual({ imports: true, builder: false });
+    const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+    const appSource = readFileSync(new URL('./model-lab-app.tsx', import.meta.url), 'utf8');
+    expect(styles).toMatch(
+      /\.model-session-sidebar \{[^}]*grid-template-rows: auto minmax\(0, 1fr\) auto auto;/u,
+    );
+    expect(styles).toMatch(/\.panel-resizer--session-footer \{[^}]*cursor: row-resize;/u);
+    expect(styles).toContain('.model-session-sidebar--collapsed > .panel-resizer--session-footer');
+    expect(styles).toMatch(
+      /\.model-session-sidebar:not\(\.model-session-sidebar--collapsed\) > footer \{[^}]*overflow-y: auto;/u,
+    );
+    // The import button is a small pill beside its note, not a full-width bar.
+    expect(styles).toMatch(
+      /\.model-session-footer-actions \.attachment-button \{[^}]*min-height: 30px;/u,
+    );
+    expect(styles).not.toMatch(/> footer \.attachment-button \{[^}]*width: 100%;/u);
+    expect(appSource).toContain('className="panel-resizer panel-resizer--session-footer"');
+    expect(appSource).toContain('aria-orientation="horizontal"');
+    expect(appSource.match(/className="model-session-section"/gu)).toHaveLength(2);
   });
 
   it('clamps panel widths while reserving a usable graph workspace', () => {
@@ -1592,7 +1688,7 @@ c=g(B)`;
       createdAt: '2026-08-30T00:00:00.000Z',
       role: 'assistant',
       body: 'Revision 1 changes the prediction head and needs a shape check.',
-      trace: ['Automatic Model Copilot revision comment'],
+      trace: ['Automatic Model Assistant revision comment'],
     });
     expect(sessions[nextRevision]?.messages.at(-1)?.body).toContain('needs a shape check');
     expect(sessions[firstRevision]?.messages).toHaveLength(1);
@@ -1960,7 +2056,7 @@ c=g(B)`;
     });
   });
 
-  it('keeps only the visible Copilot toggle focusable across desktop and mobile layouts', () => {
+  it('keeps only the visible Assistant toggle focusable across desktop and mobile layouts', () => {
     expect(isCopilotPanelCollapsed(false, false, false)).toBe(false);
     expect(isCopilotPanelCollapsed(false, true, true)).toBe(true);
     expect(isCopilotPanelCollapsed(true, false, false)).toBe(true);
@@ -1974,7 +2070,7 @@ c=g(B)`;
     expect(modelLabWorkbenchClassName(true)).toContain('copilot-collapsed');
   });
 
-  it('hands focus to the control revealed by every Copilot panel transition', () => {
+  it('hands focus to the control revealed by every Assistant panel transition', () => {
     const focused: string[] = [];
     const scheduleImmediately = (callback: () => void) => callback();
     const targets = {
@@ -2000,7 +2096,7 @@ c=g(B)`;
     expect(shouldHandoffCopilotFocus(mobileClosed, mobileClosed, true)).toBe(false);
   });
 
-  it('closes the transient mobile Copilot drawer whenever the breakpoint changes', () => {
+  it('closes the transient mobile Assistant drawer whenever the breakpoint changes', () => {
     expect(mobileCopilotOpenAfterLayoutChange(true, true, true)).toBe(true);
     expect(mobileCopilotOpenAfterLayoutChange(true, false, true)).toBe(false);
     expect(mobileCopilotOpenAfterLayoutChange(false, true, true)).toBe(false);

@@ -1,10 +1,13 @@
 import { useState } from 'react';
+import { alignedPreparedActions } from './email-action-weekday';
 import { Temporal } from 'temporal-polyfill';
 import type { defaultAssistantPreferences } from '@gosu/briefing-core';
 import { initialEvent } from './calendar-dates';
 import { CalendarEventEditor } from './calendar-event-editor';
 import { sourceRequest } from './live-client';
 import type { EventDraft } from './workspace-contracts';
+import { BriefingTodoButton } from './briefing-todo-button';
+import type { EmailPreparedActions } from './email-prepared-actions';
 
 export function emailCalendarDraft(
   title: string,
@@ -69,45 +72,78 @@ export function EmailCalendarButton({
   title,
   text,
   receivedAt,
-  timeZone = 'Asia/Seoul',
+  sourceKey,
+  preparedActions,
 }: {
   routineId: string;
   title: string;
   text: string;
   receivedAt?: string | undefined;
+  sourceKey?: string | undefined;
   timeZone?: string | undefined;
+  preparedActions?: EmailPreparedActions | null | undefined;
 }) {
-  const candidate = emailCalendarDraft(title, text, receivedAt, timeZone);
-  const [editor, setEditor] = useState<{ draft: EventDraft; ids: string[] } | null>(null);
+  const [editor, setEditor] = useState<{ draft: EventDraft; ids: string[]; notice: string } | null>(
+    null,
+  );
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [created, setCreated] = useState(false);
-  if (!candidate) return null;
+  // A draft prepared by the summary is always offered; the keyword check only covers older summaries
+  // (an English "See you on Saturday" dinner has none of these words).
+  const calendarEligible =
+    Boolean(preparedActions?.event) ||
+    /마감|기한|deadline|\bdue\b|회신|신청|제출|행사|세미나|회의|일정|설명회|시험|방문|약속/i.test(
+      `${title} ${text}`,
+    );
   return (
     <div className="briefing-email-calendar-action" onClick={(event) => event.stopPropagation()}>
-      <button
-        type="button"
-        disabled={busy || created}
-        onClick={async (event) => {
-          event.preventDefault();
-          setBusy(true);
-          setError('');
-          try {
-            const { preferences } = await sourceRequest<{
-              preferences: ReturnType<typeof defaultAssistantPreferences>;
-            }>('/assistant/settings/get', { routineId }, new AbortController().signal);
-            if (!preferences.calendarRead || !preferences.calendarIds.length)
-              throw new Error('GOSU 설정의 Briefing Lab에서 연결된 캘린더를 확인해주세요.');
-            setEditor({ draft: candidate.draft, ids: preferences.calendarIds });
-          } catch (e) {
-            setError(e instanceof Error ? e.message : '일정 준비 실패');
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
-        {created ? '일정 등록됨' : busy ? '준비 중…' : '＋ 일정 생성'}
-      </button>
+      {calendarEligible && (
+        <button
+          type="button"
+          disabled={busy || created}
+          onClick={async (event) => {
+            event.preventDefault();
+            setBusy(true);
+            setError('');
+            try {
+              const { preferences } = await sourceRequest<{
+                preferences: ReturnType<typeof defaultAssistantPreferences>;
+              }>('/assistant/settings/get', { routineId }, new AbortController().signal);
+              if (!preferences.calendarRead || !preferences.calendarIds.length)
+                throw new Error('GOSU 설정의 Briefing Lab에서 연결된 캘린더를 확인해주세요.');
+              if (!preparedActions?.event)
+                throw new Error(
+                  '저장된 일정 초안이 없습니다. 날짜·시간이 명확한 이메일을 요약하면 함께 준비됩니다. 추가 AI 호출은 하지 않습니다.',
+                );
+              const aligned = alignedPreparedActions(
+                preparedActions,
+                preparedActions.event.timeZone,
+              )!.event!;
+              const { evidenceQuote, notice, ...eventDraft } = aligned;
+              const prepared = {
+                draft: { ...eventDraft, calendarId: '' },
+                notice: `${notice}\n근거: ${evidenceQuote}\n이메일 요약 때 준비한 일정 · 추가 AI 호출 없음`,
+              };
+              setEditor({ ...prepared, ids: preferences.calendarIds });
+            } catch (e) {
+              setError(e instanceof Error ? e.message : '일정 준비 실패');
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {created ? '일정 등록됨' : busy ? '준비 중…' : '＋ 일정 생성'}
+        </button>
+      )}
+      <BriefingTodoButton
+        routineId={routineId}
+        title={title}
+        text={text}
+        sourceKey={sourceKey}
+        receivedAt={receivedAt}
+        preparedTask={preparedActions?.task}
+      />
       {error && <small role="alert">{error}</small>}
       {editor && (
         <CalendarEventEditor
@@ -115,7 +151,7 @@ export function EmailCalendarButton({
           initial={editor.draft}
           calendarIds={editor.ids}
           heading="일정으로 등록할까요?"
-          notice={candidate.notice}
+          notice={editor.notice}
           onClose={() => setEditor(null)}
           onSaved={() => setCreated(true)}
         />

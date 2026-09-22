@@ -34,6 +34,33 @@ describe('shared application language', () => {
     expect(uiText('Actions for {name}')).toBe('{name} 작업');
     expect(uiText('  Settings ')).toBe('  설정 ');
   });
+  it('names the plan limits and the project archive in Korean', () => {
+    setUiLanguage('ko');
+    expect(uiText('{name} weekly', { name: 'Codex' })).toBe('Codex 주간');
+    expect(uiText('{name} {hours}h', { name: 'Claude', hours: 5 })).toBe('Claude 5시간');
+    expect(uiText('{remaining} left ({used} used)', { remaining: '87%', used: '13%' })).toBe(
+      '87% 남음(13% 사용)',
+    );
+    expect(uiText('in {days}d {hours}h', { days: 5, hours: 6 })).toBe('5일 6시간 뒤');
+    expect(uiText('Refresh every')).toBe('갱신 주기');
+    // The user looked for "아카이브"; the old label "보관" hid the feature in plain sight.
+    expect(uiText('Move to archive')).toBe('아카이브로 이동');
+    expect(uiText('Archived')).toBe('아카이브');
+    expect(uiText('Restored {name} to the active projects.', { name: 'Alpha' })).toBe(
+      'Alpha을(를) 활성 프로젝트로 복원했습니다.',
+    );
+  });
+  it('names the usage distribution and the feature table in Korean', () => {
+    setUiLanguage('ko');
+    expect(uiText('Usage distribution')).toBe('사용 분포');
+    expect(uiText('BY MODEL AND FEATURE')).toBe('모델별 · 기능별');
+    expect(uiText('Features')).toBe('기능');
+    expect(uiText('Usage by feature')).toBe('기능별 사용량');
+    expect(uiText('No model breakdown')).toBe('모델별 내역 없음');
+    expect(uiText('{tokens} tokens', { tokens: '1,204' })).toBe('토큰 1,204개');
+    expect(uiText('API-equivalent {cost}', { cost: '$3.41' })).toBe('API 환산 $3.41');
+    expect(uiText('{count} more', { count: 4 })).toBe('외 4개');
+  });
   it('validates the closed enum and shares the formatting locale', () => {
     expect(uiLocale()).toBe('en-US');
     setUiLanguage('ko');
@@ -60,5 +87,17 @@ describe('shared application language', () => {
         expect(placeholders(value.ko), source).toEqual(placeholders(value.en));
       }
     }
+  });
+});
+
+describe('Model Lab product naming', () => {
+  it('calls the Model Lab chat "Model Assistant" everywhere a user can read it', () => {
+    const visible = Object.values(modelLabMessages).flatMap(({ en, ko }) => [en, ko]);
+
+    // Renamed on 2026-09-22 at the user's request (the old name reads like another company's
+    // product). Identifiers, routes and storage keys keep their names; visible text does not.
+    expect(visible.filter((text) => /copilot/iu.test(text))).toEqual([]);
+    expect(visible).toContain('Model Assistant');
+    expect(modelLabMessages['Model Assistant']?.ko).toBe('Model Assistant');
   });
 });

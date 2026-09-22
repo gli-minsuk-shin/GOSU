@@ -1,5 +1,11 @@
 # Workspace shortcuts and notification center
 
+2026-09-14: [0.58.76 candidate](releases/0.58.76.md) confines notification jumps to the Briefing
+pane. Never use scrollIntoView for an embedded history record: it can scroll the iframe document
+and leave a blank area below the shifted shell. Navigation resets only owned document/host offsets,
+waits for layout, and applies each notification request once. History refreshes do not pull the
+reader back; ordinary tab scroll restoration must not overwrite an explicit notification target.
+
 GOSU 0.58.8 places Search, Tasks and a notification bell above the Projects heading.
 Search and Tasks retain their existing global destinations and no longer appear twice in
 the lower Workspace navigation. Icons have accessible names, tooltips and active states.

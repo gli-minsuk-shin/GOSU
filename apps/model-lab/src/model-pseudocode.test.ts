@@ -539,7 +539,7 @@ END MODULE
     expect(appSource).toContain('Review normalized pseudocode changes');
     expect(appSource).toContain('classifyModelPseudocodeUpdate');
     expect(appSource).toContain('Review LLM edit proposal');
-    expect(appSource).toContain('Model Copilot prepared a pseudocode and graph proposal');
+    expect(appSource).toContain('Model Assistant prepared a pseudocode and graph proposal');
     expect(appSource).toContain("purpose: 'revision-comment'");
     expect(appSource).toContain('modelPseudocodeRevisionCommentPrompt');
     expect(appSource).toContain('Architecture update receipt');

@@ -145,6 +145,51 @@ describe('Literature command authorization', () => {
     );
   });
 
+  // 2026-09-22 user report: Project Chat answered "현재 대화에는 GOSU Literature 검색·추가 도구가 제공되지
+  // 않아" to an ordinary Korean request. The gate only knew a few verb endings ("검색해줘", "찾아줘") and
+  // read "문헌에서 … 논문 검색해줘" as a search inside the saved table.
+  it('recognizes the everyday Korean ways of asking for a literature search', () => {
+    for (const message of [
+      '이 프로젝트 아이디어 관련 논문 검색해봐',
+      '이 아이디어와 관련된 논문 좀 찾아봐줘',
+      '관련 논문 찾아줄래?',
+      'TabPFN 관련 문헌 조사해줘.',
+      '이 주제로 논문 검색 부탁해',
+      '선행 연구 서베이해줘',
+      '관련 연구 찾아서 문헌에 추가해줘',
+      '최신 연구 동향 리서치해줘',
+      '이 아이디어에 대한 literature 검색해서 문헌에 추가해줘',
+      '문헌에서 이 아이디어 관련 논문 검색해줘',
+      '문헌 탭에 tabular foundation model 논문 찾아서 넣어줘',
+      '논문 검색',
+      '관련 논문 검색',
+      'literature search',
+      '논문을 검색해 주세요',
+      '관련 논문들을 찾아 주실래요?',
+      '이 주제의 related work 찾아줘',
+      'Look for papers on in-context learning for tabular data.',
+      "I'd like you to find papers about causal discovery.",
+      'We need to search the literature on prior-data fitted networks.',
+    ])
+      expect([message, explicitlyAuthorizesLiteratureSearch(message)]).toEqual([message, true]);
+  });
+
+  it('still refuses Korean questions, complaints, past-tense remarks and saved-table lookups', () => {
+    for (const message of [
+      '논문 검색 어떻게 해?',
+      '문헌 검색 기능이 이상해',
+      '논문을 찾아봤는데 별로 없더라',
+      '어제 관련 논문을 검색했어',
+      '논문 검색하지 마',
+      '논문 검색하면 안 돼',
+      '문헌에서 찾아줘',
+      '근거 표에서 TabPFN 찾아줘',
+      '이 연구 계획을 찾아줘',
+      '논문 검색 결과를 정리해줘',
+    ])
+      expect([message, explicitlyAuthorizesLiteratureSearch(message)]).toEqual([message, false]);
+  });
+
   it('does not authorize search for review, organization, or update-only requests', () => {
     expect(explicitlyAuthorizesLiteratureSearch('Summarize the attached PDF.')).toBe(false);
     expect(
@@ -1159,6 +1204,7 @@ class FakeCodex extends EventEmitter {
   readonly dynamicTools: Array<readonly CodexDynamicToolSpec[]> = [];
   readonly dynamicToolHandlers: Array<CodexDynamicToolHandler | undefined> = [];
   readonly dynamicToolTimeouts: Array<readonly CodexDynamicToolTimeoutOverride[]> = [];
+  readonly turnTimeouts: Array<number | undefined> = [];
   modelCatalogRequestCount = 0;
   beforeListModelCatalogReturns: ((requestNumber: number) => void | Promise<void>) | null = null;
   beforeStartThreadReturns: ((threadId: string) => void | Promise<void>) | null = null;
@@ -1203,8 +1249,10 @@ class FakeCodex extends EventEmitter {
     dynamicTools?: readonly CodexDynamicToolSpec[];
     dynamicToolHandler?: CodexDynamicToolHandler;
     dynamicToolTimeouts?: readonly CodexDynamicToolTimeoutOverride[];
+    turnTimeoutMs?: number;
   }) {
     this.threadCount += 1;
+    this.turnTimeouts.push(input.turnTimeoutMs);
     this.developerInstructions.push(input.developerInstructions ?? '');
     this.responseVerbosities.push(input.responseVerbosity ?? null);
     this.webSearchModes.push(input.webSearchMode);
@@ -1700,6 +1748,65 @@ it('binds automatic research-plan tools to the current user turn, actual invocat
     }),
   );
 });
+it.each([
+  ['이 모델 아키텍처 보고 Model Lab에 추가해줘', true],
+  ['Model Lab에 있는 모델 보여줘', false],
+  ['이 모델 구조를 설명해줘', false],
+])('offers the Model Lab add tool only for an explicit request: %s', async (message, offered) => {
+  const f = await fixture();
+  const modelLabWrite = vi.fn();
+  Object.assign((f.chat as unknown as { dependencies: object }).dependencies, { modelLabWrite });
+  await f.chat.send({
+    projectId: f.projectA.id,
+    message,
+    requestedModelId: null,
+    reasoningOptionId: null,
+  });
+  expect(JSON.stringify(f.codex.dynamicTools[0]).includes('"name":"add_model_to_model_lab"')).toBe(
+    offered,
+  );
+});
+
+it('offers the Briefing reads every turn, and never in a critical review', async () => {
+  const f = await fixture();
+  const reads = {
+    calendar: vi.fn(),
+    mail: vi.fn(),
+    briefings: vi.fn(),
+    papers: vi.fn(),
+  };
+  const briefingReads = vi.fn(async () => reads);
+  Object.assign((f.chat as unknown as { dependencies: object }).dependencies, { briefingReads });
+  await f.chat.send({
+    projectId: f.projectA.id,
+    message: '내일 일정 알려줘',
+    requestedModelId: null,
+    reasoningOptionId: null,
+  });
+  const offered = JSON.stringify(f.codex.dynamicTools[0]);
+  expect(offered).toContain('"name":"read_calendar"');
+  expect(offered).toContain('"name":"search_email"');
+  expect(offered).toContain('"name":"read_briefings"');
+  expect(offered).toContain('"name":"read_paper_summaries"');
+  expect(briefingReads).toHaveBeenCalled();
+  // An unavailable Briefing host leaves the rest of the turn working, without those tools.
+  const unavailable = await fixture();
+  Object.assign((unavailable.chat as unknown as { dependencies: object }).dependencies, {
+    briefingReads: vi.fn(async () => {
+      throw new Error('briefing_host_unavailable');
+    }),
+  });
+  await unavailable.chat.send({
+    projectId: unavailable.projectA.id,
+    message: '메일 확인해줘',
+    requestedModelId: null,
+    reasoningOptionId: null,
+  });
+  const withoutHost = JSON.stringify(unavailable.codex.dynamicTools[0]);
+  expect(withoutHost).not.toContain('"name":"search_email"');
+  expect(withoutHost).toContain('"name":"read_workspace"');
+});
+
 it.each([
   'Review my model development plan',
   '모델 설계 계획 검토해줘',
@@ -2247,6 +2354,30 @@ describe('ProjectChatService', () => {
         'Alpha ownership preserved',
       ),
     );
+  });
+  it('retains a reasoning turn while viewing another project and saves its reply to the original session', async () => {
+    const { chat, codex, storage, projectA, projectB } = await fixture();
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Continue in background',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    await chat.snapshot({ projectId: projectB.id });
+    expect(
+      (await chat.snapshot({ projectId: projectA.id, sessionId: receipt.sessionId })).activeTurnId,
+    ).toBe(receipt.turnId);
+    await chat.snapshot({ projectId: projectB.id });
+    codex.complete(receipt.turnId, {
+      reply: 'Completed while another project was open',
+      actions: [],
+    });
+    await vi.waitFor(() =>
+      expect(storage.snapshot(projectA.id).messages.at(-1)?.content).toBe(
+        'Completed while another project was open',
+      ),
+    );
+    expect(storage.snapshot(projectB.id).messages).toHaveLength(0);
   });
 
   it('drops notifications and provenance whose thread does not match the active turn', async () => {
@@ -3605,6 +3736,14 @@ describe('ProjectChatService', () => {
       { namespace: 'gosu_project', tool: 'write_ssh_workspace_file', timeoutMs: 450_000 },
       { namespace: 'gosu_project', tool: 'run_ssh_workspace_command', timeoutMs: 450_000 },
     ]);
+    // A Claude Code turn is one CLI process with a hard deadline. It has to outlive the longest tool
+    // wait (an SSH Allow-once can take five minutes before the command even starts), or remote work
+    // only ever finishes on Codex, whose turns have no such wall clock.
+    const longestToolWait = Math.max(
+      ...(codex.dynamicToolTimeouts[0] ?? []).map(({ timeoutMs }) => timeoutMs),
+    );
+    expect(codex.turnTimeouts[0]).toBeGreaterThanOrEqual(2 * longestToolWait);
+    expect(codex.turnTimeouts[0]).toBeLessThanOrEqual(30 * 60_000);
     const handler = codex.dynamicToolHandlers[0]!;
     await expect(
       handler(
@@ -4101,6 +4240,35 @@ describe('ProjectChatService', () => {
       expect(assistant.content).toContain(contentSha256);
       expect(assistant.content).not.toContain(content);
     }
+  });
+
+  it('tells the user to sign in again when a Claude Code subscription login has expired', async () => {
+    const { chat, codex, storage, projectA, receipt } = await activeLocalNotesTurn();
+    const completed = waitForTurnCompleted(chat, receipt.turnId);
+    const threadId = codex.turnThreads.get(receipt.turnId)!;
+
+    codex.emit('notification', {
+      method: 'turn/completed',
+      params: {
+        threadId,
+        turn: {
+          id: receipt.turnId,
+          status: 'failed',
+          error: { message: 'claude_code_auth_required' },
+        },
+      },
+    });
+    await completed;
+
+    const snapshot = storage.snapshot(projectA.id);
+    expect(snapshot.attempts?.at(-1)).toMatchObject({
+      status: 'failed',
+      errorCode: 'codex_unavailable',
+    });
+    const assistant = snapshot.messages.at(-1)!;
+    expect(assistant.status).toBe('failed');
+    expect(assistant.content).toContain('claude auth login');
+    expect(assistant.content).not.toContain('could not complete this turn');
   });
 
   it('waits for an in-flight delivery acknowledgement before sealing an interrupted receipt', async () => {
@@ -5335,6 +5503,194 @@ describe('ProjectChatService', () => {
     await chat.cancel({ projectId: projectA.id, sessionId: session!.id });
     expect(await settled).toBeInstanceOf(Error);
     expect(codex.prompts).toHaveLength(0);
+  });
+
+  describe('/compact', () => {
+    async function compactFixture(options: { windowSource?: 'provider' | 'fallback' } = {}) {
+      const base = await fixture();
+      const { chat, storage, codex, projectA } = base;
+      const [session] = await chat.listSessions({ projectId: projectA.id });
+      codex.modelCatalog = createCodexModelCatalog([
+        { id: 'fixture-model', model: 'fixture-model', displayName: 'Fixture', isDefault: true },
+      ]);
+      codex.modelCatalog.models[0]!.contextWindowTokens = 272000;
+      codex.modelCatalog.models[0]!.metadata = {
+        ...codex.modelCatalog.models[0]!.metadata,
+        contextWindowSource: options.windowSource ?? 'provider',
+      };
+      const records = Array.from({ length: 12 }, (_, i) => ({
+        id: randomUUID(),
+        projectId: projectA.id,
+        role: i % 2 ? 'assistant' : 'user',
+        content: `compact-record-${i}`,
+        status: 'complete',
+        actions: [],
+        createdAt: '2026-09-13T00:00:00Z',
+        completedAt: '2026-09-13T00:00:00Z',
+      }));
+      const state: { checkpoint?: unknown } = {};
+      const saveProjectChatCheckpoint = vi.fn(async (_p: string, _s: string, next: unknown) => {
+        state.checkpoint = next;
+      });
+      Object.assign(storage, {
+        readProjectChatContextHistory: vi.fn(async () => records),
+        getProjectChatContextState: vi.fn(async () => ({ ...state })),
+        saveProjectChatCheckpoint,
+      });
+      const compactHistory = vi.fn(
+        async (
+          _model: unknown,
+          _messages: readonly unknown[],
+          _summary: string,
+          _signal: AbortSignal,
+          onUsage: (usage: { inputTokens: number; outputTokens: number }) => void,
+        ) => {
+          onUsage({ inputTokens: 700, outputTokens: 90 });
+          return 'Synthetic summary of the earlier turns.';
+        },
+      );
+      Object.assign((chat as unknown as { dependencies: object }).dependencies, {
+        compactHistory,
+      });
+      const command = {
+        projectId: projectA.id,
+        sessionId: session!.id,
+        requestedModelId: null,
+      };
+      return { ...base, session: session!, command, compactHistory, saveProjectChatCheckpoint };
+    }
+
+    it('summarizes everything but the latest four now, without an attempt, a message or a model turn', async () => {
+      const f = await compactFixture();
+      const events: ProjectChatEvent[] = [];
+      f.chat.on('event', (event: ProjectChatEvent) => events.push(event));
+
+      const receipt = await f.chat.compactSession(f.command);
+
+      expect(receipt).toMatchObject({
+        outcome: 'compacted',
+        summarizedMessages: 8,
+        contextUsage: {
+          compressedMessages: 8,
+          includedMessages: 4,
+          omittedMessages: 0,
+          maintenance: { calls: 1, inputTokens: 700, outputTokens: 90 },
+        },
+      });
+      expect(f.compactHistory).toHaveBeenCalledOnce();
+      expect(f.compactHistory.mock.calls[0]![1]).toHaveLength(8);
+      expect(f.saveProjectChatCheckpoint).toHaveBeenCalledExactlyOnceWith(
+        f.projectA.id,
+        f.session.id,
+        expect.objectContaining({ through: 8, summary: 'Synthetic summary of the earlier turns.' }),
+      );
+      expect(f.codex.prompts).toHaveLength(0);
+      const snapshot = await f.chat.snapshot({ projectId: f.projectA.id, sessionId: f.session.id });
+      expect(snapshot.messages).toHaveLength(0);
+      expect(snapshot.contextUsage).toMatchObject({ compressedMessages: 8, includedMessages: 4 });
+      expect(events.filter((event) => event.type === 'context.updated')).toHaveLength(1);
+
+      // Asked again with nothing new: no model call, and a plain "nothing to do".
+      await expect(f.chat.compactSession(f.command)).resolves.toMatchObject({
+        outcome: 'nothing_to_compact',
+        summarizedMessages: 0,
+      });
+      expect(f.compactHistory).toHaveBeenCalledOnce();
+
+      // The next turn finds the checkpoint: the summary replaces the eight records it covers.
+      await f.chat.send({
+        projectId: f.projectA.id,
+        sessionId: f.session.id,
+        message: 'Continue from the summary',
+        requestedModelId: null,
+        reasoningOptionId: null,
+      });
+      expect(f.codex.prompts.at(-1)).toContain('Synthetic summary of the earlier turns.');
+      expect(f.codex.prompts.at(-1)).not.toContain('compact-record-3');
+      expect(f.codex.prompts.at(-1)).toContain('compact-record-11');
+      expect(f.compactHistory).toHaveBeenCalledOnce();
+    });
+
+    it('says why it cannot run instead of guessing a window or a summarizer', async () => {
+      const guessed = await compactFixture({ windowSource: 'fallback' });
+      await expect(guessed.chat.compactSession(guessed.command)).resolves.toEqual({
+        outcome: 'unavailable',
+        reason: 'context_window_unknown',
+        summarizedMessages: 0,
+      });
+      expect(guessed.compactHistory).not.toHaveBeenCalled();
+
+      const unwired = await compactFixture();
+      Object.assign((unwired.chat as unknown as { dependencies: object }).dependencies, {
+        compactHistory: undefined,
+      });
+      await expect(unwired.chat.compactSession(unwired.command)).resolves.toEqual({
+        outcome: 'unavailable',
+        reason: 'engine_unavailable',
+        summarizedMessages: 0,
+      });
+    });
+
+    it('reports a failed or unusable summary with a bounded reason and saves nothing', async () => {
+      const f = await compactFixture();
+      f.compactHistory.mockRejectedValueOnce(new Error('provider text that must not leak'));
+      await expect(f.chat.compactSession(f.command)).resolves.toEqual({
+        outcome: 'failed',
+        reason: 'model_failed',
+        summarizedMessages: 0,
+      });
+      f.compactHistory.mockResolvedValueOnce('   ');
+      await expect(f.chat.compactSession(f.command)).resolves.toEqual({
+        outcome: 'failed',
+        reason: 'summary_invalid',
+        summarizedMessages: 0,
+      });
+      expect(f.saveProjectChatCheckpoint).not.toHaveBeenCalled();
+      // A failure leaves the session usable: nothing stays locked.
+      await expect(f.chat.compactSession(f.command)).resolves.toMatchObject({
+        outcome: 'compacted',
+      });
+    });
+
+    it('is refused while an answer runs, and the Stop control cancels a running compaction', async () => {
+      const busy = await compactFixture();
+      await busy.chat.send({
+        projectId: busy.projectA.id,
+        sessionId: busy.session.id,
+        message: 'A running answer',
+        requestedModelId: null,
+        reasoningOptionId: null,
+      });
+      await expect(busy.chat.compactSession(busy.command)).rejects.toMatchObject({
+        code: 'chat_busy',
+      });
+      expect(busy.compactHistory).not.toHaveBeenCalled();
+
+      const f = await compactFixture();
+      f.compactHistory.mockImplementationOnce(
+        (_model, _messages, _summary, signal: AbortSignal) =>
+          new Promise<string>((_resolve, reject) =>
+            signal.addEventListener('abort', () => reject(new Error('source_cancelled')), {
+              once: true,
+            }),
+          ),
+      );
+      const pending = f.chat.compactSession(f.command);
+      await vi.waitFor(() => expect(f.compactHistory).toHaveBeenCalledOnce());
+      // A question sent meanwhile is refused rather than planned against a half-written context.
+      await expect(
+        f.chat.send({
+          projectId: f.projectA.id,
+          sessionId: f.session.id,
+          message: 'Too early',
+          requestedModelId: null,
+          reasoningOptionId: null,
+        }),
+      ).rejects.toMatchObject({ code: 'chat_busy' });
+      await f.chat.cancel({ projectId: f.projectA.id, sessionId: f.session.id });
+      await expect(pending).resolves.toEqual({ outcome: 'cancelled', summarizedMessages: 0 });
+      expect(f.saveProjectChatCheckpoint).not.toHaveBeenCalled();
+    });
   });
 
   it('streams exact native context usage, invalidates compacted occupancy and persists it on completion', async () => {

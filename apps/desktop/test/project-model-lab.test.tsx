@@ -14,6 +14,19 @@ import { createTrustedRenderer, rendererContentSecurityPolicy } from '../src/mai
 
 const id = '11111111-1111-4111-8111-111111111111';
 describe('GOSU project Model Lab integration', () => {
+  it('keeps hidden and minimized renderer chat delivery awake without conditional workspace mounting', () => {
+    const main = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    expect(main).toContain('backgroundThrottling: false');
+    const app = readFileSync(
+      new URL('../src/renderer/src/desktop-app.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(app).toContain('<ProjectModelLabWorkspaces');
+    expect(app).toContain('<GlobalBriefingView');
+    expect(app).not.toContain('.cancelScope(previousScope)');
+    expect(app).not.toContain('.revokeSsh(previousScope.projectId');
+    expect(app).toContain('enqueueBackgroundSshApproval(');
+  });
   it('stacks workspace warnings above the full-width embedded session instead of squeezing it sideways', () => {
     const css = readFileSync(
       new URL('../src/renderer/src/project-model-lab-view.css', import.meta.url),

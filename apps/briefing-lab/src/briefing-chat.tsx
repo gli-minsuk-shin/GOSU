@@ -1,4 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { restoreScrollWhenShown } from '@gosu/ui/scroll-settle';
+import {
+  chatSlashSuggestions,
+  parseChatSlashCommand,
+  type ChatSlashCommand,
+} from '@gosu/ui/chat-slash-commands';
+import { beginAiActivity } from '@gosu/ui/ai-activity';
 import type { BriefingRoutine } from '@gosu/briefing-core';
 import type { AssistantAnswer, EventDraft } from './workspace-contracts';
 import { workspaceStream } from './workspace-client';
@@ -6,11 +13,21 @@ import { BriefingMarkdown } from './briefing-insight-card';
 import { CalendarEventEditor } from './calendar-event-editor';
 import { initialEvent, calendarInstant } from './calendar-dates';
 import { EmailDeliveryMeta } from './email-delivery-meta';
+import { BriefingTodoButton } from './briefing-todo-button';
+import type { EmailPreparedActions } from './email-prepared-actions';
 import type { MailAccountContext } from './mail-account';
 import { PaperSummarySaveOffer, type PaperSaveReplyHandler } from './paper-summary-offer';
-import type { PaperSummarySaveReceipt } from './paper-summary-contract';
+import { asksPaperLibraryQuestion, type PaperSummarySaveReceipt } from './paper-summary-contract';
 import { sourceRequest } from './live-client';
 import { restoreBriefingConversation } from './briefing-conversation-restore';
+import {
+  CHAT_COMMAND_DETAILS,
+  compactStatus,
+  contextCommandRefusal,
+  contextDividerIndex,
+  latestContextUsage,
+  newContextStatus,
+} from './briefing-chat-commands';
 import { ContextUsageMeter } from './context-usage-meter';
 import type { ContextUsage } from './context-usage';
 import { ConversationMessageSchema, type ConversationMessage } from './briefing-conversation';
@@ -25,6 +42,18 @@ import {
   ProjectChatAttachmentSchema,
   type ProjectChatAttachment,
 } from '../../desktop/src/shared/project-chat-attachment-contracts';
+
+/**
+ * Every paper an answer drew on is already in the routine's paper library: asking about a saved
+ * paper is not a reason to offer saving it again. An answer that also read a new paper keeps the
+ * offer, for that paper only.
+ */
+export function answersFromSavedPapers(
+  sources: readonly { kind?: string | undefined; saved?: boolean | undefined }[],
+) {
+  const papers = sources.filter((source) => source.kind === 'paper');
+  return papers.length > 0 && papers.every((source) => source.saved === true);
+}
 type ChatAnswer = AssistantAnswer & {
   savedPapers?: (PaperSummarySaveReceipt & { title: string })[];
   contextUsage?: ContextUsage;
@@ -35,14 +64,25 @@ type ChatAnswer = AssistantAnswer & {
     title: string;
     url?: string;
     paperUrl?: string;
+    /** Read from the routine's paper library, so there is nothing to offer to add. */
+    saved?: boolean;
     kind?: 'paper' | 'email' | 'news' | 'history' | 'calendar';
     mailAccount?: MailAccountContext | undefined;
+    mailSender?: string | undefined;
     receivedAt?: string | undefined;
   }[];
   invocation: { providerId: string; model: string; reasoning: string | null };
   writesPerformed: number;
 };
 type BriefingChatSource = ChatAnswer['sources'][number];
+/** Where `/new` cut the context: above it is kept for reading, below it is what the AI is given. */
+function NewContextDivider() {
+  return (
+    <p role="separator" className="briefing-chat-context-divider">
+      여기부터 새 대화 · 위 메시지는 AI에 전달되지 않습니다
+    </p>
+  );
+}
 type Message = ConversationMessage & {
   result?: ChatAnswer;
 };
@@ -54,6 +94,30 @@ function chatTime(value: string) {
   }).format(new Date(value));
 }
 const isoDateTimePattern = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})/gu;
+/** A chat task proposal as the reviewed to-do dialog's draft; the user edits and saves it. */
+export function chatTaskDraft(
+  task: AssistantAnswer['tasks'][number],
+  timeZone: string,
+): NonNullable<EmailPreparedActions['task']> {
+  const deadline = task.deadline?.trim() ?? '';
+  const dueDate = /^\d{4}-\d{2}-\d{2}/u.exec(deadline)?.[0] ?? null;
+  const dueAt =
+    dueDate &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/u.test(deadline)
+      ? deadline
+      : null;
+  const title = task.title.trim().slice(0, 240);
+  return {
+    title: title.length >= 2 ? title : `할 일: ${title}`,
+    notes: task.description.slice(0, 4000),
+    dueDate,
+    dueAt,
+    timeZone,
+    evidenceQuote: title || '할 일',
+    deadlineQuote: deadline.slice(0, 1000),
+    notice: 'AI 비서가 제안한 할 일입니다',
+  };
+}
 export function formatBriefingEventTime(value: string | null, timeZone: string, allDay = false) {
   if (!value) return allDay ? '날짜 미정' : '시각 미정';
   const date = new Date(value);
@@ -89,13 +153,21 @@ export function hasExistingCalendarEvent(
       (source.id === proposal.sourceId || source.title.trim() === proposal.title.trim()),
   );
 }
+/** Project Chat's rule: within 96px of the end still counts as reading the newest message. */
+export function isNearLatestMessage(
+  node: Readonly<{ scrollTop: number; scrollHeight: number; clientHeight: number }>,
+) {
+  const values = [node.scrollTop, node.scrollHeight, node.clientHeight];
+  if (!values.every(Number.isFinite)) return true;
+  return Math.max(0, node.scrollHeight - node.clientHeight - node.scrollTop) <= 96;
+}
+
 export function BriefingChat({
   globalMode = false,
   paperReference,
   routine,
   onSettings,
   onBusyChange,
-  blocked = false,
   visible = true,
   recommendationRequest = 0,
 }: {
@@ -104,7 +176,6 @@ export function BriefingChat({
   paperReference?: PaperChatReference | undefined;
   onSettings: (proposal?: SettingsProposal) => void;
   onBusyChange?: (busy: boolean) => void;
-  blocked?: boolean;
   visible?: boolean;
   recommendationRequest?: number;
 }) {
@@ -134,9 +205,15 @@ export function BriefingChat({
     [event, setEvent] = useState<EventDraft | null>(null),
     [showSuggestions, setShowSuggestions] = useState(true);
   const [restored, setRestored] = useState(false);
+  /** False once the reader scrolls up, which offers the jump back to the newest message. */
+  const [nearLatest, setNearLatest] = useState(true);
   const [contextUsage, setContextUsage] = useState<ContextUsage>();
   const [restoreError, setRestoreError] = useState('');
   const [otherScopeMessages, setOtherScopeMessages] = useState(0);
+  /** When `/new` last started a context: where the line is drawn. The server owns the real cut. */
+  const [contextStartedAt, setContextStartedAt] = useState<string>();
+  /** What the running indicator says: an answer, or a `/compact` that adds no message. */
+  const [busyKind, setBusyKind] = useState<'turn' | 'compact'>('turn');
   const [restoreAttempt, setRestoreAttempt] = useState(0);
   useEffect(() => {
     const c = new AbortController();
@@ -147,8 +224,11 @@ export function BriefingChat({
         const result = await restoreBriefingConversation(routine.id, c.signal);
         const saved = ConversationMessageSchema.array().parse(result?.messages ?? []);
         if (!c.signal.aborted) {
+          const startedAt =
+            typeof result?.contextStartedAt === 'string' ? result.contextStartedAt : undefined;
           setMessages(saved);
-          setContextUsage([...saved].reverse().find((m) => m.contextUsage)?.contextUsage);
+          setContextStartedAt(startedAt);
+          setContextUsage(latestContextUsage(saved, startedAt));
           setRestored(true);
           setOtherScopeMessages(
             Number.isSafeInteger(result?.otherScopeMessages)
@@ -163,6 +243,7 @@ export function BriefingChat({
     })();
     return () => c.abort();
   }, [routine.id, restoreAttempt]);
+  const approvalNoteId = useId();
   const controller = useRef<AbortController | null>(null),
     paperReply = useRef<PaperSaveReplyHandler | null>(null),
     log = useRef<HTMLDivElement | null>(null),
@@ -171,7 +252,22 @@ export function BriefingChat({
     suggestionsToggle = useRef<HTMLButtonElement | null>(null),
     focusComposer = useRef(false),
     readingPosition = useRef({ top: 0, count: 0, atBottom: true }),
+    visibleNow = useRef(visible),
+    reshow = useRef<ReturnType<typeof restoreScrollWhenShown> | null>(null),
     sendLock = useRef(false);
+  visibleNow.current = visible;
+  // The desktop hides this whole Lab (an iframe) with display: none. The log then has no box, the
+  // browser resets its scroll position, and nothing here re-renders when the Lab is shown again.
+  useEffect(() => {
+    const node = log.current;
+    if (!node) return;
+    reshow.current = restoreScrollWhenShown(node, () => {
+      if (!visibleNow.current) return null;
+      const position = readingPosition.current;
+      return position.atBottom ? { kind: 'bottom' } : { kind: 'offset', top: position.top };
+    });
+    return () => reshow.current?.dispose();
+  }, []);
   useEffect(() => () => controller.current?.abort(), []);
   useEffect(() => {
     onBusyChange?.(busy);
@@ -215,6 +311,7 @@ export function BriefingChat({
       });
       position.count = messages.length;
       position.top = node.scrollTop;
+      setNearLatest(isNearLatestMessage(node));
     }
     if (focusComposer.current) {
       composer.current?.focus();
@@ -228,10 +325,85 @@ export function BriefingChat({
     const timer = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
     return () => clearInterval(timer);
   }, [busy]);
+  /** `/new` and `/compact` are handled here: never sent to a model, queued or stored as a message. */
+  const runContextCommand = async (command: ChatSlashCommand) => {
+    // Both change the context that a running or waiting question was written for.
+    if (
+      sendLock.current ||
+      queue.state.active ||
+      queue.state.items.some((q) => q.state === 'queued')
+    ) {
+      setStatus(contextCommandRefusal(command));
+      return;
+    }
+    sendLock.current = true;
+    const c = new AbortController();
+    controller.current = c;
+    setShowSuggestions(false);
+    setDraft('');
+    try {
+      if (command === '/new') {
+        const result = await sourceRequest<{
+          started: boolean;
+          contextStartedAt: string;
+          setAside: number;
+        }>('/assistant/conversation/new', { routineId: routine.id }, c.signal);
+        if (c.signal.aborted) return;
+        if (result.started) {
+          setContextStartedAt(result.contextStartedAt);
+          setContextUsage(undefined);
+        }
+        setStatus(newContextStatus(result));
+        return;
+      }
+      setBusyKind('compact');
+      setBusy(true);
+      setStatus('대화 문맥을 정리하는 중…');
+      const reportActivity = beginAiActivity('assistant', c.signal);
+      try {
+        const result = await workspaceStream<{
+          compacted: boolean;
+          summarizedMessages: number;
+          contextUsage: ContextUsage;
+        }>(
+          '/assistant/conversation/compact',
+          { routineId: routine.id },
+          c.signal,
+          (detail) => {
+            if (!c.signal.aborted) setStatus(detail);
+          },
+          (usage) => {
+            if (!c.signal.aborted) setContextUsage(usage);
+          },
+        );
+        if (result && !c.signal.aborted) {
+          setContextUsage(result.contextUsage);
+          setStatus(compactStatus(result));
+          reportActivity('completed');
+        }
+      } finally {
+        reportActivity('failed');
+      }
+    } catch (e) {
+      if (!c.signal.aborted)
+        setStatus(
+          `${command} 실패 · ${e instanceof Error && e.message ? e.message : '원인을 확인하지 못했습니다.'}`,
+        );
+    } finally {
+      sendLock.current = false;
+      if (controller.current === c) {
+        controller.current = null;
+        setBusy(false);
+        setBusyKind('turn');
+      }
+    }
+  };
   const send = async (suggestion?: string, queued?: AssistantQueuedMessage) => {
     if (!queued && attachmentPickLock.current) return;
     const prompt = (queued?.prompt ?? suggestion ?? draft).trim();
-    if (!prompt || blocked || (!visible && !queued) || !restored || enqueueLock.current) return;
+    if (!prompt || (!visible && !queued) || !restored || enqueueLock.current) return;
+    const command = !queued && !suggestion ? parseChatSlashCommand(prompt) : null;
+    if (command) return runContextCommand(command);
     if (
       !queued &&
       (sendLock.current ||
@@ -274,6 +446,7 @@ export function BriefingChat({
       setAttachments([]);
     }
     setBusy(true);
+    const reportActivity = beginAiActivity('assistant', c.signal);
     setContextUsage(undefined);
     setStatus('GOSU LLM 연결 · 필요한 자료를 확인하는 중…');
     setMessages((m) => [...m, { role: 'user', text: prompt, createdAt: new Date().toISOString() }]);
@@ -312,10 +485,12 @@ export function BriefingChat({
               ? '답변 완료 · 제안은 아직 실행되지 않았습니다.'
               : '답변 완료'),
         );
+        reportActivity('completed');
       }
     } catch (e) {
       if (!c.signal.aborted) setStatus(e instanceof Error ? e.message : '답변 실패');
     } finally {
+      reportActivity('failed');
       sendLock.current = false;
       if (controller.current === c) {
         controller.current = null;
@@ -325,13 +500,15 @@ export function BriefingChat({
   };
   const queue = useAssistantQueue(
     routine.id,
-    restored && !blocked,
+    restored,
     busy,
     (item) => send(undefined, item),
     setStatus,
   );
+  const commandSuggestions = chatSlashSuggestions(draft);
+  const dividerIndex = contextDividerIndex(messages, contextStartedAt);
   const chooseFiles = async (dropped?: File[]) => {
-    if (attachmentPickLock.current || blocked) return;
+    if (attachmentPickLock.current) return;
     attachmentPickLock.current = true;
     setChoosingFiles(true);
     setStatus('첨부 파일을 준비하는 중…');
@@ -389,7 +566,7 @@ export function BriefingChat({
     }
   };
   const fileDrop = useChatFileDrop(
-    visible && !blocked && !choosingFiles && attachments.length < 5,
+    visible && !choosingFiles && attachments.length < 5,
     chooseFiles,
   );
   const proposeEvent = (proposal: AssistantAnswer['events'][number]) => {
@@ -504,7 +681,7 @@ export function BriefingChat({
                 type="button"
                 className="briefing-button"
                 key={p}
-                disabled={busy || blocked || !restored}
+                disabled={busy || !restored}
                 onClick={() => void send(p)}
               >
                 {p}
@@ -513,222 +690,299 @@ export function BriefingChat({
           </div>
         </section>
       )}
-      <div
-        className="briefing-chat-log"
-        ref={log}
-        tabIndex={0}
-        aria-label="브리핑 대화 기록"
-        onScroll={(e) => {
-          if (!visible || !e.currentTarget.clientHeight) return;
-          const node = e.currentTarget;
-          readingPosition.current = {
-            top: node.scrollTop,
-            count: messages.length,
-            atBottom: node.scrollHeight - node.scrollTop - node.clientHeight < 32,
-          };
-        }}
-      >
-        {!messages.length && !showSuggestions && (
-          <p className="briefing-chat-empty">아래 입력창에서 대화를 시작하세요.</p>
-        )}
-        {messages.map((m, i) => (
-          <article key={i} className={`briefing-chat-message ${m.role}`}>
-            <header>
-              <strong>{m.role === 'user' ? 'YOU' : 'GOSU'}</strong>
-              <span>{chatTime(m.createdAt)}</span>
-            </header>
-            <div className="briefing-chat-message-copy">
-              <BriefingMarkdown
-                text={m.text}
-                restrained={m.role === 'assistant'}
-                emphasizedTitles={
-                  m.role === 'assistant'
-                    ? (m.result?.sources
-                        .filter((s) => !s.kind || ['paper', 'email', 'news'].includes(s.kind))
-                        .map((s) => s.title) ?? [])
-                    : []
-                }
-              />
-            </div>
-            {!m.result && m.invocation && (
-              <footer className="briefing-chat-message-meta">
-                {m.invocation.providerId} · {m.invocation.model} ·{' '}
-                {m.invocation.reasoning || '기본 reasoning'}
-              </footer>
-            )}
-            {m.role === 'assistant' && m.result && !m.result.savedPapers?.length && (
-              <PaperSummarySaveOffer
-                question={
-                  messages
-                    .slice(0, i)
-                    .reverse()
-                    .find((v) => v.role === 'user')?.text ?? ''
-                }
-                answer={m.text}
-                references={m.result.sources.flatMap((s) =>
-                  s.kind === 'paper' && s.url ? [{ title: s.title, url: s.paperUrl ?? s.url }] : [],
-                )}
-                allowBareYes={
-                  !m.result.events.length && !m.result.tasks.length && !m.result.settingsProposal
-                }
-                onReplyReady={
-                  i === messages.length - 1
-                    ? (handler) => {
-                        paperReply.current = handler;
-                      }
-                    : undefined
-                }
-                onSave={(candidate) =>
-                  sourceRequest<PaperSummarySaveReceipt>(
-                    '/papers/shared/save',
-                    {
-                      candidate: {
-                        ...candidate,
-                        sourceUrls: [
-                          ...new Set(
-                            candidate.sourceUrls.map(
-                              (url) =>
-                                m.result!.sources.find((s) => s.kind === 'paper' && s.url === url)
-                                  ?.paperUrl ?? url,
-                            ),
-                          ),
-                        ],
-                      },
-                      confirmed: true,
-                    },
-                    new AbortController().signal,
-                  )
-                }
-              />
-            )}
-            {m.result?.settingsProposal && (
-              <div className="briefing-settings-offer">
-                <strong>설정 변경안 · 아직 저장되지 않음</strong>
-                <p>{settingsProposalText(m.result.settingsProposal)}</p>
-                <button
-                  type="button"
-                  disabled={
-                    !routine.live?.mail &&
-                    (m.result.settingsProposal.mailDays !== undefined ||
-                      m.result.settingsProposal.mailLimit !== undefined)
-                  }
-                  onClick={() => onSettings(m.result!.settingsProposal)}
-                >
-                  설정에서 검토하기
-                </button>
-              </div>
-            )}
-            {m.result && (
-              <>
-                <footer className="briefing-chat-message-meta">
-                  {m.result.invocation.providerId === 'claude-code' ? 'Claude Code' : 'Codex'} ·{' '}
-                  {m.result.invocation.model} · {m.result.invocation.reasoning || '기본 reasoning'}
-                </footer>
-                <div className="briefing-chat-sources">
-                  {m.result.sources.map((s) => (
-                    <span key={s.id}>
-                      {s.url?.startsWith('https://') ? (
-                        <a href={s.url} target="_blank" rel="noreferrer">
-                          <strong>{s.title}</strong> ↗
-                        </a>
-                      ) : (
-                        <strong>{s.title}</strong>
-                      )}
-                      {s.kind === 'email' && (
-                        <EmailDeliveryMeta
-                          account={s.mailAccount}
-                          receivedAt={s.receivedAt}
-                          timeZone={routine.schedule.timeZone}
-                        />
-                      )}
-                    </span>
-                  ))}
+      <div className="briefing-chat-log-region">
+        <div
+          className="briefing-chat-log"
+          ref={log}
+          tabIndex={0}
+          aria-label="브리핑 대화 기록"
+          onScroll={(e) => {
+            // While the position is being put back, scrollTop is a temporary value, not the reader's.
+            if (!visible || !e.currentTarget.clientHeight || reshow.current?.holding) return;
+            const node = e.currentTarget;
+            readingPosition.current = {
+              top: node.scrollTop,
+              count: messages.length,
+              atBottom: node.scrollHeight - node.scrollTop - node.clientHeight < 32,
+            };
+            setNearLatest(isNearLatestMessage(node));
+          }}
+        >
+          {!messages.length && !showSuggestions && (
+            <p className="briefing-chat-empty">아래 입력창에서 대화를 시작하세요.</p>
+          )}
+          {/* Where the restored conversation begins, instead of a standing notice above the input. */}
+          {otherScopeMessages > 0 && (
+            <p role="note" className="briefing-chat-restored-note">
+              이전 설정의 대화 {otherScopeMessages}개도 복원했습니다. 화면에만 표시하며, 현재
+              권한으로 AI에 자동 재전송하지 않습니다.
+            </p>
+          )}
+          {messages.map((m, i) => (
+            <Fragment key={i}>
+              {i > 0 && i === dividerIndex && <NewContextDivider />}
+              <article className={`briefing-chat-message ${m.role}`}>
+                <header>
+                  <strong>{m.role === 'user' ? 'YOU' : 'GOSU'}</strong>
+                  <span>{chatTime(m.createdAt)}</span>
+                </header>
+                <div className="briefing-chat-message-copy">
+                  <BriefingMarkdown
+                    webMedia={m.role === 'assistant'}
+                    text={m.text}
+                    restrained={m.role === 'assistant'}
+                    emphasizedTitles={
+                      m.role === 'assistant'
+                        ? (m.result?.sources
+                            .filter((s) => !s.kind || ['paper', 'email', 'news'].includes(s.kind))
+                            .map((s) => s.title) ?? [])
+                        : []
+                    }
+                  />
                 </div>
-                {m.result.events.map((p, index) => {
-                  const existing = hasExistingCalendarEvent(m.result!.sources, p);
-                  const eventTime = formatBriefingEventRange(
-                    p.start,
-                    p.end,
-                    p.timeZone || routine.schedule.timeZone,
-                    p.allDay,
-                  );
-                  return (
-                    <div className="briefing-action-review" key={index}>
-                      <strong>
-                        {existing ? '일정 확인 · ' : '일정 제안 · '}
-                        {p.title}
-                      </strong>
-                      <p>
-                        {existing ? (
-                          '이미 Calendar에 등록된 일정입니다.'
-                        ) : (
-                          <BriefingMarkdown inline text={p.reason} />
-                        )}
-                      </p>
-                      <small className="briefing-action-time">
-                        <strong>{eventTime}</strong>
-                      </small>
-                      {!existing && p.evidence && (
-                        <small className="briefing-action-evidence">
-                          근거 · {formatBriefingEvidence(p.evidence, routine.schedule.timeZone)}
-                        </small>
+                {!m.result && m.invocation && (
+                  <footer className="briefing-chat-message-meta">
+                    {m.invocation.providerId} · {m.invocation.model} ·{' '}
+                    {m.invocation.reasoning || '기본 reasoning'}
+                  </footer>
+                )}
+                {m.role === 'assistant' &&
+                  m.result &&
+                  !m.result.savedPapers?.length &&
+                  // No offer for an answer that only read papers already in the library, unless the
+                  // answer itself asks ("이 설명도 … 추가할까요?"): a question gets its two buttons.
+                  (asksPaperLibraryQuestion(m.text) ||
+                    !answersFromSavedPapers(m.result.sources)) && (
+                    <PaperSummarySaveOffer
+                      asked={asksPaperLibraryQuestion(m.text)}
+                      question={
+                        messages
+                          .slice(0, i)
+                          .reverse()
+                          .find((v) => v.role === 'user')?.text ?? ''
+                      }
+                      answer={m.text}
+                      references={m.result.sources.flatMap((s) =>
+                        // A saved paper is offered again only when the answer asked about it.
+                        s.kind === 'paper' &&
+                        s.url &&
+                        (!s.saved || asksPaperLibraryQuestion(m.text))
+                          ? [{ title: s.title, url: s.paperUrl ?? s.url }]
+                          : [],
                       )}
-                      {existing ? (
-                        <small className="briefing-action-confirmed">Calendar에 이미 저장됨</small>
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            className="briefing-button"
-                            disabled={!p.start || !p.end}
-                            onClick={() => proposeEvent(p)}
-                          >
-                            검토 후 Calendar에 추가
-                          </button>
-                          {(!p.start || !p.end) && (
-                            <small>날짜와 시간을 대화로 확정한 후 추가하세요.</small>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  );
-                })}
-                {m.result.tasks.map((t, index) => (
-                  <div className="briefing-action-review" key={index}>
-                    <strong>할 일 초안 · {t.title}</strong>
-                    <BriefingMarkdown text={t.description} />
-                    <small>
-                      {t.deadline ? `마감 ${t.deadline}` : '마감 미정'} · {t.target} · GOSU에 아직
-                      생성되지 않음
-                    </small>
-                    <button type="button" className="briefing-button" onClick={() => exportTask(t)}>
-                      연동용 초안 JSON 저장
+                      allowBareYes={
+                        !m.result.events.length &&
+                        !m.result.tasks.length &&
+                        !m.result.settingsProposal
+                      }
+                      onReplyReady={
+                        i === messages.length - 1
+                          ? (handler) => {
+                              paperReply.current = handler;
+                            }
+                          : undefined
+                      }
+                      onSave={(candidate) =>
+                        sourceRequest<PaperSummarySaveReceipt>(
+                          '/papers/shared/save',
+                          {
+                            candidate: {
+                              ...candidate,
+                              sourceUrls: [
+                                ...new Set(
+                                  candidate.sourceUrls.map(
+                                    (url) =>
+                                      m.result!.sources.find(
+                                        (s) => s.kind === 'paper' && s.url === url,
+                                      )?.paperUrl ?? url,
+                                  ),
+                                ),
+                              ],
+                            },
+                            confirmed: true,
+                          },
+                          new AbortController().signal,
+                        )
+                      }
+                    />
+                  )}
+                {m.result?.settingsProposal && (
+                  <div className="briefing-settings-offer">
+                    <strong>설정 변경안 · 아직 저장되지 않음</strong>
+                    <p>{settingsProposalText(m.result.settingsProposal)}</p>
+                    <button
+                      type="button"
+                      disabled={
+                        !routine.live?.mail &&
+                        (m.result.settingsProposal.mailDays !== undefined ||
+                          m.result.settingsProposal.mailLimit !== undefined)
+                      }
+                      onClick={() => onSettings(m.result!.settingsProposal)}
+                    >
+                      설정에서 검토하기
                     </button>
                   </div>
-                ))}
-              </>
-            )}
-          </article>
-        ))}
-        {busy && (
-          <article className="briefing-chat-message assistant thinking" role="status">
-            <header>
-              <strong>GOSU</strong>
-              <span>turn active</span>
-            </header>
-            <div className="briefing-chat-thinking">
-              <i />
-              <i />
-              <i />
-              <span>{status || '프로젝트 컨텍스트를 검토하고 있습니다.'}</span>
-            </div>
-          </article>
+                )}
+                {m.result && (
+                  <>
+                    <footer className="briefing-chat-message-meta">
+                      {m.result.invocation.providerId === 'claude-code' ? 'Claude Code' : 'Codex'} ·{' '}
+                      {m.result.invocation.model} ·{' '}
+                      {m.result.invocation.reasoning || '기본 reasoning'}
+                    </footer>
+                    <div className="briefing-chat-sources">
+                      {m.result.sources.map((s) => (
+                        <span key={s.id}>
+                          {s.url?.startsWith('https://') ? (
+                            <a href={s.url} target="_blank" rel="noreferrer">
+                              <strong>{s.title}</strong> ↗
+                            </a>
+                          ) : (
+                            <strong>{s.title}</strong>
+                          )}
+                          {s.kind === 'email' && (
+                            <EmailDeliveryMeta
+                              sender={s.mailSender}
+                              account={s.mailAccount}
+                              receivedAt={s.receivedAt}
+                              timeZone={routine.schedule.timeZone}
+                            />
+                          )}
+                        </span>
+                      ))}
+                    </div>
+                    {m.result.events.map((p, index) => {
+                      const existing = hasExistingCalendarEvent(m.result!.sources, p);
+                      const eventTime = formatBriefingEventRange(
+                        p.start,
+                        p.end,
+                        p.timeZone || routine.schedule.timeZone,
+                        p.allDay,
+                      );
+                      return (
+                        <div className="briefing-action-review" key={index}>
+                          <strong>
+                            {existing ? '일정 확인 · ' : '일정 제안 · '}
+                            {p.title}
+                          </strong>
+                          <p>
+                            {existing ? (
+                              '이미 Calendar에 등록된 일정입니다.'
+                            ) : (
+                              <BriefingMarkdown inline text={p.reason} />
+                            )}
+                          </p>
+                          <small className="briefing-action-time">
+                            <strong>{eventTime}</strong>
+                          </small>
+                          {!existing && p.evidence && (
+                            <small className="briefing-action-evidence">
+                              근거 · {formatBriefingEvidence(p.evidence, routine.schedule.timeZone)}
+                            </small>
+                          )}
+                          {existing ? (
+                            <small className="briefing-action-confirmed">
+                              Calendar에 이미 저장됨
+                            </small>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                className="briefing-button"
+                                disabled={!p.start || !p.end}
+                                onClick={() => proposeEvent(p)}
+                              >
+                                검토 후 Calendar에 추가
+                              </button>
+                              {(!p.start || !p.end) && (
+                                <small>날짜와 시간을 대화로 확정한 후 추가하세요.</small>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {m.result.tasks.map((t, index) => (
+                      <div className="briefing-action-review" key={index}>
+                        <strong>할 일 초안 · {t.title}</strong>
+                        <BriefingMarkdown text={t.description} />
+                        <small>
+                          {t.deadline ? `마감 ${t.deadline}` : '마감 미정'} · {t.target} · GOSU에
+                          아직 생성되지 않음
+                        </small>
+                        <BriefingTodoButton
+                          routineId={routine.id}
+                          title={t.title}
+                          text={t.description}
+                          sourceKey={`assistant-proposal:${m.createdAt}:${index}`}
+                          preparedTask={chatTaskDraft(t, routine.schedule.timeZone)}
+                        />
+                        <button
+                          type="button"
+                          className="briefing-button"
+                          onClick={() => exportTask(t)}
+                        >
+                          연동용 초안 JSON 저장
+                        </button>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </article>
+            </Fragment>
+          ))}
+          {messages.length > 0 && dividerIndex === messages.length && <NewContextDivider />}
+          {busy && (
+            <article className="briefing-chat-message assistant thinking" role="status">
+              <header>
+                <strong>GOSU</strong>
+                <span>
+                  {busyKind === 'compact' ? '문맥 정리 중' : 'turn active'} · {elapsed}초
+                </span>
+              </header>
+              <div className="briefing-chat-thinking">
+                <i />
+                <i />
+                <i />
+                <span>{status || '프로젝트 컨텍스트를 검토하고 있습니다.'}</span>
+              </div>
+            </article>
+          )}
+        </div>
+        {/* The same control as Project Chat: shown only while the newest message is out of view. */}
+        {!nearLatest && (
+          <button
+            type="button"
+            className="briefing-chat-jump"
+            aria-label="최신 메시지로 이동"
+            title="최신으로 이동"
+            onClick={() => {
+              const node = log.current;
+              if (!node) return;
+              node.scrollTo?.({ top: node.scrollHeight, behavior: 'smooth' });
+              readingPosition.current = {
+                top: node.scrollHeight,
+                count: messages.length,
+                atBottom: true,
+              };
+              setNearLatest(true);
+            }}
+          >
+            <span aria-hidden="true">↓</span>
+            최신
+          </button>
         )}
       </div>
-      <p role="status" className="briefing-chat-status">
-        {status}
-        {busy ? ` · ${elapsed}초` : ''}
-      </p>
+      {/* While a turn runs its progress and time are in the "turn active" message above. */}
+      {!busy && status && (
+        <p
+          role="status"
+          className="briefing-chat-status"
+          data-quiet={status === '답변 완료' ? 'true' : undefined}
+        >
+          {status}
+        </p>
+      )}
       <form
         className="briefing-chat-composer"
         onSubmit={(e) => {
@@ -736,14 +990,7 @@ export function BriefingChat({
           void send();
         }}
       >
-        <ContextUsageMeter usage={contextUsage} busy={busy} />
         <AssistantQueue state={queue.state} action={queue.action} />
-        {otherScopeMessages > 0 && (
-          <small role="status">
-            이전 설정의 대화 {otherScopeMessages}개도 복원했습니다. 화면에만 표시하며, 현재 권한으로
-            AI에 자동 재전송하지 않습니다.
-          </small>
-        )}
         {restoreError && (
           <div role="alert">
             {restoreError}{' '}
@@ -789,6 +1036,25 @@ export function BriefingChat({
               </button>
             </div>
           )}
+          {commandSuggestions.length > 0 && (
+            <div className="briefing-chat-commands" role="listbox" aria-label="대화 명령">
+              {commandSuggestions.map((command) => (
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={draft.trim().toLowerCase() === command}
+                  key={command}
+                  onClick={() => {
+                    setDraft(command);
+                    composer.current?.focus();
+                  }}
+                >
+                  <code>{command}</code>
+                  <span>{CHAT_COMMAND_DETAILS[command]}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <textarea
             ref={composer}
             aria-label="Briefing 메시지"
@@ -803,103 +1069,115 @@ export function BriefingChat({
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
-                void send();
+                // "/c" + Enter completes the command instead of sending "/c" to the model.
+                const completion = commandSuggestions[0];
+                if (completion && !parseChatSlashCommand(draft)) setDraft(completion);
+                else void send();
               }
             }}
           />
-          <div className="briefing-chat-input-shortcuts">
-            <button
-              type="button"
-              className="briefing-chat-shortcut"
-              aria-label="파일 첨부"
-              title="문서·이미지 첨부 · 최대 5개/50MB · 현재 질문에만 사용"
-              disabled={!queue.state.canAttach || choosingFiles || attachments.length >= 5}
-              onClick={() => void chooseFiles()}
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.7"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
+          <div className="briefing-chat-input-toolbar">
+            <div className="briefing-chat-input-shortcuts">
+              <button
+                type="button"
+                className="briefing-chat-shortcut"
+                aria-label="파일 첨부"
+                title="문서·이미지 첨부 · 최대 5개/50MB · 현재 질문에만 사용"
+                disabled={!queue.state.canAttach || choosingFiles || attachments.length >= 5}
+                onClick={() => void chooseFiles()}
               >
-                <path
-                  d="m8 12 7-7a3 3 0 0 1 4 4L9 19a5 5 0 0 1-7-7L13 1M5 15l9-9"
-                  transform="translate(2 2) scale(.85)"
-                />
-              </svg>
-            </button>
-            <button
-              type="button"
-              className="briefing-chat-shortcut"
-              aria-label="추천 질문"
-              ref={suggestionsToggle}
-              aria-expanded={showSuggestions}
-              title={showSuggestions ? '추천 질문 숨기기' : '추천 질문 보기'}
-              onClick={() => {
-                focusComposer.current = showSuggestions;
-                setShowSuggestions((open) => !open);
-              }}
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.7"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="m8 12 7-7a3 3 0 0 1 4 4L9 19a5 5 0 0 1-7-7L13 1M5 15l9-9"
+                    transform="translate(2 2) scale(.85)"
+                  />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="briefing-chat-shortcut"
+                aria-label="추천 질문"
+                ref={suggestionsToggle}
+                aria-expanded={showSuggestions}
+                title={showSuggestions ? '추천 질문 숨기기' : '추천 질문 보기'}
+                onClick={() => {
+                  focusComposer.current = showSuggestions;
+                  setShowSuggestions((open) => !open);
+                }}
               >
-                <path d="M9 18h6m-5 3h4M8.5 14.5a6 6 0 1 1 7 0c-1 .7-1.5 1.5-1.5 3.5h-4c0-2-.5-2.8-1.5-3.5Z" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              className="briefing-chat-shortcut"
-              aria-label="권한 설정"
-              title="메일·일정 접근 권한 설정"
-              onClick={() => onSettings()}
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.7"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M9 18h6m-5 3h4M8.5 14.5a6 6 0 1 1 7 0c-1 .7-1.5 1.5-1.5 3.5h-4c0-2-.5-2.8-1.5-3.5Z" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="briefing-chat-shortcut"
+                aria-label="권한 설정"
+                title="메일·일정 접근 권한 설정"
+                onClick={() => onSettings()}
               >
-                <path d="M3 6h3m4 0h11M3 12h11m4 0h3M3 18h5m4 0h9" />
-                <circle cx="8" cy="6" r="2" />
-                <circle cx="16" cy="12" r="2" />
-                <circle cx="10" cy="18" r="2" />
-              </svg>
-            </button>
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 6h3m4 0h11M3 12h11m4 0h3M3 18h5m4 0h9" />
+                  <circle cx="8" cy="6" r="2" />
+                  <circle cx="16" cy="12" r="2" />
+                  <circle cx="10" cy="18" r="2" />
+                </svg>
+              </button>
+            </div>
+            <div className="briefing-chat-composer-actions">
+              <div className="briefing-chat-composer-meta">
+                <ContextUsageMeter usage={contextUsage} busy={busy} />
+                <small id={approvalNoteId} className="briefing-chat-approval-note">
+                  일정은 승인 후 실행 · 할 일은 연동용 초안
+                </small>
+              </div>
+              {busy ? (
+                <button
+                  type="button"
+                  className="briefing-button"
+                  onClick={() => {
+                    controller.current?.abort();
+                    setStatus('요청을 중단했습니다.');
+                  }}
+                >
+                  중단
+                </button>
+              ) : null}
+              <button
+                type="submit"
+                className="briefing-primary"
+                disabled={!draft.trim() || !restored || choosingFiles}
+                title="일정은 승인 후 실행 · 할 일은 연동용 초안"
+                aria-describedby={approvalNoteId}
+              >
+                {busy || queue.state.active ? '대기열에 추가 ↑' : '보내기 ↑'}
+              </button>
+            </div>
           </div>
-        </div>
-        <div>
-          <small>일정은 승인 후 실행 · 할 일은 연동용 초안</small>
-          {busy ? (
-            <button
-              type="button"
-              className="briefing-button"
-              onClick={() => {
-                controller.current?.abort();
-                setStatus('요청을 중단했습니다.');
-              }}
-            >
-              중단
-            </button>
-          ) : null}
-          <button
-            type="submit"
-            className="briefing-primary"
-            disabled={!draft.trim() || blocked || !restored || choosingFiles}
-          >
-            {busy || queue.state.active ? '대기열에 추가 ↑' : '보내기 ↑'}
-          </button>
         </div>
       </form>
       {event && (

@@ -1,5 +1,15 @@
 # Briefing intelligence implementation notes
 
+## Interest selection toggle (0.58.82)
+
+Live/history email and paper thumbs send explicit null when the selected choice is clicked again.
+The server removes only that routine/source vote and updates the preference profile revision; stored
+summaries, source content and unrelated feedback remain unchanged. Null is an idempotent clear,
+not a server-side blind toggle. Subsequent selection works normally. Pending requests are locked;
+failure retains the last saved selection. A local null override wins over an older in-flight choices
+read. Backend choices omit cleared entries and encrypted restart preserves neutrality. Existing source
+and ownership guards remain. See [release 0.58.82](releases/0.58.82.md) for installation/test results.
+
 Implemented 2026-09-09 in standalone Briefing Lab (port 4318): optional native-LLM summaries,
 reviewable encrypted Briefing memory, Scholar alert candidates, paper evidence/figures and compact
 weather UI. Final package gates are recorded below; live/source tests must not be confused with
@@ -45,6 +55,15 @@ force a research-interest explanation.
    **메일·Scholar 알림 내용을 선택한 LLM에 전달하는 분석 허용** and native confirmation.
 
 ## Inference and evidence contracts
+
+2026-09-14: recurring collection now searches Scholar alerts independently of the incremental
+email summary list. The saved account/mailbox/date/filter/body-preview scope and existing grant
+remain mandatory. A bounded native `scholar` predicate is applied before the result limit, with
+no email-summary exclusion checkpoint; extracted papers still pass the existing paper deduplication
+and private-AI permission checks. Ordinary email failure does not discard successful alert evidence.
+Both reads are checked again before delivery/persistence. No original mail is changed. The older
+single-read Scholar description below is superseded. Crossref candidates are now ranked by relevance
+within the saved publication-date filter before the local keyword/author/exclusion checks.
 
 - [Analysis](../apps/briefing-lab/briefing-analysis.ts) uses the same native Codex/Claude adapters,
   subscription identity, catalog and saved response language as the routine builder. It does not
@@ -188,6 +207,15 @@ version-bound snapshot. The paper-first path above supersedes its eager HTML/ima
   silently substitute another paper version, collect unrelated weather/calendar sources, or feed
   the old AI answer into generation. A missing/rate-limited source leaves the previous summary
   intact and reports the failure; successful refresh stays in the original history run.
+- 0.58.83: private refresh checks saved read/AI switches separately from approval validity.
+  Previously a disabled mail-read switch was misreported as missing private-provider approval;
+  settings now warn when private AI is enabled but mail read is disabled.
+  An owned profile with enabled permissions but an invalid approval offers native consent for
+  the exact saved profile and continues after an atomic, expected-profile save. It never enables
+  disabled switches, adopts foreign ownership or widens the source scope. Valid grants are reused
+  without renewal. Both live-receipt and history refresh paths use this gate; decline, cancellation
+  and concurrent settings edits stop before source/model work and preserve history. This repairs
+  the dead-end approval recovery path, not Apple Mail delivery/body-read failures.
 - Verification: focused cache/refresh/service/UI regressions **38/38**. Final package and named
   runtime gate receipts are recorded in the matching workspace follow-up. All source/provider
   inputs in this change's QA are synthetic; no personal mailbox, calendar or paid native inference
@@ -279,6 +307,21 @@ version-bound snapshot. The paper-first path above supersedes its eager HTML/ima
   read-only Mail permission. No sending/deletion/read-status change/attachments are implemented.
 
 ## Weather chart contract
+
+2026-09-14 follow-up: precipitation now uses a fixed 0–100% axis with only 0/50/100%
+axis ticks. Hourly numeric labels and the visible all-zero caption are removed. The shared
+210px chart uses a proportional 64px probability band, independent of forecast values;
+zero baseline markers and missing values remain distinct. Exact hourly values remain available
+on hover, focus, or selection. The earlier compact-zero design below is superseded.
+
+2026-09-14 [0.58.57](releases/0.58.57.md) supersedes the repeated-hourly-zero layout below. All-zero
+windows show a single 예보 구간 강수확률 0% label and retain hourly baseline markers/tooltips.
+The probability band is 32px instead of 92px, with a 158px chart instead of 218px. A 300px minimum
+width lets narrow dry cards fit without the previous forced 670px scroller. Missing-only forecasts
+use one 미제공 label, never a false zero. Mixed forecasts combine adjacent zero/missing runs without
+merging across known rain or a missing-data gap; positive labels and their existing 52px proportional
+scale/3px minimum remain. ResizeObserver rebinds on required-width changes, not just hour count.
+No forecast values, weather permissions, API requests, saved History or AI summaries are changed.
 
 The 2026-09-13 chart update is included in installed [0.58.30](releases/0.58.30.md).
 The installation-pending sentence in the development record below is historical.

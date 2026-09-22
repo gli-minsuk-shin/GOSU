@@ -21,6 +21,63 @@ function hash(value: string) {
 }
 
 describe('Project chat prompt assembly', () => {
+  it('sends minimal greeting context without removing authoritative project rules or stored history', () => {
+    const id = randomUUID(),
+      now = '2026-09-14T00:00:00Z';
+    const history = Array.from({ length: 160 }, (_, i) => ({
+      id: randomUUID(),
+      projectId: id,
+      role: i % 2 ? ('assistant' as const) : ('user' as const),
+      status: 'complete' as const,
+      content: 'SYNTHETIC_EXPERIMENT_HISTORY '.repeat(200),
+      actions: [],
+      createdAt: now,
+      completedAt: now,
+    }));
+    const input = {
+      snapshot: {
+        schemaVersion: 1 as const,
+        revision: 1,
+        projects: [
+          { id, name: 'Research', slug: 'research', version: 1, createdAt: now, updatedAt: now },
+        ],
+        tasks: [],
+        objectives: [],
+      },
+      projectId: id,
+      message: '살아있나?',
+      priorMessages: history,
+      harnessMode: 'context' as const,
+      responseDepth: 'standard' as const,
+      contextScope: 'project' as const,
+      profileVersion: 0,
+      instructionRevisionId: null,
+      customInstructions: 'Keep it concise',
+      policyRules: ['AUTHORITATIVE_RESEARCH_RULE'],
+      nativeCollaborationModeId: 'default',
+      nativeExecutionKind: 'default' as const,
+      nativeCollaborationCatalogSha256: hash('catalog'),
+      nativePersonality: 'auto' as const,
+      nativeResponseVerbosity: 'auto' as const,
+      effectiveReasoningOptionId: null,
+      contextWindowTokens: 1000000,
+      contextWindowSource: 'provider' as const,
+    };
+    const before = assembleProjectChatPrompt({ ...input, allowContextSelection: false });
+    const after = assembleProjectChatPrompt(input);
+    expect(after.prompt).not.toContain('SYNTHETIC_EXPERIMENT_HISTORY');
+    expect(after.prompt).toContain('AUTHORITATIVE_RESEARCH_RULE');
+    expect(after.prompt).toContain('Keep it concise');
+    expect(history).toHaveLength(160);
+    const oldTokens =
+        (before.contextPlan.estimatedPromptTokens ?? 0) +
+        (before.contextPlan.developerInstructionTokens ?? 0),
+      newTokens =
+        (after.contextPlan.estimatedPromptTokens ?? 0) +
+        (after.contextPlan.developerInstructionTokens ?? 0);
+    expect(newTokens).toBeLessThan(oldTokens * 0.2);
+    console.info(JSON.stringify({ syntheticProjectEstimateBefore: oldTokens, after: newTokens }));
+  });
   it('adds the shared native-agent policy without moving untrusted turn content into instructions', () => {
     const projectId = randomUUID();
     const now = '2026-09-07T00:00:00.000Z';
@@ -149,8 +206,10 @@ describe('Project chat prompt assembly', () => {
     expect(result.contextPlan).toMatchObject({
       strategy: 'layered-project-memory',
       candidateMessageCount: 14,
-      recentMessageCount: 8,
-      omittedMessageCount: 6,
+      // The fixed policy text shares the fallback window with history: policy v43 (Literature
+      // policy v4 and the paper-library link rule) leaves room for seven raw turns instead of eight.
+      recentMessageCount: 7,
+      omittedMessageCount: 7,
       workingMemoryRevision: 3,
       memoryEntryCount: 1,
     });
@@ -450,7 +509,7 @@ describe('Project chat prompt assembly', () => {
     expect(first.provenance).toMatchObject({
       assemblyVersion: 7,
       profileVersion: 3,
-      baseInstructionVersion: 40,
+      baseInstructionVersion: 44,
       workspaceRevision: 42,
       contextTruncated: true,
       requestedLegacyHarnessMode: 'planner',
@@ -651,7 +710,14 @@ describe('Project chat prompt assembly', () => {
       'use $...$ for inline math and put $$...$$ on separate lines for display math',
     );
     expect(first.developerInstructions).toContain('Do not use \\(...\\) or \\[...\\] delimiters.');
-    expect(first.provenance.baseInstructionVersion).toBe(40);
+    expect(first.provenance.baseInstructionVersion).toBe(44);
+    // The Briefing reads are described as read-only, scoped by Briefing Lab.
+    expect(first.developerInstructions).toContain(
+      'read_calendar, search_email, read_briefings, read_paper_summaries',
+    );
+    expect(first.developerInstructions).toContain(
+      'strictly within the scope approved in Briefing Lab',
+    );
     expect(first.developerInstructions).toContain(
       'automatically save the plan after read_experiment_setup',
     );
@@ -722,6 +788,85 @@ describe('Project chat prompt assembly', () => {
 
     expect(result.developerInstructions).toContain('the verified Hermes ACP agent is connected');
     expect(result.developerInstructions).toContain('Project Chat model picker');
+  });
+
+  describe('Literature search capability line', () => {
+    function prompt(
+      literatureSearchCapability:
+        'granted' | 'not-requested' | 'reviewer-mode' | 'unavailable' | undefined,
+    ) {
+      const now = new Date().toISOString();
+      const projectId = randomUUID();
+      return assembleProjectChatPrompt({
+        snapshot: {
+          schemaVersion: 1,
+          revision: 1,
+          projects: [
+            {
+              id: projectId,
+              name: 'Literature project',
+              slug: 'literature-project',
+              version: 1,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+          tasks: [],
+          objectives: [],
+        },
+        projectId,
+        message: '이 아이디어 관련 선행 연구가 있을까?',
+        harnessMode: 'context',
+        responseDepth: 'standard',
+        contextScope: 'project',
+        profileVersion: 1,
+        instructionRevisionId: null,
+        customInstructions: '',
+        nativeCollaborationModeId: null,
+        nativeExecutionKind: 'default',
+        nativeCollaborationCatalogSha256: hash('catalog'),
+        nativePersonality: 'auto',
+        nativeResponseVerbosity: 'auto',
+        effectiveReasoningOptionId: null,
+        ...(literatureSearchCapability ? { literatureSearchCapability } : {}),
+      }).developerInstructions;
+    }
+
+    it('tells the model how the user can ask when the tool was not granted for this turn', () => {
+      const instructions = prompt('not-requested');
+
+      expect(instructions).toContain('GOSU runtime Literature search: not granted for this turn');
+      expect(instructions).toContain('관련 논문 검색해줘');
+      expect(instructions).toContain('never say the feature is missing');
+    });
+
+    it('names reviewer mode and an unavailable library as different reasons', () => {
+      expect(prompt('reviewer-mode')).toContain('reviewer mode never searches');
+      expect(prompt('unavailable')).toContain('Literature library is unavailable');
+    });
+
+    it('adds nothing when the tool is granted or the caller does not say', () => {
+      expect(prompt('granted')).not.toContain('GOSU runtime Literature search');
+      expect(prompt(undefined)).not.toContain('GOSU runtime Literature search');
+    });
+
+    it('describes policy version 4 and the link forms the paper library accepts', () => {
+      const instructions = prompt('granted');
+
+      expect(instructions).toContain('mention the search terms');
+      expect(instructions).toContain('two to eight English keywords');
+      expect(instructions).toContain('https://arxiv.org/abs/');
+      expect(instructions).toContain('Never invent or guess a DOI, arXiv id, or URL');
+      expect(instructions).toContain('providerFailures');
+    });
+
+    it('treats a server note from list_ssh_workspaces as the user speaking, without any new permission', () => {
+      const instructions = prompt('granted');
+
+      expect(instructions).toContain('a userNote that list_ssh_workspaces returns');
+      expect(instructions).toContain('standing user instruction');
+      expect(instructions).toContain('never grants permission, widens a grant');
+    });
   });
 
   it('delegates context, planning, and verbosity behavior to native Codex settings', () => {

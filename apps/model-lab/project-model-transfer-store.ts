@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   initialModelPseudocodeRevision,
+  parseModelPseudocode,
   serializeModelPseudocodeWorkspace,
   MODEL_PSEUDOCODE_WORKSPACE_STORAGE_KEY,
   type ModelPseudocodeRevision,
@@ -224,6 +225,91 @@ export class ProjectModelTransferStore {
       await this.write(targetProjectId, [...copies, copy]);
       return copy;
     });
+  }
+  /**
+   * A model a chat wrote (GOSU Model Pseudocode) for this project. It goes through the same inbox as
+   * a copy from another project, because an open Model Lab rewrites its whole workspace from memory
+   * and would lose a direct write. The Model Lab view adopts it and acknowledges.
+   */
+  async addFromChat(
+    projectId: string,
+    input: { requestId: string; pseudocode: string; origin: 'project-chat' | 'ai-assistant' },
+  ): Promise<ProjectModelCopy> {
+    if (!uuid.test(input.requestId)) throw new Error('model_lab_request_invalid');
+    if (typeof input.pseudocode !== 'string' || !input.pseudocode.trim())
+      throw new Error('model_lab_pseudocode_invalid: empty pseudocode');
+    const project = await this.options.resolveProject(projectId).catch(() => null);
+    if (!project || project.id !== projectId) throw new Error('model_lab_project_unavailable');
+    const parsed = parseModelPseudocode(input.pseudocode);
+    if (!parsed.ok) throw new Error(`model_lab_pseudocode_invalid: ${parsed.reason}`);
+    if (parsed.model.modules.some((module) => module.subgraph))
+      throw new Error(
+        'model_lab_pseudocode_invalid: a model added from chat cannot reference nested models (subgraph)',
+      );
+    const digest = createHash('sha256').update(parsed.normalized).digest('hex');
+    return this.locked(projectId, async () => {
+      const copies = await this.read(projectId);
+      const existing = copies.find((copy) => copy.id === input.requestId);
+      if (existing) {
+        if (existing.sourceModelId !== `chat:${digest.slice(0, 32)}`)
+          throw new Error('model_lab_request_conflict');
+        return existing;
+      }
+      if (copies.length >= 1000 || copies.filter((copy) => copy.status === 'pending').length >= 64)
+        throw new Error('Model copy inbox is full');
+      const target = projectModelLabInitialWorkspace(
+        (await this.options.readStorage(projectId))[MODEL_PSEUDOCODE_WORKSPACE_STORAGE_KEY] ?? null,
+      );
+      const taken = new Set([
+        ...Object.keys(target.histories),
+        ...copies.flatMap((copy) => copy.modelIds),
+      ]);
+      const wanted = parsed.model.id;
+      const id = taken.has(wanted)
+        ? `${wanted.slice(0, 96)}-chat-${createHash('sha256').update(`${projectId}:${input.requestId}`).digest('hex').slice(0, 8)}`
+        : wanted;
+      const createdAt = new Date().toISOString();
+      const from = input.origin === 'project-chat' ? 'project chat' : 'AI assistant';
+      const model = {
+        ...parsed.model,
+        id,
+        sourceLabel: `Added from ${from} · ${parsed.model.sourceLabel}`.slice(0, 240),
+      };
+      const entry: ModelPseudocodeRevision = {
+        ...initialModelPseudocodeRevision(model, createdAt),
+        label: `Added from ${from}`,
+      };
+      const candidateHistories = { ...target.histories };
+      for (const copy of copies)
+        for (const pending of copy.entries ?? []) candidateHistories[pending.model.id] = [pending];
+      candidateHistories[id] = [entry];
+      if (Object.keys(candidateHistories).length > 64)
+        throw new Error('Destination has reached the 64-model workspace limit');
+      serializeModelPseudocodeWorkspace({ ...target, histories: candidateHistories });
+      const copy: ProjectModelCopy = {
+        id: input.requestId,
+        sourceProjectId: projectId,
+        sourceProjectName: input.origin === 'project-chat' ? 'Project chat' : 'AI 비서',
+        // Identifies the chat model, so a replayed request can be told from a conflicting one.
+        sourceModelId: `chat:${digest.slice(0, 32)}`,
+        sourceRevision: 0,
+        targetProjectId: projectId,
+        rootModelId: id,
+        modelName: model.name,
+        modelIds: [id],
+        createdAt,
+        status: 'pending',
+        entries: [entry],
+      };
+      if (Buffer.byteLength(JSON.stringify([...copies, copy])) > MAX_COPY_BYTES)
+        throw new Error('Model copy inbox is full');
+      await this.write(projectId, [...copies, copy]);
+      return copy;
+    });
+  }
+  async status(projectId: string, id: string) {
+    await this.tails.get(projectId)?.catch(() => undefined);
+    return (await this.read(projectId)).find((copy) => copy.id === id)?.status ?? null;
   }
   async acknowledge(projectId: string, id: string) {
     if (!uuid.test(id)) throw new Error('Invalid model copy ID');

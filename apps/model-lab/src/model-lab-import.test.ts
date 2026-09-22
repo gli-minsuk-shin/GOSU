@@ -63,6 +63,105 @@ const validImport = {
   ],
 };
 
+it.each([false, true])(
+  'canonicalizes only an exact duplicated loop-carried edge (mismatched binding=%s)',
+  (mismatch) => {
+    const shape = ['B', 4];
+    const model = {
+      ...validImport,
+      modules: [
+        {
+          ...validImport.modules[0]!,
+          inputPorts: [{ name: 'x', shape, binding: 'external' }],
+          outputPorts: [{ name: 'h', shape, binding: 'internal' }],
+        },
+        {
+          ...validImport.modules[0]!,
+          id: 'core',
+          name: 'Repeated Core',
+          kind: 'merge',
+          repeat: { count: 2, label: 'Repeat' },
+          inputPorts: [
+            { name: 'h', shape, binding: 'internal' },
+            { name: 'previous', shape, binding: 'loop-carried', bindingId: 'state' },
+          ],
+          outputPorts: [
+            { name: 'h', shape, binding: 'internal' },
+            {
+              name: 'carry',
+              shape,
+              binding: 'loop-carried',
+              bindingId: mismatch ? 'wrong' : 'state',
+            },
+          ],
+        },
+        {
+          ...validImport.modules[1]!,
+          inputPorts: [{ name: 'h', shape, binding: 'internal' }],
+          outputPorts: [{ name: 'z', shape: ['B', 2], binding: 'external' }],
+        },
+      ],
+      connections: [
+        {
+          ...validImport.connections[0]!,
+          id: 'input-core',
+          target: 'core',
+          sourcePort: 'h',
+          targetPort: 'h',
+        },
+        {
+          ...validImport.connections[0]!,
+          id: 'core-output',
+          source: 'core',
+          sourcePort: 'h',
+          targetPort: 'h',
+        },
+        {
+          ...validImport.connections[0]!,
+          id: 'feedback',
+          source: 'core',
+          target: 'core',
+          sourcePort: 'carry',
+          targetPort: 'previous',
+        },
+      ],
+    };
+    const result = parseModelImportJson(JSON.stringify(model), {
+      enforceSourceOutputContracts: true,
+    });
+    expect(result.ok).toBe(!mismatch);
+    if (result.ok) {
+      expect(result.model.connections).toHaveLength(2);
+      expect(result.model.modules[1]!.inputPorts?.[1]?.bindingId).toBe('state');
+      expect(result.model.modules[1]!.outputPorts?.[1]?.bindingId).toBe('state');
+    }
+  },
+);
+it('reports presentation and structural problems together for one repair', () => {
+  const result = parseModelImportJson(JSON.stringify({ ...validImport, name: '한글 이름' }), {
+    enforceSourceOutputContracts: true,
+    enforceReadableNames: true,
+  });
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.reason).toContain('English');
+    expect(result.reason).toContain('inputPorts');
+  }
+});
+
+it('keeps legacy non-English names readable but rejects them for new generated graphs', () => {
+  const json = JSON.stringify({ ...validImport, name: '모델 이름' });
+  expect(parseModelImportJson(json).ok).toBe(true);
+  expect(parseModelImportJson(json, { enforceReadableNames: true })).toMatchObject({
+    ok: false,
+    reason: expect.stringContaining('English'),
+  });
+});
+it('imports real symbolic sums instead of requiring numeric placeholders', () => {
+  const source = JSON.stringify(validImport).replaceAll('"B"', '"N_ctx+N_test"');
+  expect(parseModelImportJson(source)).toMatchObject({ ok: true });
+});
+
 describe('Model Lab JSON import', () => {
   it('accepts compact symbolic dimensions used in human architecture notes', () => {
     const imported = structuredClone(validImport);

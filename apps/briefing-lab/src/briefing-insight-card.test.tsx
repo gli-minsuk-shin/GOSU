@@ -25,6 +25,50 @@ describe('compact evidence rendering', () => {
     expect(html).toContain('briefing-paper-disclosure');
     expect(html).not.toContain('briefing-email-disclosure');
   });
+  it('shows a saved email whose summary failed: subject, sender and received time, marked as not summarized', () => {
+    // 2026-09-21: "이메일 요약이 실패해도 제목, 보낸이, 보낸 시간은 뜨게 해줘. 요약만 빠지게."
+    const html = renderToStaticMarkup(
+      <BriefingHistoryItem
+        timeZone="Asia/Seoul"
+        item={{
+          id: 'a'.repeat(64),
+          kind: 'email',
+          title: 'Budget approval needed',
+          summary: '',
+          readScope: 'mail-preview',
+          importance: 'uncertain',
+          relevance: '',
+          mailSender: 'Dana Kim <dana@example.test>',
+          receivedAt: '2026-09-21T03:15:00.000Z',
+        }}
+      />,
+    );
+    expect(html).toContain('Budget approval needed');
+    expect(html).toContain('Dana Kim');
+    expect(html).toContain('12:15');
+    expect(html).toContain('요약 실패 · 원본 확인');
+    expect(html).toContain('AI 요약 실패 · 메일이 온 것만 표시합니다 · 다음 브리핑에서 다시 요약');
+    expect(html).toContain('제목·보낸 사람·받은 시각만 기록했습니다');
+    // It is not dressed up as a stored summary.
+    expect(html).not.toContain('이전에 저장한 AI 요약');
+    // A summarized email is unchanged.
+    const summarized = renderToStaticMarkup(
+      <BriefingHistoryItem
+        item={{
+          id: 'b'.repeat(64),
+          kind: 'email',
+          title: 'Summarized',
+          summary: 'Reply before Friday.',
+          readScope: 'mail-preview',
+          importance: 'medium',
+          relevance: '',
+        }}
+      />,
+    );
+    expect(summarized).toContain('Reply before Friday.');
+    expect(summarized).not.toContain('요약 실패');
+    expect(summarized).toContain('이전에 저장한 AI 요약');
+  });
   it.each(['live', 'history'] as const)(
     'shows read/unread/unknown status beside the collapsed %s email title',
     (mode) => {
@@ -308,7 +352,8 @@ describe('compact evidence rendering', () => {
     expect(html).toMatch(
       /<h3><a [^>]*href="https:\/\/arxiv.org\/abs\/2609.05382v1"[^>]*>A research paper<\/a><\/h3>/,
     );
-    expect(html.match(/href="https:\/\/arxiv.org\/abs\/2609.05382v1"/g)).toHaveLength(2);
+    expect(html.match(/href="https:\/\/arxiv.org\/abs\/2609.05382v1"/g)).toHaveLength(3);
+    expect(html.indexOf('briefing-paper-source-link')).toBeLessThan(html.indexOf('</summary>'));
     expect(html).toContain('원문 열기');
     expect(html).not.toContain('원문 링크 미확인');
   });

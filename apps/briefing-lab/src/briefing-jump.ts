@@ -1,8 +1,30 @@
 import { useEffect, useId, useRef, useState } from 'react';
 
-export type BriefingJumpTarget = { kind: 'calendar' | 'email' | 'papers'; id: string };
+export type BriefingJumpTarget = { kind: 'calendar' | 'email' | 'papers' | 'task'; id: string };
 export const briefingTargetId = (scope: string, kind: BriefingJumpTarget['kind'], id: string) =>
   `briefing-${scope}-${encodeURIComponent(JSON.stringify([kind, id]))}`;
+
+/** Never use scrollIntoView here: it can also scroll the document/hosting iframe ancestors. */
+export function scrollBriefingElement(
+  root: HTMLElement,
+  target: HTMLElement,
+  behavior: ScrollBehavior,
+) {
+  const scroller = root.closest<HTMLElement>('.briefing-main-scroll');
+  if (!root.contains(target) || !scroller || scroller.clientHeight === 0) return null;
+  target.focus({ preventScroll: true });
+  scroller.scrollTo({
+    top: Math.max(
+      0,
+      scroller.scrollTop +
+        target.getBoundingClientRect().top -
+        scroller.getBoundingClientRect().top -
+        12,
+    ),
+    behavior,
+  });
+  return target;
+}
 
 export function revealBriefingTarget(root: HTMLElement, id: string, behavior: ScrollBehavior) {
   // Match literal IDs inside this view; never build a selector from source-controlled text.
@@ -24,18 +46,7 @@ export function revealBriefingTarget(root: HTMLElement, id: string, behavior: Sc
     ':scope > .briefing-email-disclosure, :scope > .briefing-paper-disclosure',
   );
   if (disclosure) disclosure.open = true;
-  target.focus({ preventScroll: true });
-  scroller.scrollTo({
-    top: Math.max(
-      0,
-      scroller.scrollTop +
-        target.getBoundingClientRect().top -
-        scroller.getBoundingClientRect().top -
-        12,
-    ),
-    behavior,
-  });
-  return target;
+  return scrollBriefingElement(root, target, behavior);
 }
 
 export function useBriefingJump() {

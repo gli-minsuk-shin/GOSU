@@ -1,4 +1,6 @@
 import type { ReactNode } from 'react';
+import { AiActivityStar } from './sidebar-ai-activity';
+import type { AiActivityStatus } from '@gosu/ui/ai-activity';
 
 import type { WorkspaceTabId } from './workspace-views';
 
@@ -10,15 +12,21 @@ export type SidebarIconName =
 const ICONS: Record<SidebarIconName, ReactNode> = {
   assistant: (
     <>
-      <path d="M6.5 7h8a3.5 3.5 0 0 1 3.5 3.5v4a3.5 3.5 0 0 1-3.5 3.5H8l-5 3V10.5A3.5 3.5 0 0 1 6.5 7Z" />
-      <circle cx="7" cy="12.5" r="0.9" fill="currentColor" stroke="none" />
-      <circle cx="10.5" cy="12.5" r="0.9" fill="currentColor" stroke="none" />
-      <circle cx="14" cy="12.5" r="0.9" fill="currentColor" stroke="none" />
+      <path
+        data-assistant-bubble="true"
+        d="M6 5h12a4 4 0 0 1 4 4v7a4 4 0 0 1-4 4H8l-6 3V9a4 4 0 0 1 4-4Z"
+      />
+      <circle cx="7" cy="14" r="1" fill="currentColor" stroke="none" />
+      <circle cx="11" cy="14" r="1" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="14" r="1" fill="currentColor" stroke="none" />
       <path
         data-assistant-sparkle="true"
-        d="M20 1.5l.85 2.15L23 4.5l-2.15.85L20 7.5l-.85-2.15L17 4.5l2.15-.85Z"
-        fill="currentColor"
-        stroke="none"
+        d="M17.25 .75C18.2 4.7 19.3 5.8 23.25 6.75C19.3 7.7 18.2 8.8 17.25 12.75C16.3 8.8 15.2 7.7 11.25 6.75C15.2 5.8 16.3 4.7 17.25 .75Z"
+        fill="var(--green, currentColor)"
+        stroke="var(--surface, white)"
+        strokeWidth="2.6"
+        strokeLinejoin="round"
+        paintOrder="stroke"
       />
     </>
   ),
@@ -118,9 +126,22 @@ const ICONS: Record<SidebarIconName, ReactNode> = {
   ),
 };
 
-export function SidebarIcon({ name }: { name: SidebarIconName }) {
+export function SidebarIcon({
+  name,
+  activity,
+  starBesideIcon = false,
+}: {
+  name: SidebarIconName;
+  activity?: AiActivityStatus;
+  /** Icon-only buttons (the AI assistant) keep the star on the icon; labelled rows show it after the name. */
+  starBesideIcon?: boolean;
+}) {
   return (
-    <span className="sidebar-nav-icon" aria-hidden="true">
+    <span
+      className={`sidebar-nav-icon${name === 'assistant' ? ' sidebar-nav-icon-assistant-slot' : ''}`}
+      data-ai-status={activity}
+      aria-hidden={activity ? undefined : true}
+    >
       <svg
         className={`sidebar-nav-icon-graphic sidebar-nav-icon-${name}`}
         data-sidebar-icon={name}
@@ -130,6 +151,7 @@ export function SidebarIcon({ name }: { name: SidebarIconName }) {
       >
         {ICONS[name]}
       </svg>
+      {starBesideIcon ? <AiActivityStar status={activity} /> : null}
     </span>
   );
 }

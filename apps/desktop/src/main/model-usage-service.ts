@@ -1,6 +1,8 @@
 import type { ModelInvocation } from '@gosu/contracts';
+import { GLOBAL_USAGE_OWNER } from './native-usage-ledger';
 
 import {
+  MODEL_USAGE_DETAIL_WORKLOADS,
   ModelUsageAnalyticsQuerySchema,
   ModelUsageAnalyticsReportSchema,
   type ModelUsageAggregate,
@@ -13,6 +15,8 @@ import {
   type ModelUsageProjectRow,
   type ModelUsageSeriesRow,
   type ModelUsageTokenTotals,
+  type ModelUsageDailyWorkloadModelRow,
+  type ModelUsageWorkloadModelRow,
   type ModelUsageWorkloadRow,
 } from '../shared/model-usage-contracts';
 import type {
@@ -261,16 +265,18 @@ function lectureCoverage(
   return 'unavailable' as const;
 }
 
+function optionalCounter(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
 function parseCodexTotals(value: unknown): ModelUsageAbsoluteTotals | null {
   if (!isRecord(value)) return null;
-  const required = [
-    'inputTokens',
-    'outputTokens',
-    'totalTokens',
-    'cachedInputTokens',
-    'cacheWriteInputTokens',
-    'reasoningOutputTokens',
-  ] as const;
+  if (
+    ['cachedInputTokens', 'cacheWriteInputTokens', 'reasoningOutputTokens'].some(
+      (key) => value[key] != null && optionalCounter(value[key]) === null,
+    )
+  )
+    return null;
+  const required = ['inputTokens', 'outputTokens', 'totalTokens'] as const;
   if (required.some((key) => !Number.isSafeInteger(value[key]) || (value[key] as number) < 0)) {
     return null;
   }
@@ -278,9 +284,9 @@ function parseCodexTotals(value: unknown): ModelUsageAbsoluteTotals | null {
     inputTokens: value.inputTokens as number,
     outputTokens: value.outputTokens as number,
     totalTokens: value.totalTokens as number,
-    cachedReadTokens: value.cachedInputTokens as number,
-    cachedWriteTokens: value.cacheWriteInputTokens as number,
-    reasoningOutputTokens: value.reasoningOutputTokens as number,
+    cachedReadTokens: optionalCounter(value.cachedInputTokens),
+    cachedWriteTokens: optionalCounter(value.cacheWriteInputTokens),
+    reasoningOutputTokens: optionalCounter(value.reasoningOutputTokens),
   };
   if (totals.totalTokens !== totals.inputTokens + totals.outputTokens) return null;
   if (
@@ -317,6 +323,36 @@ export type ModelUsageAcpPromptResultEvent = Readonly<{
 export type ModelUsageDelegationInvocationEvent = ModelUsageInvocationEvent &
   Readonly<{ attribution: ModelUsageAttributionInput }>;
 
+const UNLABELED_CODEX_CONNECTION = 'codex:unknown';
+
+/**
+ * Codex turns recorded before GOSU had read the Codex login carry the unlabeled key
+ * `codex:unknown` ("Codex"), so one account appears twice in the usage screen next to the row
+ * it was later labelled with. When the range holds exactly one labelled Codex connection the
+ * unlabelled turns belong to it, so fold them in. With none or several labelled connections the
+ * owner is genuinely unknown and the rows stay apart rather than being guessed into one.
+ */
+export function foldUnlabeledCodexUsage(rows: readonly StoredModelUsageRow[]) {
+  const labelled = new Map<string, StoredModelUsageRow>();
+  let unlabelled = false;
+  for (const row of rows) {
+    if (row.connectionKey === UNLABELED_CODEX_CONNECTION) unlabelled = true;
+    else if (row.connectionKey.startsWith('codex:')) labelled.set(row.connectionKey, row);
+  }
+  if (!unlabelled || labelled.size !== 1) return [...rows];
+  const target = [...labelled.values()][0]!;
+  return rows.map((row) =>
+    row.connectionKey === UNLABELED_CODEX_CONNECTION
+      ? {
+          ...row,
+          connectionKey: target.connectionKey,
+          connectionLabel: target.connectionLabel,
+          upstreamProviderId: target.upstreamProviderId,
+        }
+      : row,
+  );
+}
+
 export class ModelUsageService {
   private readonly threadAttributions = new Map<string, ModelUsageAttributionInput>();
   private readonly knownTurns = new Set<string>();
@@ -338,6 +374,7 @@ export class ModelUsageService {
   constructor(
     private readonly storage: LocalDatabase,
     private readonly workspace: WorkspaceSnapshotReader,
+    private readonly additionalUsage?: () => Promise<StoredModelUsageRow[]>,
   ) {}
 
   bindThread(threadId: string, attribution: ModelUsageAttributionInput) {
@@ -534,7 +571,16 @@ export class ModelUsageService {
       ),
     ]);
     const projectNames = new Map(snapshot.projects.map((project) => [project.id, project.name]));
-    const rows = storedRows.filter(
+    const extraRows = (await this.additionalUsage?.()) ?? [];
+    const rows = foldUnlabeledCodexUsage([
+      ...storedRows,
+      ...extraRows.filter(
+        (row) =>
+          row.startedAt >= range.fromInclusive &&
+          row.startedAt < range.toExclusive &&
+          row.startedAt <= lectureSnapshotAt,
+      ),
+    ]).filter(
       (row) =>
         row.coverage !== 'pending' &&
         (!query.projectId || row.projectId === query.projectId) &&
@@ -561,7 +607,12 @@ export class ModelUsageService {
         ),
       });
     }
-    const byProject: ModelUsageProjectRow[] = [...groupRows(rows, (row) => row.projectId).values()]
+    const byProject: ModelUsageProjectRow[] = [
+      ...groupRows(
+        rows.filter((row) => row.projectId !== GLOBAL_USAGE_OWNER),
+        (row) => row.projectId,
+      ).values(),
+    ]
       .map((group) => ({
         projectId: group[0]!.projectId,
         projectName: projectNames.get(group[0]!.projectId) ?? null,
@@ -591,6 +642,96 @@ export class ModelUsageService {
     ]
       .map((group) => ({ workloadKind: group[0]!.workloadKind, ...aggregate(group) }))
       .sort((left, right) => right.tokens.totalTokens - left.tokens.totalTokens);
+    const byProjectModel = [
+      ...groupRows(
+        rows.filter((r) => r.projectId !== GLOBAL_USAGE_OWNER),
+        (r) => JSON.stringify([r.projectId, r.connectionKey, r.providerId, r.resolvedModelId]),
+      ).values(),
+    ]
+      .map((group) => {
+        const r = group[0]!;
+        return {
+          projectId: r.projectId,
+          projectName: projectNames.get(r.projectId) ?? null,
+          connectionKey: r.connectionKey,
+          connectionLabel: r.connectionLabel,
+          providerId: r.providerId,
+          upstreamProviderId: r.upstreamProviderId,
+          resolvedModelId: r.resolvedModelId,
+          ...aggregate(group),
+        };
+      })
+      .sort((a, b) => b.tokens.totalTokens - a.tokens.totalTokens)
+      .slice(0, 1000);
+    // Every feature's usage per model, at the grain of `byModel` (so the parts of one model add up
+    // to its row). Unlike the project breakdown this keeps the rows without a project: the AI
+    // assistant and the briefing summaries are exactly those, and a feature's cost is summed here.
+    // The detail tabs (Briefing, paper summaries): one row per local day, feature and model.
+    const detailKinds = new Set<string>(MODEL_USAGE_DETAIL_WORKLOADS);
+    const byDayWorkloadModel: ModelUsageDailyWorkloadModelRow[] = [...series]
+      .reverse()
+      .flatMap((day) =>
+        [
+          ...groupRows(
+            rows.filter(
+              (row) =>
+                detailKinds.has(row.workloadKind) &&
+                row.startedAt >= day.fromInclusive &&
+                row.startedAt < day.toExclusive,
+            ),
+            (row) =>
+              JSON.stringify([
+                row.workloadKind,
+                row.connectionKey,
+                row.providerId,
+                row.upstreamProviderId ?? '',
+                row.resolvedModelId,
+              ]),
+          ).values(),
+        ]
+          .map((group) => ({
+            bucketKey: day.bucketKey,
+            workloadKind: group[0]!.workloadKind,
+            connectionKey: group[0]!.connectionKey,
+            connectionLabel: group[0]!.connectionLabel,
+            providerId: group[0]!.providerId,
+            upstreamProviderId: group[0]!.upstreamProviderId,
+            resolvedModelId: group[0]!.resolvedModelId,
+            ...aggregate(group),
+          }))
+          .sort(
+            (left, right) =>
+              left.workloadKind.localeCompare(right.workloadKind) ||
+              right.tokens.totalTokens - left.tokens.totalTokens ||
+              left.resolvedModelId.localeCompare(right.resolvedModelId),
+          ),
+      )
+      .slice(0, 1_000);
+    const byWorkloadModel: ModelUsageWorkloadModelRow[] = [
+      ...groupRows(rows, (r) =>
+        JSON.stringify([
+          r.workloadKind,
+          r.connectionKey,
+          r.providerId,
+          r.upstreamProviderId ?? '',
+          r.resolvedModelId,
+        ]),
+      ).values(),
+    ]
+      .map((group) => {
+        const r = group[0]!;
+        return {
+          workloadKind: r.workloadKind,
+          connectionKey: r.connectionKey,
+          connectionLabel: r.connectionLabel,
+          providerId: r.providerId,
+          upstreamProviderId: r.upstreamProviderId,
+          resolvedModelId: r.resolvedModelId,
+          ...aggregate(group),
+        };
+      })
+      .sort((a, b) => b.tokens.totalTokens - a.tokens.totalTokens)
+      .slice(0, 1000);
     const lectureAttempts = this.storage
       .listStoredLectureUsageAttempts(range.fromInclusive, range.toExclusive, lectureSnapshotAt)
       .filter((attempt) => {
@@ -654,7 +795,10 @@ export class ModelUsageService {
       byProject,
       byConnection: connectionRows(rows).slice(0, 1_000),
       byModel,
+      byProjectModel,
       byWorkload,
+      byWorkloadModel,
+      byDayWorkloadModel,
       lectureGenerations: {
         items: lectureItems,
         total: lectureAttempts.length,

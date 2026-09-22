@@ -11,6 +11,7 @@ function nativeFixture(
   excludedIds: number[] = [],
   original = '',
   attachmentCount = 0,
+  messageSize = 20_000,
 ) {
   const date = new Date(Date.now() - 3_600_000),
     title = '동일 제목 · synthetic';
@@ -31,12 +32,27 @@ function nativeFixture(
     messageId: link,
     source,
     mailAttachments: () => Array.from({ length: attachmentCount }),
+    messageSize: () => messageSize,
   }));
   const account = {
     id: () => 'a',
     name: () => 'Synthetic',
     emailAddresses: () => ['a@example.test'],
-    mailboxes: () => [{ name: () => 'Inbox', mailboxes: () => [], messages }],
+    mailboxes: () => [
+      {
+        name: () => 'Inbox',
+        mailboxes: () => [],
+        // Mail's date-bounded query returns references in Mail's list order.
+        messages: Object.assign(messages, {
+          whose: (filter: { dateReceived: { _greaterThan: Date } }) => () =>
+            messages
+              .map((ref) => ref())
+              .filter(
+                (m) => m.dateReceived().getTime() > filter.dateReceived._greaterThan.getTime(),
+              ),
+        }),
+      },
+    ],
   };
   const frames: string[] = [];
   const foundation = Object.assign((s: string) => ({ dataUsingEncoding: () => s }), {
@@ -66,6 +82,22 @@ function nativeFixture(
   );
   return { result, body, link, frames, source };
 }
+it('checkpoints every original-message link before any body read', () => {
+  // A single Mail body can stall ~60s; links are cheap, so they must all exist before a body
+  // stall can exhaust the read limit and leave every Apple Mail button disabled.
+  const f = nativeFixture(3);
+  const events = f.frames.map((frame) => JSON.parse(frame));
+  const linkPositions = events.flatMap((event, index) =>
+    event.type === 'message-link' ? [index] : [],
+  );
+  const firstBody = events.findIndex((event) => event.type === 'body');
+  expect(linkPositions).toHaveLength(3);
+  expect(Math.max(...linkPositions)).toBeLessThan(firstBody);
+  expect(Math.max(...f.link.mock.invocationCallOrder)).toBeLessThan(
+    f.body.mock.invocationCallOrder[0]!,
+  );
+});
+
 it('verifies bounded complete source locally without emitting it, and skips attachments', () => {
   const raw =
     'From: sender@example.test\nDate: Fri, 11 Sep 2026 09:00:00 +0900\nMessage-ID: <synthetic@example.test>\nContent-Type: text/plain\n\nONLY_RAW_SOURCE_CONTENT';
@@ -79,6 +111,10 @@ it('verifies bounded complete source locally without emitting it, and skips atta
   const attached = nativeFixture(1, [], raw, 1);
   expect(attached.source).not.toHaveBeenCalled();
   expect(attached.result.messages[0].contentProof).toBeUndefined();
+  // Larger than the 262KB proof limit: skipped by size before Mail loads the whole source.
+  const large = nativeFixture(1, [], raw, 0, 4_000_000);
+  expect(large.source).not.toHaveBeenCalled();
+  expect(large.result.messages[0].contentProof).toBeUndefined();
 });
 it.each([50, 100])(
   'skips completed summaries before body/link access and fills %i new messages',

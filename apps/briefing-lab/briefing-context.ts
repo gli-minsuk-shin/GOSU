@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { estimateAgentContextTokens, type ModelDescriptor } from '@gosu/contracts';
 import type { ConversationMessage } from './src/briefing-conversation';
+import { selectRequestContext } from './request-context-selection';
 import {
   contextCapacityMetadata,
   contextConfigurationMatches,
@@ -53,12 +54,48 @@ export function searchConversationRecords(
     messages: excerpts,
   };
 }
+type HistoryPlan = {
+  history: { role: 'user' | 'assistant'; text: string }[];
+  report: ContextUsage;
+  checkpoint: ConversationCheckpoint | undefined;
+  selectedIndices: number[] | undefined;
+  intentionalSelection: boolean;
+};
 export function historyPlan(
   model: ModelDescriptor,
   messages: readonly ConversationMessage[],
   fixedText: string,
   checkpoint?: ConversationCheckpoint,
-) {
+  query?: string,
+): HistoryPlan {
+  if (query !== undefined) {
+    const selection = selectRequestContext(messages, query);
+    if (selection.mode !== 'full') {
+      const selected = selection.indices.map((i) => messages[i]!);
+      const original = historyPlan(model, messages, fixedText, checkpoint);
+      const plan = historyPlan(
+        {
+          ...model,
+          contextWindowTokens: original.report.windowTokens,
+          metadata: { ...model.metadata, contextWindowSource: original.report.windowSource },
+        },
+        selected,
+        fixedText,
+      );
+      if (!plan.report.omittedMessages)
+        return {
+          ...plan,
+          selectedIndices: selection.indices,
+          intentionalSelection: true,
+          report: {
+            ...plan.report,
+            totalMessages: messages.length,
+            omittedMessages: messages.length - selected.length,
+            selectionMode: selection.mode,
+          },
+        };
+    }
+  }
   const observedWindow = [...messages]
     .reverse()
     .find(
@@ -124,7 +161,13 @@ export function historyPlan(
     compressedMessages: valid?.through ?? 0,
     omittedMessages,
   };
-  return { history: [...summary, ...history], report, checkpoint: valid };
+  return {
+    history: [...summary, ...history],
+    report,
+    checkpoint: valid,
+    selectedIndices: undefined as number[] | undefined,
+    intentionalSelection: false,
+  };
 }
 /** Full records stay on disk. Compact only the old prefix once the native-sized budget needs it. */
 export async function prepareConversationContext(
@@ -134,8 +177,10 @@ export async function prepareConversationContext(
   checkpoint: ConversationCheckpoint | undefined,
   compact: (messages: readonly ConversationMessage[], previousSummary: string) => Promise<string>,
   save: (checkpoint: ConversationCheckpoint) => Promise<void>,
+  query?: string,
 ) {
-  let plan = historyPlan(model, messages, fixedText, checkpoint);
+  let plan = historyPlan(model, messages, fixedText, checkpoint, query);
+  if (plan.intentionalSelection) return plan;
   if (!plan.report.omittedMessages) return plan;
   const through = Math.max(
     messages.length - Math.max(2, Math.floor(plan.report.includedMessages * 0.6)),
@@ -157,4 +202,43 @@ export async function prepareConversationContext(
   if (plan.report.omittedMessages) throw new Error('assistant_context_too_large');
   await save(next);
   return plan;
+}
+
+/** How many of the latest messages stay word for word when the reader asks for a compaction. */
+export const COMPACT_NOW_KEEP_RECENT = 4;
+
+/**
+ * "/compact": the reader wants a shorter context now, not only once the window is under pressure.
+ * Everything but the latest messages becomes part of the summary; the records themselves stay on
+ * disk and searchable, exactly as with automatic compaction. Nothing is summarized twice: an
+ * existing valid checkpoint is extended, and when it already covers everything nothing is called.
+ */
+export async function compactConversationNow(
+  model: ModelDescriptor,
+  messages: readonly ConversationMessage[],
+  fixedText: string,
+  checkpoint: ConversationCheckpoint | undefined,
+  compact: (messages: readonly ConversationMessage[], previousSummary: string) => Promise<string>,
+  save: (checkpoint: ConversationCheckpoint) => Promise<void>,
+  keepRecent = COMPACT_NOW_KEEP_RECENT,
+) {
+  const current = historyPlan(model, messages, fixedText, checkpoint);
+  const covered = current.checkpoint?.through ?? 0;
+  const through = messages.length - Math.max(0, keepRecent);
+  if (through <= covered)
+    return { plan: current, compacted: false as const, summarizedMessages: 0 };
+  const prefix = messages.slice(0, through);
+  const summary = await compact(prefix.slice(covered), current.checkpoint?.summary ?? '');
+  if (!summary.trim() || summary.length > 24000) throw new Error('assistant_compaction_invalid');
+  const next = {
+    through,
+    digest: conversationDigest(prefix),
+    summary,
+    createdAt: new Date().toISOString(),
+  };
+  const plan = historyPlan(model, messages, fixedText, next);
+  if (plan.report.omittedMessages) throw new Error('assistant_context_too_large');
+  await save(next);
+  // How many records this call moved into the summary; what the reader is told afterwards.
+  return { plan, compacted: true as const, summarizedMessages: through - covered };
 }

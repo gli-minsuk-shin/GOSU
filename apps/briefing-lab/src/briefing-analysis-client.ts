@@ -1,4 +1,5 @@
 import type { AnalysisRequestSchema } from '../briefing-analysis';
+import { trackAiActivity } from '@gosu/ui/ai-activity';
 import type { z } from 'zod';
 import type { BriefingInsight } from './briefing-intelligence';
 import type { LiveItem } from './live-types';
@@ -26,14 +27,23 @@ export async function requestBriefingAnalysis(
   signal: AbortSignal,
   onProgress: (detail: string) => void,
 ): Promise<AnalysisResult> {
-  return readAnalysisResponse('/analyze', input, signal, onProgress);
+  return trackAiActivity(
+    'briefing',
+    () => readAnalysisResponse('/analyze', input, signal, onProgress),
+    signal,
+  );
 }
 export function refreshBriefingSummary(
   input: { routineId: string; itemId: string; receiptId?: string; historyId?: string },
   signal: AbortSignal,
   onProgress: (detail: string) => void,
+  workload: 'briefing' | 'papers' = 'briefing',
 ) {
-  return readAnalysisResponse('/summary/refresh', input, signal, onProgress);
+  return trackAiActivity(
+    workload,
+    () => readAnalysisResponse('/summary/refresh', input, signal, onProgress),
+    signal,
+  );
 }
 async function readAnalysisResponse(
   path: string,

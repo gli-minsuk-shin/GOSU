@@ -17,24 +17,31 @@ import type {
   DeleteLiteratureRecordReceipt,
   LiteratureExportReceipt,
   LiteratureExportRequest,
-  LiteratureDiscoveryCoverage,
   LiteratureImportReceipt,
   LiteratureImportRequest,
   LiteratureLibrary,
   LiteratureOrganizeReceipt,
   LiteratureAiCancelReceipt,
   LiteratureRecord,
-  LiteratureSearchConflict,
   LiteratureSearchInput,
+  LiteratureSearchPlanReceipt,
   LiteratureSearchReceipt,
   LiteratureSearchRun,
   LiteratureTransferFormat,
   LiteratureDiscoveryTier,
   ListLiteratureInput,
   OrganizeLiteratureInput,
+  PlanLiteratureSearchInput,
+  UndoLiteratureSearchInput,
+  UndoLiteratureSearchReceipt,
   UpdateLiteratureAnnotationsInput,
 } from '../../shared/literature-contracts';
-import { LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW } from '../../shared/literature-contracts';
+import { literatureQueryNeedsPlanning } from '../../shared/literature-query';
+import type {
+  ImportPaperSummariesInput,
+  ImportPaperSummariesReceipt,
+  PaperLibraryList,
+} from '../../shared/paper-library-contracts';
 import { canonicalLiteratureUrl } from '../../shared/literature-canonical-url';
 import {
   EMPTY_LITERATURE_SEARCH_TAGS,
@@ -46,6 +53,7 @@ import {
   type LiteratureSearchTags,
 } from '../../shared/literature-search-tags';
 import {
+  BALANCED_LITERATURE_CORE_GATES_SINCE_VERSION,
   BALANCED_LITERATURE_POLICY_ID,
   BALANCED_LITERATURE_POLICY_VERSION,
   LITERATURE_CANONICAL_MIN_AGE_YEARS,
@@ -80,6 +88,18 @@ import {
   type LiteratureSortKey,
   type LiteratureTableRecord,
 } from './literature-table-model';
+import {
+  literatureConflictSummary,
+  literatureCoverageSummary,
+  literatureDegradationLabel,
+  literatureOrganizeBatches,
+  literaturePlannedSearches,
+  literatureSearchSummary,
+  literatureSignalLabel,
+  recordIdsCreatedBySearches,
+  type PlannedLiteratureSearch,
+} from './literature-search-flow';
+import { LiteraturePaperLibraryPanel } from './literature-paper-library-panel';
 import type { SearchTargetRequest } from './search-results-model';
 
 export interface LiteratureViewAdapter {
@@ -91,6 +111,11 @@ export interface LiteratureViewAdapter {
   exportRecords: (input: LiteratureExportRequest) => Promise<LiteratureExportReceipt>;
   organize?: (input: OrganizeLiteratureInput) => Promise<LiteratureOrganizeReceipt>;
   cancelOrganize?: (input: CancelLiteratureAiInput) => Promise<LiteratureAiCancelReceipt>;
+  planSearch?: (input: PlanLiteratureSearchInput) => Promise<LiteratureSearchPlanReceipt>;
+  undoSearch?: (input: UndoLiteratureSearchInput) => Promise<UndoLiteratureSearchReceipt>;
+  /** The shared paper summary library of Briefing Lab, read and imported through Main. */
+  listPaperLibrary?: () => Promise<PaperLibraryList>;
+  importPaperSummaries?: (input: ImportPaperSummariesInput) => Promise<ImportPaperSummariesReceipt>;
   createPaperNote?: (input: CreateResearchPaperNoteInput) => Promise<ResearchPaperNoteReceipt>;
 }
 
@@ -106,6 +131,12 @@ export type LiteratureTableScrollAvailability = Readonly<{
   top: boolean;
   bottom: boolean;
 }>;
+
+// Fifty abstracts in one AI turn rarely finished inside the two-minute limit, so every organize
+// request is split into small turns. After a search only the new papers are read, and only some.
+const LITERATURE_ORGANIZE_BATCH_SIZE = 10;
+const LITERATURE_AUTO_ORGANIZE_MAXIMUM = 30;
+const LITERATURE_MANUAL_ORGANIZE_MAXIMUM = 50;
 
 const NO_LITERATURE_TABLE_SCROLL: LiteratureTableScrollAvailability = {
   left: false,
@@ -218,7 +249,8 @@ type LiteratureLayerCounts = Record<LiteratureLayerFilter | 'unclassified', numb
 function isCurrentBalancedLiteraturePolicy(discovery: NonNullable<LiteratureRecord['discovery']>) {
   return (
     discovery.policyId === BALANCED_LITERATURE_POLICY_ID &&
-    discovery.policyVersion === BALANCED_LITERATURE_POLICY_VERSION
+    discovery.policyVersion >= BALANCED_LITERATURE_CORE_GATES_SINCE_VERSION &&
+    discovery.policyVersion <= BALANCED_LITERATURE_POLICY_VERSION
   );
 }
 
@@ -261,7 +293,7 @@ export function literatureCoreGateSummary(record: LiteratureRecord) {
   if (!discovery) return 'Not classified by a discovery search';
   if (
     discovery.policyId === BALANCED_LITERATURE_POLICY_ID &&
-    discovery.policyVersion < BALANCED_LITERATURE_POLICY_VERSION
+    discovery.policyVersion < BALANCED_LITERATURE_CORE_GATES_SINCE_VERSION
   ) {
     return `Legacy policy v${discovery.policyVersion} — search again to apply v${BALANCED_LITERATURE_POLICY_VERSION}`;
   }
@@ -301,15 +333,6 @@ export function literatureCoreGateSummary(record: LiteratureRecord) {
   return 'Eligible, but outside this search’s bounded Core maximum';
 }
 
-function literatureCoverageSummary(coverage: LiteratureDiscoveryCoverage | undefined) {
-  if (!coverage) return '';
-  const available = coverage.availableSignals.map(formatLabel).join(', ');
-  if (coverage.degradationReasons.length === 0) {
-    return ` Discovery signals: ${available}.`;
-  }
-  return ` Reduced signal coverage (${coverage.degradationReasons.map(formatLabel).join(', ')}); available: ${available}.`;
-}
-
 function literatureErrorCode(error: unknown) {
   return error instanceof Error ? (error.message.split(':')[0] ?? '') : '';
 }
@@ -321,6 +344,8 @@ function literatureErrorMessage(error: unknown) {
       'The literature provider is unavailable. Your saved evidence table is still available.',
     literature_rate_limited:
       'The literature provider asked GOSU to slow down. Wait briefly, then search again.',
+    literature_query_without_topic:
+      'This text names no topic to search for. Type the research topic or keywords, for example “tabular foundation model class expansion”.',
     literature_record_conflict:
       'This paper changed since you opened it. GOSU kept both versions safe; refresh before editing again.',
     literature_record_limit_reached:
@@ -338,6 +363,12 @@ function literatureErrorMessage(error: unknown) {
       'Stopped AI organization. No uncommitted literature annotations were applied.',
     literature_ai_unavailable:
       'AI organization is unavailable. Search and manual literature review remain usable.',
+    literature_ai_start_failed:
+      'The AI provider could not start this request. Check that Codex is connected and that the model chosen in Settings → Agent is a Codex model.',
+    literature_ai_turn_failed:
+      'The linked model ended the request without an answer. Check the model chosen in Settings → Agent, then try again.',
+    literature_ai_timeout:
+      'The linked model did not finish within the time limit. Try again, or choose a faster model in Settings → Agent.',
     literature_ai_invalid_response:
       'The linked model did not return valid structured annotations. No paper was overwritten.',
     literature_ai_conflict:
@@ -352,44 +383,9 @@ function literatureErrorMessage(error: unknown) {
   );
 }
 
+/** The notice for one finished search; planned searches pass all their receipts to the summary. */
 export function literatureSearchNotice(result: LiteratureSearchReceipt) {
-  const tierCounts = result.tierCounts ?? result.run.tierCounts;
-  const coverage = result.coverage ?? result.run.coverage;
-  const retrieval =
-    result.retrievedCount === undefined ? '' : `${result.retrievedCount} candidates screened; `;
-  const layers = tierCounts
-    ? ` Layers: ${tierCounts.core} core, ${tierCounts.rising} rising, ${tierCounts.broad} broad.`
-    : '';
-  const summary = `Deep search complete: ${retrieval}${result.foundCount} selected, ${result.newCount} added, ${result.updatedCount} updated, ${result.unchangedCount} unchanged.${layers}${literatureCoverageSummary(coverage)}`;
-  if (result.conflictCount === 0) return summary;
-  const conflictSummary = literatureConflictSummary(result.run.conflicts, result.conflictCount);
-  const details = conflictSummary.length > 0 ? ` Skipped: ${conflictSummary}.` : '';
-  return `${summary} ${result.conflictCount} ambiguous ${result.conflictCount === 1 ? 'result was' : 'results were'} skipped without changing saved papers.${details}`;
-}
-
-function literatureConflictSummary(
-  conflicts: readonly LiteratureSearchConflict[],
-  conflictCount: number,
-) {
-  const identifiers = conflicts
-    .slice(0, LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW)
-    .map(literatureConflictIdentifier);
-  if (identifiers.length === 0) return '';
-  const omitted = Math.max(0, conflictCount - identifiers.length);
-  return `${identifiers.join('; ')}${omitted > 0 ? `; +${omitted} more` : ''}`;
-}
-
-function literatureConflictIdentifier(conflict: LiteratureSearchConflict) {
-  const identities = [
-    conflict.canonicalId ? conflict.canonicalId : '',
-    conflict.doi ? `DOI ${conflict.doi}` : '',
-    conflict.providerRecordId && conflict.providerRecordId !== conflict.doi
-      ? `${formatLabel(conflict.provider)} ${conflict.providerRecordId}`
-      : '',
-  ].filter(Boolean);
-  return identities.length > 0
-    ? identities.join(' / ')
-    : `“${conflict.title.slice(0, 120)}${conflict.title.length > 120 ? '…' : ''}”`;
+  return literatureSearchSummary([result]);
 }
 
 function formatLabel(value: string) {
@@ -1428,8 +1424,14 @@ export function LiteratureView({
   const [recentSearches, setRecentSearches] = useState<readonly LiteratureSearchRun[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
+  const [busyDetail, setBusyDetail] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [paperLibraryOpen, setPaperLibraryOpen] = useState(false);
+  const [undoableSearch, setUndoableSearch] = useState<Readonly<{
+    runIds: readonly string[];
+    addedCount: number;
+  }> | null>(null);
   const [query, setQuery] = useState('');
   const [topicTagText, setTopicTagText] = useState('');
   const [keywordTagText, setKeywordTagText] = useState('');
@@ -1460,6 +1462,22 @@ export function LiteratureView({
   ).length;
   const layerCounts = useMemo(() => literatureLayerCounts(tableRecords), [tableRecords]);
   const corePolicyCounts = useMemo(() => literatureCorePolicyCounts(records), [records]);
+  // What this project is about, as far as the view knows without a model: its name, its recent
+  // searches and the search tags already in the table. Saved papers that mention it come first.
+  const paperLibraryRelevanceText = useMemo(
+    () =>
+      [
+        project.name,
+        query,
+        ...recentSearches.slice(0, 8).map((search) => search.query),
+        ...searchTagOptions.slice(0, 40).map(({ label }) => label),
+      ].join(' · '),
+    [project.name, query, recentSearches, searchTagOptions],
+  );
+  const paperLibraryKnownUrls = useMemo(
+    () => new Set(tableRecords.flatMap(({ canonicalUrl }) => (canonicalUrl ? [canonicalUrl] : []))),
+    [tableRecords],
+  );
   const aiCandidates = useMemo(
     () => records.filter((record) => record.aiAnnotations === null).slice(0, 50),
     [records],
@@ -1628,68 +1646,222 @@ export function LiteratureView({
     setPage(1);
   };
 
+  const organizeInBatches = async (recordIds: readonly string[], maximum: number) => {
+    const organize = adapter.organize;
+    const batches = literatureOrganizeBatches(recordIds, {
+      batchSize: LITERATURE_ORGANIZE_BATCH_SIZE,
+      maximum,
+    });
+    let updated = 0;
+    let skipped = 0;
+    let failure: unknown = null;
+    if (!organize) return { updated, skipped, attempted: 0, failure };
+    for (const [index, batch] of batches.entries()) {
+      setBusyDetail(
+        uiText('AI reading abstracts {done}/{total}', {
+          done: Math.min(index * LITERATURE_ORGANIZE_BATCH_SIZE + batch.length, recordIds.length),
+          total: batches.reduce((sum, item) => sum + item.length, 0),
+        }),
+      );
+      try {
+        const result = await organize({
+          projectId: project.id,
+          recordIds: batch,
+          requestedModelId,
+          reasoningOptionId,
+        });
+        updated += result.updatedCount;
+        skipped += result.skippedCount;
+      } catch (reason) {
+        failure = reason;
+        break;
+      }
+    }
+    return {
+      updated,
+      skipped,
+      attempted: batches.reduce((sum, item) => sum + item.length, 0),
+      failure,
+    };
+  };
+
   const handleLiteratureSearch = async () => {
-    if (busy || query.trim().length < 2) return;
+    const text = query.trim();
+    if (busy || text.length < 2) return;
     setBusy('search');
+    setBusyDetail('');
     setError('');
     setNotice('');
+    setUndoableSearch(null);
     try {
       const start = parseYear(fromYear);
       const end = parseYear(toYear);
       if (start && end && start > end) throw new Error('invalid_literature_input');
-      const result = await adapter.search({
-        projectId: project.id,
-        query: query.trim(),
-        searchTags: {
-          topics: parseLiteratureSearchTagText(topicTagText).slice(
-            0,
-            LITERATURE_MAX_SEARCH_TOPIC_TAGS,
-          ),
-          keywords: parseLiteratureSearchTagText(keywordTagText).slice(
-            0,
-            LITERATURE_MAX_SEARCH_KEYWORD_TAGS,
-          ),
-        },
-        ...(authorQuery.trim() ? { authorQuery: authorQuery.trim() } : {}),
-        ...(venueQuery.trim() ? { venueQuery: venueQuery.trim() } : {}),
-        ...(start ? { fromYear: start } : {}),
-        ...(end ? { toYear: end } : {}),
-      });
+      const userTags = {
+        topics: parseLiteratureSearchTagText(topicTagText).slice(
+          0,
+          LITERATURE_MAX_SEARCH_TOPIC_TAGS,
+        ),
+        keywords: parseLiteratureSearchTagText(keywordTagText).slice(
+          0,
+          LITERATURE_MAX_SEARCH_KEYWORD_TAGS,
+        ),
+      };
+      let searches: readonly PlannedLiteratureSearch[] = [{ query: text, searchTags: userTags }];
+      let planned = false;
+      const notes: string[] = [];
+      if (literatureQueryNeedsPlanning(text)) {
+        if (adapter.planSearch && aiAvailable) {
+          setBusyDetail(uiText('AI is turning the request into English keywords'));
+          try {
+            const plan = await adapter.planSearch({
+              projectId: project.id,
+              question: text,
+              requestedModelId,
+              reasoningOptionId,
+            });
+            searches = literaturePlannedSearches(plan.queries, userTags);
+            planned = true;
+          } catch (reason) {
+            notes.push(
+              uiText(
+                'AI could not turn the request into keywords, so the text was searched as typed. {reason}',
+                { reason: literatureErrorMessage(reason) },
+              ),
+            );
+          }
+        } else {
+          notes.push(
+            uiText(
+              'This looks like a sentence, and scholarly indexes match English keywords. Connect an AI provider to have it rewritten, or type two to six keywords.',
+            ),
+          );
+        }
+      }
+      const receipts: LiteratureSearchReceipt[] = [];
+      let firstFailure: unknown = null;
+      for (const [index, item] of searches.entries()) {
+        setBusyDetail(
+          searches.length > 1
+            ? uiText('Search {index}/{total}: {query}', {
+                index: index + 1,
+                total: searches.length,
+                query: item.query,
+              })
+            : '',
+        );
+        try {
+          receipts.push(
+            await adapter.search({
+              projectId: project.id,
+              query: item.query,
+              searchTags: {
+                topics: [...item.searchTags.topics],
+                keywords: [...item.searchTags.keywords],
+              },
+              ...(authorQuery.trim() ? { authorQuery: authorQuery.trim() } : {}),
+              ...(venueQuery.trim() ? { venueQuery: venueQuery.trim() } : {}),
+              ...(start ? { fromYear: start } : {}),
+              ...(end ? { toYear: end } : {}),
+            }),
+          );
+        } catch (reason) {
+          firstFailure ??= reason;
+          notes.push(
+            uiText('“{query}” was not searched. {reason}', {
+              query: item.query,
+              reason: literatureErrorMessage(reason),
+            }),
+          );
+        }
+      }
+      if (receipts.length === 0) throw firstFailure ?? new Error('literature_provider_unavailable');
       const next = await refresh();
       setPage(1);
-      let message = literatureSearchNotice(result);
+      const runs = receipts.map(({ run }) => run);
+      const createdIds = recordIdsCreatedBySearches(next.records, runs);
+      if (adapter.undoSearch && createdIds.length > 0) {
+        setUndoableSearch({ runIds: runs.map(({ id }) => id), addedCount: createdIds.length });
+      }
+      const messages = [
+        literatureSearchSummary(
+          receipts,
+          planned ? { plannedQueries: searches.map((item) => item.query) } : {},
+        ),
+        ...notes,
+      ];
+      const created = new Set(createdIds);
       const automaticCandidates = next.records
-        .filter((record) => record.abstractText && record.aiAnnotations === null)
-        .slice(0, 50);
+        .filter(
+          (record) =>
+            created.has(record.id) && record.abstractText && record.aiAnnotations === null,
+        )
+        .map(({ id }) => id);
       if (adapter.organize && aiAvailable && automaticCandidates.length > 0) {
         setBusy('organize');
-        try {
-          const organized = await adapter.organize({
-            projectId: project.id,
-            recordIds: automaticCandidates.map(({ id }) => id),
-            requestedModelId,
-            reasoningOptionId,
-          });
-          await refresh();
-          message += ` AI read ${organized.updatedCount} available abstracts and added detailed topics and keywords automatically.`;
-        } catch (reason) {
-          if (literatureErrorCode(reason) === 'literature_ai_interrupted') {
-            message +=
-              ' Automatic abstract analysis was stopped; the completed search remains saved.';
+        const organized = await organizeInBatches(
+          automaticCandidates,
+          LITERATURE_AUTO_ORGANIZE_MAXIMUM,
+        );
+        await refresh();
+        if (organized.updated > 0) {
+          messages.push(
+            uiText('AI read {count} new abstracts and added topics and keywords.', {
+              count: organized.updated,
+            }),
+          );
+        }
+        if (organized.failure) {
+          if (literatureErrorCode(organized.failure) === 'literature_ai_interrupted') {
+            messages.push(uiText('AI reading was stopped; the search result remains saved.'));
           } else {
             setError(
-              uiText('Search completed, but automatic abstract analysis failed. {value1}', {
-                value1: literatureErrorMessage(reason),
+              uiText('The search is saved, but AI reading stopped early. {reason}', {
+                reason: literatureErrorMessage(organized.failure),
               }),
             );
           }
+        } else if (automaticCandidates.length > organized.attempted) {
+          messages.push(
+            uiText(
+              '{count} more new abstracts are waiting; use the organize button to read them.',
+              {
+                count: automaticCandidates.length - organized.attempted,
+              },
+            ),
+          );
         }
-      } else if (next.records.some((record) => record.aiAnnotations === null)) {
-        message += aiAvailable
-          ? ' No new provider abstract was available for automatic keyword extraction.'
-          : ' Connect an AI provider to extract detailed keywords from available abstracts.';
+      } else if (created.size > 0 && !aiAvailable) {
+        messages.push(uiText('Connect an AI provider to extract keywords from the new abstracts.'));
       }
-      setNotice(message);
+      setNotice(messages.filter(Boolean).join(' '));
+    } catch (reason) {
+      setError(literatureErrorMessage(reason));
+    } finally {
+      setBusy('');
+      setBusyDetail('');
+    }
+  };
+
+  const handleUndoSearch = async () => {
+    const undo = adapter.undoSearch;
+    if (busy || !undo || !undoableSearch) return;
+    setBusy('undo');
+    setError('');
+    try {
+      const result = await undo({ projectId: project.id, runIds: [...undoableSearch.runIds] });
+      await refresh();
+      setUndoableSearch(null);
+      setNotice(
+        result.keptCount > 0
+          ? uiText(
+              'Removed {removed} papers this search added. {kept} were kept because you reviewed or annotated them.',
+              { removed: result.removedCount, kept: result.keptCount },
+            )
+          : uiText('Removed {removed} papers this search added.', {
+              removed: result.removedCount,
+            }),
+      );
     } catch (reason) {
       setError(literatureErrorMessage(reason));
     } finally {
@@ -1848,7 +2020,7 @@ export function LiteratureView({
                 {uiText('calendar years, and at least')} {LITERATURE_RISING_MIN_CITATIONS_PER_YEAR}{' '}
                 {uiText('citations/year or')} {LITERATURE_RISING_MIN_INFLUENTIAL_CITATIONS}{' '}
                 {uiText(
-                  'influential citation. Others remain Broad for screening. Venue metadata and author h-index never promote a paper by themselves. Existing v1 labels remain historical until that search is run again. Each search is additive; scores are only comparable within the same search.',
+                  'influential citation. A paper is saved only when its own title, abstract, topics or venue mention the search terms; the remaining on-topic papers stay Broad for screening, and Broad is never topped up with unrelated works. Venue metadata and author h-index never promote a paper by themselves. Labels older than v3 remain historical until that search is run again. Each search is additive; scores are only comparable within the same search.',
                 )}
               </p>
             </div>
@@ -1870,7 +2042,9 @@ export function LiteratureView({
                         search.conflicts.length > 0
                           ? `; skipped ${literatureConflictSummary(search.conflicts, search.conflictCount)}`
                           : '',
-                      value5: literatureCoverageSummary(search.coverage),
+                      value5: search.coverage
+                        ? ` ${literatureCoverageSummary(search.coverage)}`
+                        : '',
                     })}
                     onClick={() => {
                       const tagDraft = literatureSearchTagDraft(search);
@@ -1898,11 +2072,11 @@ export function LiteratureView({
             <details className="literature-coverage-warning" role="status">
               <summary>
                 <strong>{uiText('Reduced search coverage:')}</strong>{' '}
-                {latestSearchCoverage.degradationReasons.map(formatLabel).join(', ')}
+                {latestSearchCoverage.degradationReasons.map(literatureDegradationLabel).join(', ')}
               </summary>
               <p>
                 {uiText('Available:')}{' '}
-                {latestSearchCoverage.availableSignals.map(formatLabel).join(', ')}
+                {latestSearchCoverage.availableSignals.map(literatureSignalLabel).join(', ')}
                 {uiText('. Saved papers and manual review remain available.')}
               </p>
             </details>
@@ -1918,10 +2092,37 @@ export function LiteratureView({
           </button>
         </div>
       )}
+      {busyDetail && (
+        <p className="literature-search-progress" role="status">
+          {busyDetail}
+        </p>
+      )}
       {notice && (
         <div className="notice" role="status">
           <span>{notice}</span>
-          <button type="button" className="ghost-button" onClick={() => setNotice('')}>
+          {undoableSearch && adapter.undoSearch && (
+            <button
+              type="button"
+              className="ghost-button"
+              disabled={Boolean(busy)}
+              title={uiText(
+                'Removes only papers this search created and you have not reviewed or annotated',
+              )}
+              onClick={() => void handleUndoSearch()}
+            >
+              {busy === 'undo'
+                ? uiText('Removing…')
+                : uiText('Undo {count} added', { count: undoableSearch.addedCount })}
+            </button>
+          )}
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={() => {
+              setNotice('');
+              setUndoableSearch(null);
+            }}
+          >
             {uiText('Dismiss')}
           </button>
         </div>
@@ -1947,6 +2148,19 @@ export function LiteratureView({
             >
               {uiText('Import')}
             </button>
+            {adapter.listPaperLibrary && adapter.importPaperSummaries && (
+              <button
+                type="button"
+                className="secondary-button"
+                aria-expanded={paperLibraryOpen}
+                title={uiText(
+                  'Add papers you already saved in Paper summaries, related ones first',
+                )}
+                onClick={() => setPaperLibraryOpen((current) => !current)}
+              >
+                {uiText('Add from paper summaries')}
+              </button>
+            )}
             {(['json', 'csv', 'bibtex'] as const).map((format) => (
               <button
                 type="button"
@@ -1980,18 +2194,26 @@ export function LiteratureView({
                         )
               }
               onClick={() => {
-                const organize = adapter.organize;
-                if (!organize || !aiAvailable) return;
+                if (!adapter.organize || !aiAvailable) return;
                 const recordIds = aiCandidates.map(({ id }) => id);
                 void run('organize', async () => {
-                  const result = await organize({
-                    projectId: project.id,
+                  const result = await organizeInBatches(
                     recordIds,
-                    requestedModelId,
-                    reasoningOptionId,
-                  });
+                    LITERATURE_MANUAL_ORGANIZE_MAXIMUM,
+                  );
+                  setBusyDetail('');
                   await refresh();
-                  return `AI organization updated ${result.updatedCount} papers and skipped ${result.skippedCount}. Provider abstracts were used when available; review the drafts before using them.`;
+                  // Papers organized before a failure stay organized; the failure is still reported.
+                  if (result.failure && result.updated === 0) throw result.failure;
+                  const summary = uiText(
+                    'AI organization updated {updated} papers and skipped {skipped}. Provider abstracts were used when available; review the drafts before using them.',
+                    { updated: result.updated, skipped: result.skipped },
+                  );
+                  return result.failure
+                    ? `${summary} ${uiText('It stopped early. {reason}', {
+                        reason: literatureErrorMessage(result.failure),
+                      })}`
+                    : summary;
                 });
               }}
             >
@@ -2012,6 +2234,37 @@ export function LiteratureView({
             )}
           </div>
         </header>
+        {paperLibraryOpen && adapter.listPaperLibrary && adapter.importPaperSummaries && (
+          <LiteraturePaperLibraryPanel
+            relevanceText={paperLibraryRelevanceText}
+            knownUrls={paperLibraryKnownUrls}
+            list={adapter.listPaperLibrary}
+            importPapers={(paperIds) =>
+              adapter.importPaperSummaries!({ projectId: project.id, paperIds })
+            }
+            onImported={(receipt) => {
+              void refresh();
+              setError('');
+              setNotice(
+                [
+                  uiText(
+                    'Added {imported} papers from the paper summary library. {already} were already in the table.',
+                    { imported: receipt.importedCount, already: receipt.alreadySavedCount },
+                  ),
+                  receipt.missingCount > 0
+                    ? uiText('{missing} could no longer be found in the library.', {
+                        missing: receipt.missingCount,
+                      })
+                    : '',
+                ]
+                  .filter(Boolean)
+                  .join(' '),
+              );
+              setPaperLibraryOpen(false);
+            }}
+            onClose={() => setPaperLibraryOpen(false)}
+          />
+        )}
         {(!adapter.organize || !aiAvailable) && (
           <p className="literature-ai-availability">
             <strong>{uiText('AI organization:')}</strong>{' '}

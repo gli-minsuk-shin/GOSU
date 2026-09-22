@@ -8,10 +8,10 @@ import {
   type PointerEvent,
   type ReactNode,
 } from 'react';
+import { BriefingActivityMonitor } from './briefing-activity-monitor';
 import {
   nextOccurrences,
   defaultLiveSettings,
-  defaultAssistantPreferences,
   isPublicHttpsUrl,
   validateRoutine,
   type BriefingRoutine,
@@ -37,13 +37,13 @@ import {
   PaperChatReferenceSchema,
   type PaperChatReference,
 } from './paper-chat-reference';
-import { BriefingModelMenu } from './briefing-model-menu';
-import { modelSelection } from './briefing-model-selection';
+import { BriefingModelBadge } from './briefing-model-badge';
 import { CalendarView } from './calendar-view';
 import { BriefingHistoryView } from './briefing-history-view';
 import { BRIEFING_HISTORY_CHANGED, type HistoryRemovalReceipt } from './briefing-history-removal';
 import { SavedPaperSummaries } from './saved-paper-summaries';
 import { BriefingCollapseAll } from './briefing-collapse-all';
+import { BriefingGuidanceButton } from './briefing-guidance-panel';
 import { BriefingGenerationControls } from './briefing-generation-controls';
 import { isDesktopNavigation, isGosuEmbedded } from './desktop-bridge';
 import { parseBriefingItemTarget } from './briefing-item-navigation';
@@ -256,21 +256,6 @@ function RoutineSettings({
   const [draft, setDraft] = useState(() =>
     proposal ? settingsProposalDraft(routine, proposal) : routine,
   );
-  const savedModel = modelSelection(routine.live?.assistant);
-  useEffect(() => {
-    setDraft((current) => {
-      if (JSON.stringify(modelSelection(current.live?.assistant)) === JSON.stringify(savedModel))
-        return current;
-      const live = current.live ?? defaultLiveSettings();
-      return {
-        ...current,
-        live: {
-          ...live,
-          assistant: { ...(live.assistant ?? defaultAssistantPreferences()), ...savedModel },
-        },
-      };
-    });
-  }, [JSON.stringify(savedModel)]);
   const [errors, setErrors] = useState<readonly string[]>([]);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -858,6 +843,10 @@ export function BriefingApp({
           setRecommendationRequest((n) => n + 1);
         }
         document.documentElement.dataset.gosuView = event.data.view;
+        if (document.scrollingElement) {
+          document.scrollingElement.scrollTop = 0;
+          document.scrollingElement.scrollLeft = 0;
+        }
       }
     };
     window.addEventListener?.('message', receive);
@@ -866,14 +855,17 @@ export function BriefingApp({
   const workspace = useMemo(() => withoutSampleContent(suppliedWorkspace), [suppliedWorkspace]);
   const [historyRevision, setHistoryRevision] = useState(0);
   const mainScroll = useRef<HTMLDivElement>(null);
+  // The running generation progress renders beside the page title instead of adding a header row.
+  const [titleProgressSlot, setTitleProgressSlot] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
     tabRef.current = tab;
+    if (briefingTarget) return;
     if (typeof requestAnimationFrame !== 'function') return;
     const frame = requestAnimationFrame(() => {
       if (mainScroll.current) mainScroll.current.scrollTop = scrollPositions.current[tab] ?? 0;
     });
     return () => cancelAnimationFrame(frame);
-  }, [tab]);
+  }, [tab, briefingTarget]);
   const [leftCollapsed, setLeftCollapsed] = useState(
     () => typeof window !== 'undefined' && window.innerWidth < 760,
   );
@@ -899,8 +891,7 @@ export function BriefingApp({
     return () => window.removeEventListener?.(PAPER_CHAT_REFERENCE, choose);
   }, [workspace, onChange]);
   const [recommendationRequest, setRecommendationRequest] = useState(0);
-  const [chatBusy, setChatBusy] = useState(false),
-    [modelSaving, setModelSaving] = useState(false);
+  const [chatBusy, setChatBusy] = useState(false);
   const [liveResultsByRoutine, setLiveResultsByRoutine] = useState<
     Record<string, LiveSourceResult[]>
   >({});
@@ -1032,6 +1023,7 @@ export function BriefingApp({
   };
   return (
     <div className={`briefing-app${globalAssistant ? ' is-global-assistant' : ''}`}>
+      <BriefingActivityMonitor routineId={primaryPersonalRoutine?.id} />
       <header className="briefing-topbar">
         <div className="briefing-brand-mark">G</div>
         <div>
@@ -1197,15 +1189,20 @@ export function BriefingApp({
                   {routine ? KIND_LABELS[routine.kind] : 'BRIEFING'} <span>/</span>{' '}
                   {tab === 'live' ? '실제 브리핑' : tab === 'history' ? '개인 연구 브리핑' : '설정'}
                 </div>
-                <h1>
-                  {tab === 'papers'
-                    ? '논문 요약'
-                    : tab === 'manage'
-                      ? '루틴 관리'
-                      : tab === 'history'
-                        ? '개인 연구 브리핑'
-                        : (routine?.name ?? '나만의 브리핑을 시작하세요')}
-                </h1>
+                <div className="briefing-title-row">
+                  <h1>
+                    {tab === 'papers'
+                      ? '논문 요약'
+                      : tab === 'manage'
+                        ? '루틴 관리'
+                        : tab === 'history'
+                          ? '개인 연구 브리핑'
+                          : (routine?.name ?? '나만의 브리핑을 시작하세요')}
+                  </h1>
+                  {tab === 'history' && primaryPersonalRoutine?.kind === 'personal' && (
+                    <div className="briefing-title-progress" ref={setTitleProgressSlot} />
+                  )}
+                </div>
                 <p>
                   {routine
                     ? `${STATE_LABELS[routine.state]} · ${routine.schedule.timeZone}`
@@ -1213,15 +1210,22 @@ export function BriefingApp({
                 </p>
               </div>
               <div className="briefing-main-actions">
-                {['history', 'live', 'papers'].includes(tab) && (
-                  <BriefingCollapseAll target={mainScroll} />
-                )}
-                {tab === 'history' && primaryPersonalRoutine?.kind === 'personal' && (
+                {tab === 'history' && primaryPersonalRoutine?.kind === 'personal' ? (
                   <BriefingGenerationControls
                     key={primaryPersonalRoutine.id}
                     routineId={primaryPersonalRoutine.id}
+                    routineSchedule={primaryPersonalRoutine.schedule}
+                    leadingControls={
+                      <>
+                        <BriefingGuidanceButton routineId={primaryPersonalRoutine.id} />
+                        <BriefingCollapseAll target={mainScroll} />
+                      </>
+                    }
+                    progressSlot={titleProgressSlot}
                   />
-                )}
+                ) : ['history', 'live', 'papers'].includes(tab) ? (
+                  <BriefingCollapseAll target={mainScroll} />
+                ) : null}
               </div>
             </header>
           )}
@@ -1363,29 +1367,7 @@ export function BriefingApp({
               {chatOpen ? 'GOSU AI' : copilotOpen ? 'ROUTINE COPILOT' : 'ROUTINE OVERVIEW'}
             </span>
             {chatOpen && routine && !rightCollapsed && (
-              <BriefingModelMenu
-                key={routine.id}
-                routine={routine}
-                busy={chatBusy}
-                onSavingChange={setModelSaving}
-                onSettings={() => setTab('settings')}
-                onSaved={(selection) => {
-                  const current = latestWorkspace.current.routines.find((r) => r.id === routine.id);
-                  if (!current) return;
-                  const live = current.live ?? defaultLiveSettings();
-                  save({
-                    ...current,
-                    updatedAt: now(),
-                    live: {
-                      ...live,
-                      assistant: {
-                        ...(live.assistant ?? defaultAssistantPreferences()),
-                        ...selection,
-                      },
-                    },
-                  });
-                }}
-              />
+              <BriefingModelBadge key={routine.id} routineId={routine.id} busy={chatBusy} />
             )}
             <button
               type="button"
@@ -1413,7 +1395,6 @@ export function BriefingApp({
               visible={chatOpen && !rightCollapsed}
               recommendationRequest={recommendationRequest}
               onBusyChange={setChatBusy}
-              blocked={modelSaving}
               onSettings={(proposal) => {
                 setSettingsProposal(
                   proposal && routine ? { routineId: routine.id, value: proposal } : undefined,

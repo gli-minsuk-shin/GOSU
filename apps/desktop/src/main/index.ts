@@ -1,5 +1,8 @@
-import { access, mkdir } from 'node:fs/promises';
+import { access, mkdir, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { openLocalDatabaseWithWrappedKey } from './local-database-key';
+import { PromptFreeSecretSealing } from './local-secret-sealing';
+import { systemBriefingKey } from '../../../briefing-lab/briefing-system-key';
 import {
   app,
   BrowserWindow,
@@ -48,6 +51,7 @@ import {
 } from './application-menu';
 import { registerAgentAddOnIpc } from './agent-addon-ipc';
 import { createAgentAddOnRegistry } from './agent-addon-service';
+import { ClaudeCodeLoginService, createNodeClaudeCodeLoginPlatform } from './claude-code-login';
 import { ClaudeCodeProjectChatAdapter } from './claude-code-project-chat-adapter';
 import {
   cleanupStaleGosuRuntimeDirectories,
@@ -62,7 +66,17 @@ import {
   HermesProjectChatAdapter,
 } from './hermes-project-chat-adapter';
 import { LocalDatabase } from './local-database';
+import { ModelPriceCatalogStore } from './model-price-catalog';
 import { registerModelUsageIpc } from './model-usage-ipc';
+import { registerUsageLimitIpc } from './usage-limit-ipc';
+import { fullDiskAccessState } from './full-disk-access';
+import {
+  FULL_DISK_ACCESS_CHANNEL,
+  FULL_DISK_ACCESS_SETTINGS_URL,
+} from '../shared/full-disk-access';
+import { UsageLimitService } from './usage-limit-service';
+import { ClaudeUsageProbe } from './claude-usage-probe';
+import { USAGE_LIMIT_IPC_CHANNELS } from '../shared/usage-limit-contracts';
 import { ModelUsageService } from './model-usage-service';
 import { installProcessOutputGuards } from './process-output-guard';
 import { registerGitWorkspaceIpc } from './git-workspace-ipc';
@@ -113,9 +127,26 @@ import { SharedPaperSummaryLibrary } from '../../../briefing-lab/paper-summary-l
 import { BriefingDesktopHost } from '../../../briefing-lab/briefing-desktop-host';
 import { createBriefingHostConsent } from './briefing-host-consent';
 import { createGlobalAssistantProjects } from './global-assistant-projects';
+import { createGlobalAssistantWorkspace } from './global-assistant-workspace';
 import { ModelRoutingStore } from './model-routing-store';
+import { ApprovalPolicyStore } from './approval-policy-store';
+import { AssistantShortcutStore } from './assistant-shortcut-store';
+import { AppShortcutStore } from './app-shortcut-store';
+import { installAppShortcutInput, installAssistantShortcutInput } from './assistant-shortcut-input';
+import {
+  AppShortcutsSchema,
+  DEFAULT_APP_SHORTCUTS,
+  appShortcutOwner,
+  type AppShortcutTarget,
+} from '../shared/app-shortcuts';
+import { trackMainRendererReadiness } from './renderer-navigation-ready';
+import { DEFAULT_ASSISTANT_SHORTCUT } from '../shared/assistant-shortcut';
+import { NativeUsageLedger } from './native-usage-ledger';
+import { configureNativeUsageObserver } from '../../../briefing-lab/native-usage-observer';
+import { APPROVAL_POLICY_CHANNELS } from '../shared/approval-policy';
 import { MODEL_ROUTING_CHANNELS } from '@gosu/contracts';
 import { briefingTodoSnapshot } from './briefing-todo-adapter';
+import { DesktopBriefingTaskActions } from './briefing-task-actions';
 import { BRIEFING_LAB_OPEN_CHANNEL } from '../shared/briefing-lab-contracts';
 import { ProjectChatService } from './project-chat-service';
 import { ProjectChatProviderRouter } from './project-chat-provider-router';
@@ -128,6 +159,11 @@ import { ResearchNotesProjectLinkSchema, ResearchNotesService } from './research
 import { registerSearchIpc } from './search-ipc';
 import { SearchService } from './search-service';
 import { createSshCommandRunner } from './ssh-command-runner';
+import { DAILY_QUOTE_CHANNELS } from '../shared/daily-quote-contracts';
+import { dailyQuoteGenerator } from './daily-quote-generator';
+import { DailyQuoteService } from './daily-quote-service';
+import { registerSshAgentNotesIpc } from './ssh-agent-notes-ipc';
+import { SshAgentNotesStore } from './ssh-agent-notes-store';
 import { SshConnectionService } from './ssh-connection-service';
 import { registerSshIpc } from './ssh-ipc';
 import {
@@ -190,6 +226,9 @@ const hermesProjectChat = new HermesAcpProjectChatAdapter({
   clientVersion: () => app.getVersion(),
 });
 const claudeCodeProjectChat = new ClaudeCodeProjectChatAdapter();
+const claudeCodeLogin = new ClaudeCodeLoginService(
+  createNodeClaudeCodeLoginPlatform((url) => shell.openExternal(url)),
+);
 const projectChatProvider = new ProjectChatProviderRouter(
   codex,
   hermesProjectChat,
@@ -220,7 +259,18 @@ const vault = new VaultAccess({
     database.cache('research-notes', 'obsidian-vault-root', { root });
   },
 });
-const ssh = new SshConnectionService(database, createSshCommandRunner());
+let approvalPolicyStore: ApprovalPolicyStore | undefined;
+let assistantShortcutStore: AssistantShortcutStore | undefined;
+let appShortcutStore: AppShortcutStore | undefined;
+let pendingAssistantOpen = false;
+let pendingSurfaceOpen: AppShortcutTarget | null = null;
+const ssh = new SshConnectionService(database, createSshCommandRunner(), {
+  reuseApprovedScopes: (id) => approvalPolicyStore?.enabled(id) ?? false,
+  revokeReusedScope: async (id) => {
+    if (!approvalPolicyStore) throw new Error('approval_policy_unavailable');
+    await approvalPolicyStore.revokeScope(id);
+  },
+});
 const workspace = new WorkspaceService({
   load: () => database.loadWorkspaceState(),
   commit: (state, operation) => database.commitWorkspaceState(state, operation),
@@ -231,7 +281,35 @@ const workspace = new WorkspaceService({
   pendingChanges: () => database.pendingWorkspaceChanges(),
   pendingSummary: () => database.pendingWorkspaceSummary(),
 });
-const modelUsage = new ModelUsageService(database, workspace);
+let nativeUsageLedger: NativeUsageLedger | undefined;
+const modelUsage = new ModelUsageService(database, workspace, async () =>
+  nativeUsageLedger ? nativeUsageLedger.rows() : [],
+);
+// Public API prices for the Usage view's "what an API key would have cost" estimate.
+const modelPrices = new ModelPriceCatalogStore(app.getPath('userData'));
+// Remaining plan limits of the connected CLIs, for the title bar and the Usage screen. Each CLI is
+// asked with its own login (Codex: app-server account limits, Claude Code: the usage control
+// request); GOSU reads no credential and sends no model request for this.
+const claudeUsageProbe = new ClaudeUsageProbe();
+const usageLimits = new UsageLimitService(
+  app.getPath('userData'),
+  {
+    codex: { read: () => codex.rateLimits() },
+    claude: {
+      connected: () => projectChatProvider.isClaudeCodeConnected(),
+      read: (keepAlive) => claudeUsageProbe.read({ keepAlive }),
+      close: () => claudeUsageProbe.close(),
+    },
+  },
+  (status) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    try {
+      mainWindow.webContents.send(USAGE_LIMIT_IPC_CHANNELS.changed, status);
+    } catch {
+      console.error('[GOSU] Usage limit renderer event delivery failed.');
+    }
+  },
+);
 const experimentWorkspace = new ExperimentWorkspaceService({
   storage: database,
   workspace,
@@ -261,9 +339,12 @@ const gitWorkspace = new GitWorkspaceService({
   rootDirectory: () => join(app.getPath('userData'), 'git-workspaces'),
 });
 let mainWindow: BrowserWindow | undefined;
+// Overleaf tokens and the lecture manifest key were read through safeStorage when the renderer
+// loaded, which asked for the login password at every launch (local-secret-sealing.ts).
+const localSecrets = new PromptFreeSecretSealing(safeStorage);
 const overleafGitCredentials = new OverleafGitCredentialStore({
   rootDirectory: () => join(app.getPath('userData'), 'credentials', 'overleaf-git'),
-  encryption: safeStorage,
+  encryption: localSecrets,
 });
 const overleafPersonalToken = new OverleafPersonalTokenService(overleafGitCredentials);
 const overleafGitTransport = new OverleafGitTransport({
@@ -374,6 +455,12 @@ const projectChat = new ProjectChatService({
     if (!modelLabHost) throw new Error('model_lab_host_unavailable');
     return modelLabHost.readForChat(projectId, input);
   },
+  modelLabWrite: async (projectId, input) => {
+    if (!modelLabHost) throw new Error('model_lab_host_unavailable');
+    return modelLabHost.addModelForChat(projectId, { ...input, origin: 'project-chat' });
+  },
+  // Calendar, mail, saved briefings and paper summaries, under the Briefing Lab settings only.
+  briefingReads: async () => (briefingLabHost ? await briefingLabHost.reads() : null),
   researchPlans,
   compactHistory: async (model, messages, summary, signal, onUsage) => {
     return compactProjectConversation(
@@ -392,6 +479,13 @@ const projectChat = new ProjectChatService({
   literature,
   manuscripts: manuscriptWorkspace,
   ssh,
+  // The store is created once the app is ready; before that there are no notes to hand over.
+  sshAgentNotes: {
+    async get() {
+      const notes = sshAgentNotesStore ? (await sshAgentNotesStore.get()).notes : {};
+      return Object.fromEntries(Object.entries(notes).map(([id, note]) => [id, note.text]));
+    },
+  },
   experiments: experimentWorkspace,
   attachments: projectChatAttachments,
   usage: modelUsage,
@@ -431,7 +525,7 @@ const lectureExternalSources = new LectureExternalSourceService({
   },
   manifestAuthenticator: new LectureExternalSourceManifestAuthenticator({
     rootDirectory: lectureExternalSourceRoot,
-    encryption: safeStorage,
+    encryption: localSecrets,
   }),
 });
 const lectureOverleafSources = new LectureOverleafSourceService(manuscriptWorkspace);
@@ -468,7 +562,8 @@ const lectureStudio = new LectureStudioService({
   figures: lectureStudioFigures,
   workspace,
   artifacts: researchNotes,
-  codex,
+  // The router sends Codex models to Codex and connected Claude Code models to Claude Code.
+  codex: projectChatProvider,
   usage: modelUsage,
   pdfCompiler: lectureDocumentCompiler,
   artifactPlatform: createLectureArtifactPlatform(
@@ -529,6 +624,15 @@ function deliverPendingNavigation(window: BrowserWindow) {
     pendingSettingsOpen = false;
     window.webContents.send(APP_NAVIGATION_CHANNELS.openSettings);
   }
+  if (pendingAssistantOpen) {
+    pendingAssistantOpen = false;
+    window.webContents.send(APP_NAVIGATION_CHANNELS.openAssistant);
+  }
+  if (pendingSurfaceOpen) {
+    const target = pendingSurfaceOpen;
+    pendingSurfaceOpen = null;
+    window.webContents.send(APP_NAVIGATION_CHANNELS.openSurface, target);
+  }
   if (pendingSidebarToggle) {
     pendingSidebarToggle = false;
     window.webContents.send(APP_NAVIGATION_CHANNELS.toggleSidebar);
@@ -549,23 +653,47 @@ function createWindow(trustedRenderer: TrustedRenderer) {
       nodeIntegration: false,
       sandbox: true,
       spellcheck: true,
+      // Hiding/minimizing the app must not suspend retained chat streams and progress delivery.
+      backgroundThrottling: false,
     },
   });
   mainWindow = window;
   mainWindowRendererLoaded = false;
+  const removeRendererReadiness = trackMainRendererReadiness(window.webContents, (ready) => {
+    if (mainWindow !== window) return;
+    mainWindowRendererLoaded = ready;
+    if (ready) deliverPendingNavigation(window);
+  });
+  const removeAssistantShortcut = installAssistantShortcutInput(
+    window.webContents,
+    () => assistantShortcutStore?.get() ?? DEFAULT_ASSISTANT_SHORTCUT,
+    () => {
+      pendingAssistantOpen = true;
+      focusMainWindow();
+      deliverPendingNavigation(window);
+    },
+  );
+  const removeAppShortcuts = installAppShortcutInput(
+    window.webContents,
+    () => appShortcutStore?.get() ?? DEFAULT_APP_SHORTCUTS,
+    (target) => {
+      pendingSurfaceOpen = target;
+      focusMainWindow();
+      deliverPendingNavigation(window);
+    },
+  );
+  // Limits are refreshed only while the window can be seen; showing it again refreshes at once.
+  const limitsVisible = () => usageLimits.setActive(window.isVisible() && !window.isMinimized());
+  for (const event of ['show', 'hide', 'minimize', 'restore'] as const)
+    window.on(event as 'show', limitsVisible);
   window.on('closed', () => {
+    removeAssistantShortcut();
+    removeAppShortcuts();
+    removeRendererReadiness();
     if (mainWindow === window) {
       mainWindow = undefined;
       mainWindowRendererLoaded = false;
     }
-  });
-  window.webContents.on('did-start-loading', () => {
-    if (mainWindow === window) mainWindowRendererLoaded = false;
-  });
-  window.webContents.on('did-finish-load', () => {
-    if (mainWindow !== window) return;
-    mainWindowRendererLoaded = true;
-    deliverPendingNavigation(window);
   });
   window.webContents.setWindowOpenHandler(({ url }) => {
     try {
@@ -613,19 +741,36 @@ function installApplicationMenu(trustedRenderer: TrustedRenderer) {
     } catch {
       /* Keep Settings reachable so the user can repair an invalid preference. */
     }
-    if (installedLanguage === language) return;
+    const menuKey = `${language}:${assistantShortcutStore?.get()}:${JSON.stringify(appShortcutStore?.get())}`;
+    if (installedLanguage === menuKey) return;
     const menu = Menu.buildFromTemplate(
       buildMacApplicationMenuTemplate({
         appName: app.getName(),
         language,
         openSettings: () => openSettings(trustedRenderer),
         toggleSidebar: () => toggleSidebar(trustedRenderer),
+        ...(assistantShortcutStore ? { assistantShortcut: assistantShortcutStore.get() } : {}),
+        openAssistant: () => {
+          pendingAssistantOpen = true;
+          const window =
+            mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow(trustedRenderer);
+          focusMainWindow();
+          deliverPendingNavigation(window);
+        },
+        appShortcuts: appShortcutStore?.get() ?? DEFAULT_APP_SHORTCUTS,
+        openSurface: (target) => {
+          pendingSurfaceOpen = target;
+          const window =
+            mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow(trustedRenderer);
+          focusMainWindow();
+          deliverPendingNavigation(window);
+        },
       }),
     );
     for (const change of macApplicationMenuLabelChanges(menu.items, language, app.getName()))
       change.item.label = change.label;
     Menu.setApplicationMenu(menu);
-    installedLanguage = language;
+    installedLanguage = menuKey;
   };
   refreshApplicationMenu();
 }
@@ -633,6 +778,8 @@ function installApplicationMenu(trustedRenderer: TrustedRenderer) {
 let modelLabHost: ModelLabDesktopHost | undefined;
 let briefingLabHost: BriefingDesktopHost | undefined;
 let modelRoutingStore: ModelRoutingStore | undefined;
+let sshAgentNotesStore: SshAgentNotesStore | undefined;
+let dailyQuotes: DailyQuoteService | undefined;
 
 function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadiness) {
   const handle = (
@@ -684,18 +831,62 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     if (!modelRoutingStore) throw new Error('model_routing_unavailable');
     return modelRoutingStore.get();
   });
+  handle(APPROVAL_POLICY_CHANNELS.get, () => {
+    if (!approvalPolicyStore) throw new Error('approval_policy_unavailable');
+    return approvalPolicyStore.get();
+  });
+  handle(APP_NAVIGATION_CHANNELS.getAssistantShortcut, () => {
+    if (!assistantShortcutStore) throw new Error('shortcut_unavailable');
+    return assistantShortcutStore.get();
+  });
+  handle(APP_NAVIGATION_CHANNELS.setAssistantShortcut, async (_event, value) => {
+    if (!assistantShortcutStore) throw new Error('shortcut_unavailable');
+    // One chord opens one screen: the assistant cannot take a chord a screen already uses.
+    if (
+      typeof value === 'string' &&
+      appShortcutOwner(value, appShortcutStore?.get() ?? DEFAULT_APP_SHORTCUTS, '', 'assistant')
+    ) {
+      throw new Error('shortcut_in_use');
+    }
+    const saved = await assistantShortcutStore.set(value);
+    refreshApplicationMenu?.();
+    return saved;
+  });
+  handle(APP_NAVIGATION_CHANNELS.getAppShortcuts, () => {
+    if (!appShortcutStore) throw new Error('shortcut_unavailable');
+    return appShortcutStore.get();
+  });
+  handle(APP_NAVIGATION_CHANNELS.setAppShortcuts, async (_event, value) => {
+    if (!appShortcutStore || !assistantShortcutStore) throw new Error('shortcut_unavailable');
+    const next = AppShortcutsSchema.parse(value);
+    if (Object.values(next).includes(assistantShortcutStore.get())) {
+      throw new Error('shortcut_in_use');
+    }
+    const saved = await appShortcutStore.set(next);
+    refreshApplicationMenu?.();
+    return saved;
+  });
+  handle(APPROVAL_POLICY_CHANNELS.set, (_event, value) => {
+    if (!approvalPolicyStore) throw new Error('approval_policy_unavailable');
+    return approvalPolicyStore.set(value);
+  });
   handle(MODEL_ROUTING_CHANNELS.set, (_event, value) => {
     if (!modelRoutingStore) throw new Error('model_routing_unavailable');
     return modelRoutingStore.set(value);
   });
   handle('briefing-lab:open-privacy', async (_event, kind) => {
-    if (kind !== 'automation' && kind !== 'calendar') throw new Error('invalid_privacy_target');
+    if (kind !== 'automation' && kind !== 'calendar' && kind !== 'full-disk')
+      throw new Error('invalid_privacy_target');
     await shell.openExternal(
       kind === 'automation'
         ? 'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation'
-        : 'x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars',
+        : kind === 'calendar'
+          ? 'x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars'
+          : FULL_DISK_ACCESS_SETTINGS_URL,
     );
   });
+  // Whether the fast Apple Mail read can work. GOSU cannot grant this; it only notices and guides.
+  handle(FULL_DISK_ACCESS_CHANNEL, () => fullDiskAccessState());
   handle('briefing-lab:reserve-drop', (_event, input) => {
     const parsed = ReserveBriefingDropSchema.parse(input);
     return briefingChatAttachments.reserveDrop(parsed.routineId, parsed.paths);
@@ -716,6 +907,7 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
   registerPaperSummaryIpc(
     (channel, listener) => handle(channel, (_event, input) => listener(input)),
     new SharedPaperSummaryLibrary(undefined, undefined, undefined, () => modelRoutingStore!.get()),
+    literature,
   );
   registerProjectChatAttachmentIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
@@ -743,6 +935,25 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     ssh,
     reportUnexpectedWorkspaceError,
     workspace,
+  );
+  // Never throws: the title bar always gets a line, with the reason when it is not the model's.
+  handle(DAILY_QUOTE_CHANNELS.get, async () => {
+    if (!dailyQuotes) throw new Error('daily_quote_unavailable');
+    return dailyQuotes.today();
+  });
+  // One more line because the reader asked. Bounded by the day's allowance inside the service.
+  handle(DAILY_QUOTE_CHANNELS.refresh, async () => {
+    if (!dailyQuotes) throw new Error('daily_quote_unavailable');
+    return dailyQuotes.refresh();
+  });
+  handle(DAILY_QUOTE_CHANNELS.history, async () => {
+    if (!dailyQuotes) throw new Error('daily_quote_unavailable');
+    return dailyQuotes.history();
+  });
+  registerSshAgentNotesIpc(
+    (channel, listener) => handle(channel, (_event, input) => listener(input)),
+    () => sshAgentNotesStore,
+    async () => (await ssh.listConnections()).map(({ id }) => id),
   );
   registerHermesAcpApprovalIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
@@ -802,10 +1013,26 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     agentAddOns,
   );
+  handle('gosu:claude-code:login', () => claudeCodeLogin.login());
+  handle('gosu:claude-code:cancel-login', () => claudeCodeLogin.cancel());
+  handle('gosu:claude-code:submit-login-code', (_event, code) => claudeCodeLogin.submitCode(code));
+  handle('gosu:claude-code:open-login-page', () => claudeCodeLogin.openSignInPage());
   registerModelUsageIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     modelUsage,
+    modelPrices,
   );
+  modelPrices.start();
+  registerUsageLimitIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    usageLimits,
+  );
+  void usageLimits
+    .load()
+    .catch(() =>
+      console.error('[GOSU] Usage limit settings could not be read; using the defaults.'),
+    )
+    .then(() => usageLimits.start());
 
   handle('gosu:runtime:readiness', async () =>
     buildRuntimeReadiness({
@@ -935,6 +1162,38 @@ if (!primaryInstance) {
     modelRoutingStore = new ModelRoutingStore(
       join(app.getPath('userData'), 'model-routing.v1.json'),
     );
+    approvalPolicyStore = new ApprovalPolicyStore(
+      join(app.getPath('userData'), 'approval-policy.v1.json'),
+    );
+    assistantShortcutStore = new AssistantShortcutStore(
+      join(app.getPath('userData'), 'assistant-shortcut.v1.json'),
+    );
+    await assistantShortcutStore
+      .load()
+      .catch(() => console.error('[GOSU] Shortcut settings could not be loaded; using default.'));
+    appShortcutStore = new AppShortcutStore(join(app.getPath('userData'), 'app-shortcuts.v1.json'));
+    await appShortcutStore
+      .load()
+      .catch(() =>
+        console.error('[GOSU] Screen shortcut settings could not be loaded; using defaults.'),
+      );
+    dailyQuotes = new DailyQuoteService({
+      path: join(app.getPath('userData'), 'daily-quote.v1.json'),
+      language: () => applicationLanguage.get().language,
+      generator: async () => dailyQuoteGenerator(await modelRoutingStore?.get()),
+    });
+    sshAgentNotesStore = new SshAgentNotesStore(
+      join(app.getPath('userData'), 'ssh-agent-notes.v1.json'),
+    );
+    nativeUsageLedger = new NativeUsageLedger(
+      join(app.getPath('userData'), 'native-usage-ledger.v1.json'),
+    );
+    configureNativeUsageObserver((event) => nativeUsageLedger!.record(event));
+    await approvalPolicyStore
+      .load()
+      .catch(() =>
+        console.error('[GOSU] Approval policy unavailable; automatic scope reuse disabled.'),
+      );
     briefingLabHost = new BriefingDesktopHost(
       join(__dirname, '../briefing-lab'),
       4318,
@@ -952,6 +1211,16 @@ if (!primaryInstance) {
           if (!modelLabHost) throw new Error('model_lab_host_unavailable');
           return modelLabHost.readForChat(projectId, input);
         },
+        modelLabWrite: async (projectId, input) => {
+          if (!modelLabHost) throw new Error('model_lab_host_unavailable');
+          return modelLabHost.addModelForChat(projectId, { ...input, origin: 'ai-assistant' });
+        },
+        workspace: createGlobalAssistantWorkspace({
+          notes: researchNotes,
+          literature,
+          manuscripts: manuscriptWorkspace,
+          experiments: experimentWorkspace,
+        }),
         projects: async () => (await workspace.snapshot()).projects,
         sessions: (projectId) => projectChat.listSessions({ projectId }),
         read: (projectId, sessionId) => projectChat.snapshot({ projectId, sessionId }),
@@ -976,6 +1245,11 @@ if (!primaryInstance) {
         ),
       }),
       briefingChatAttachments,
+      () => approvalPolicyStore?.enabled() ?? false,
+      new DesktopBriefingTaskActions(
+        workspace,
+        join(app.getPath('appData'), 'GOSU', 'briefing-lab'),
+      ),
     );
     const contentSecurityPolicy = rendererContentSecurityPolicy(
       trustedRenderer,
@@ -994,8 +1268,28 @@ if (!primaryInstance) {
       }),
     );
     let localData = localDataReadiness();
+    if (
+      await localSecrets.load(() =>
+        systemBriefingKey(join(app.getPath('appData'), 'GOSU', 'briefing-lab')),
+      )
+    ) {
+      const overleafRoot = join(app.getPath('userData'), 'credentials', 'overleaf-git');
+      const overleafFiles = await readdir(overleafRoot).catch(() => [] as string[]);
+      await localSecrets.migrateFiles([
+        ...overleafFiles
+          .filter((name) => name.endsWith('.bin'))
+          .map((name) => join(overleafRoot, name)),
+        join(lectureExternalSourceRoot(), 'manifest-authentication-key.bin'),
+      ]);
+    }
     try {
-      database.open();
+      // The database key is wrapped by the Briefing Keychain helper, so updates of this locally
+      // signed app no longer ask for the login password at every launch (local-database-key.ts).
+      await openLocalDatabaseWithWrappedKey(database, {
+        userData: app.getPath('userData'),
+        systemKey: () => systemBriefingKey(join(app.getPath('appData'), 'GOSU', 'briefing-lab')),
+        legacy: safeStorage,
+      });
       codex.on(
         'invocation',
         (event: { threadId: string; turnId: string; invocation: ModelInvocation }) =>
@@ -1037,6 +1331,10 @@ if (!primaryInstance) {
         (event: Parameters<ModelUsageService['recordAcpPromptResult']>[0]) =>
           modelUsage.recordAcpPromptResult(event),
       );
+      // The saved Obsidian vault only needs local data. It used to wait behind the Codex start and
+      // every reconciliation below, so Research Notes opened in that window looked unconnected.
+      // A failure is kept for the Research Notes screen, which also retries on demand.
+      await vault.restore().catch(() => null);
       const initialCodexStatus = await codex.status().catch(() => null);
       if (initialCodexStatus) modelUsage.observeCodexAccount(initialCodexStatus);
       const evaluationArtifactReconciliation = await experimentEvaluationArtifacts
@@ -1065,13 +1363,16 @@ if (!primaryInstance) {
         )
         .catch(() => undefined);
       await lectureExternalSources.cleanupExpired().catch(() => undefined);
-      await vault.restore().catch(() => null);
       await lectureStudio.reconcilePendingArtifacts().catch(() => undefined);
       await projectChat.reconcileResearchNoteSaveReceipts().catch(() => undefined);
       await projectChat.reconcileQueuedTurns().catch(() => undefined);
     } catch (error) {
       localData = localDataReadiness(error);
     }
+    codex.on('notification', (notification: unknown) => {
+      const { method, params } = (notification ?? {}) as { method?: unknown; params?: unknown };
+      usageLimits.acceptCodexNotification(method, params);
+    });
     codex.on('catalog', (catalog: ModelCatalog) => {
       if (!database.isReady()) return;
       database.recordModelCatalog(catalog);
@@ -1167,6 +1468,8 @@ if (!primaryInstance) {
     if (process.platform !== 'darwin') app.quit();
   });
   app.on('before-quit', () => {
+    modelPrices.close();
+    usageLimits.close();
     void modelLabHost?.close();
     void briefingLabHost?.close();
     manuscriptPdfCompiler.dispose();

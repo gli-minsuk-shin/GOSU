@@ -14,6 +14,56 @@ guard let q = try? JSONSerialization.jsonObject(with: input) as? [String:Any], l
 let store=EKEventStore()
 let app=NSApplication.shared
 app.setActivationPolicy(.accessory)
+if action.hasPrefix("reminders_") {
+ var reminderStatus=EKEventStore.authorizationStatus(for: .reminder)
+ if action == "reminders_authorize" && reminderStatus != .fullAccess && reminderStatus != .authorized {
+  app.activate(ignoringOtherApps: true)
+  var done=false, allowed=false
+  store.requestFullAccessToReminders { ok,_ in allowed=ok;done=true }
+  let until=Date().addingTimeInterval(90)
+  while !done && Date()<until { RunLoop.current.run(until:Date().addingTimeInterval(0.05)) }
+  guard done && allowed else { fail("reminders_permission_required") }
+  reminderStatus=EKEventStore.authorizationStatus(for: .reminder)
+ }
+ let authorized=reminderStatus == .fullAccess || reminderStatus == .authorized
+ if action == "reminders_catalog" || action == "reminders_authorize" {
+  let lists: [[String:Any]] = authorized ? store.calendars(for:.reminder).prefix(200).map { c in
+   ["id":c.calendarIdentifier,"name":String(c.title.prefix(300)),"source":String(c.source.title.prefix(300)),"writable":c.allowsContentModifications]
+  } : []
+  finish(["authorized":authorized,"lists":lists,"defaultListId":authorized ? (store.defaultCalendarForNewReminders()?.calendarIdentifier ?? "") : ""])
+ }
+ guard action == "reminders_create" else { fail("reminders_action_invalid") }
+ guard authorized else { fail("reminders_permission_required") }
+ guard let listId=q["listId"] as? String, let list=store.calendars(for:.reminder).first(where:{$0.calendarIdentifier==listId}),list.allowsContentModifications else { fail("reminders_list_unavailable") }
+ guard let taskId=q["taskId"] as? String,UUID(uuidString:taskId) != nil,let title=q["title"] as? String,!title.isEmpty,title.count<=240,let notes=q["notes"] as? String,notes.count<=4000 else { fail("reminders_request_invalid") }
+ let marker="gosu://briefing-task/"+taskId
+ var complete=false, found:[EKReminder]?=nil
+ let fetch=store.fetchReminders(matching:store.predicateForReminders(in:[list])) { reminders in found=reminders;complete=true }
+ let until=Date().addingTimeInterval(20)
+ while !complete && Date()<until { RunLoop.current.run(until:Date().addingTimeInterval(0.05)) }
+ guard complete,let existing=found,existing.count<=10000 else { store.cancelFetchRequest(fetch);fail("reminders_read_incomplete") }
+ let matches=existing.filter{$0.url?.absoluteString==marker}
+ guard matches.count<=1 else { fail("reminders_duplicate_uncertain") }
+ if let prior=matches.first { finish(["id":prior.calendarItemIdentifier,"existing":true]) }
+ let reminder=EKReminder(eventStore:store)
+ reminder.calendar=list;reminder.title=title;reminder.notes=notes;reminder.url=URL(string:marker)
+ if let instant=q["dueAt"] as? String {
+  let format=ISO8601DateFormatter()
+  format.formatOptions=[.withInternetDateTime,.withFractionalSeconds]
+  let fractional=format.date(from:instant)
+  format.formatOptions=[.withInternetDateTime]
+  guard let date=fractional ?? format.date(from:instant) else { fail("reminders_date_invalid") }
+  var calendar=Calendar(identifier:.gregorian);calendar.timeZone=TimeZone(secondsFromGMT:0)!
+  var components=calendar.dateComponents([.year,.month,.day,.hour,.minute,.second],from:date)
+  components.timeZone=calendar.timeZone
+  reminder.dueDateComponents=components
+ } else if let due=q["dueDate"] as? String {
+  let format=DateFormatter();format.locale=Locale(identifier:"en_US_POSIX");format.calendar=Calendar(identifier:.gregorian);format.dateFormat="yyyy-MM-dd";format.isLenient=false
+  guard let date=format.date(from:due),format.string(from:date)==due else { fail("reminders_date_invalid") }
+  reminder.dueDateComponents=format.calendar.dateComponents([.year,.month,.day],from:date)
+ }
+ do { try store.save(reminder,commit:true);finish(["id":reminder.calendarItemIdentifier,"existing":false]) } catch { fail("reminders_write_uncertain") }
+}
 let status=EKEventStore.authorizationStatus(for: .event)
 if action == "status" { finish(["authorized": status == .fullAccess || status == .authorized]) }
 if action == "authorize" {
@@ -104,7 +154,7 @@ do {
  try store.save(event,span:.thisEvent,commit:true);finish(["event":encode(event)])
 } catch {fail("calendar_write_failed")}
 `;
-const PLIST = `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>science.gosu.briefing-calendar</string><key>CFBundleName</key><string>GOSU Briefing Calendar</string><key>CFBundleExecutable</key><string>CalendarBridge</string><key>CFBundlePackageType</key><string>APPL</string><key>LSUIElement</key><true/><key>NSCalendarsFullAccessUsageDescription</key><string>GOSU에서 선택한 Calendar를 조회하고, 직접 승인한 일정 변경과 알림을 저장합니다.</string><key>NSCalendarsUsageDescription</key><string>GOSU에서 선택한 Calendar와 승인한 일정 변경에 접근합니다.</string></dict></plist>`;
+const PLIST = `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>science.gosu.briefing-calendar</string><key>CFBundleName</key><string>GOSU Briefing Calendar</string><key>CFBundleExecutable</key><string>CalendarBridge</string><key>CFBundlePackageType</key><string>APPL</string><key>LSUIElement</key><true/><key>NSCalendarsFullAccessUsageDescription</key><string>GOSU에서 선택한 Calendar를 조회하고, 직접 승인한 일정 변경과 알림을 저장합니다.</string><key>NSCalendarsUsageDescription</key><string>GOSU에서 선택한 Calendar와 승인한 일정 변경에 접근합니다.</string><key>NSRemindersFullAccessUsageDescription</key><string>GOSU adds the tasks you confirm to your selected Reminders list. 선택한 미리 알림 목록에 확인한 할 일을 추가하고 중복 여부를 확인합니다.</string><key>NSRemindersUsageDescription</key><string>선택한 미리 알림 목록에 확인한 할 일을 추가합니다.</string></dict></plist>`;
 let compiled: Promise<string> | undefined;
 export async function packagedCalendarBinary(resourcesPath?: string) {
   if (!resourcesPath) return undefined;

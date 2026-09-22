@@ -7,4 +7,6 @@ export const LITERATURE_IPC_CHANNELS = {
   exportRecords: 'gosu:literature:export-records',
   organize: 'gosu:literature:organize',
   cancelOrganize: 'gosu:literature:cancel-organize',
+  planSearch: 'gosu:literature:plan-search',
+  undoSearch: 'gosu:literature:undo-search',
 } as const;

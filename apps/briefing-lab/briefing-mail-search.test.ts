@@ -83,7 +83,7 @@ it('finds a dated Scholar alert beyond the first 250 unrelated messages by apply
   expect(JSON.stringify(refs.whose.mock.calls)).toContain('scholar');
   expect(body).not.toHaveBeenCalled();
 });
-it('uses local-day inclusive start/exclusive end and never expands saved lookback scope', () => {
+it('uses local-day inclusive start/exclusive end; the saved lookback is only the default of a search', () => {
   const search = resolveMailSearch(
     {
       query: 'Google Scholar',
@@ -114,19 +114,37 @@ it('uses local-day inclusive start/exclusive end and never expands saved lookbac
     matchesMailSearch({ title: '새 알림', sender: 'Google Scholar', date: search.to }, search),
   ).toBe(false);
   expect(resolveMailSearch({ query: '' }, scope, 'Asia/Seoul', now)).toBeUndefined();
-  expect(() =>
+  // 2026-09-22 user decision: "메일 조회 범위는 Briefing 만들 때만 적용". A search that names an
+  // earlier date is searched as asked; the saved days are only what a search without `from` gets.
+  expect(
     resolveMailSearch(
       { query: '', from: '2026-08-01', to: '2026-08-02' },
       scope,
       'Asia/Seoul',
       now,
     ),
+  ).toMatchObject({ from: '2026-07-31T15:00:00.000Z', to: '2026-08-01T15:00:00.000Z' });
+  expect(resolveMailSearch({ query: 'scholar' }, scope, 'Asia/Seoul', now)?.from).toBe(
+    new Date(now - scope.days * 86400000).toISOString(),
+  );
+  // Nothing can have arrived in a window that lies wholly in the future.
+  expect(() =>
+    resolveMailSearch(
+      { query: '', from: '2031-01-01', to: '2031-01-02' },
+      scope,
+      'Asia/Seoul',
+      now,
+    ),
   ).toThrow('mail_search_outside_scope');
+  // "All mail" is a very early date; it is kept to a sane floor instead of an absurd one.
+  expect(
+    resolveMailSearch({ query: 'x', from: '0001-01-01' }, scope, 'Asia/Seoul', now)?.from,
+  ).toBe('1990-01-01T00:00:00.000Z');
   expect(() =>
     resolveMailSearch({ query: '', from: 'bad-date' }, scope, 'Asia/Seoul', now),
   ).toThrow('mail_search_range_invalid');
   expect(resolveMailSearch({ query: '', from: '2026-08-01' }, scope, 'Asia/Seoul', now)?.from).toBe(
-    new Date(now - scope.days * 86400000).toISOString(),
+    '2026-07-31T15:00:00.000Z',
   );
 });
 it('preserves literal sender/subject and unread restrictions in native predicates', () => {

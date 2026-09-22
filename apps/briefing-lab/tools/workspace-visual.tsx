@@ -1,5 +1,30 @@
 // Isolated visual fixture. Every source/provider/calendar response is synthetic; no backend route.
 import { useState } from 'react';
+import { briefingNotificationAnchor } from '../src/briefing-notifications';
+if (new URLSearchParams(location.search).has('notification-scroll-qa')) {
+  window.addEventListener('message', (e) => {
+    if (e.source === window.parent && e.data?.type === 'fixture-scroll-down')
+      document.querySelector('.briefing-main-scroll')?.scrollBy({ top: 300, behavior: 'auto' });
+    if (e.source !== window.parent || e.data?.type !== 'fixture-legacy-scroll') return;
+    document
+      .getElementById(
+        briefingNotificationAnchor('personal-research', '6c51094a-7641-41ab-80d8-32c78f1d2221'),
+      )
+      ?.scrollIntoView({ block: 'start', behavior: 'auto' });
+  });
+  setInterval(() => {
+    const pane = document.querySelector('.briefing-main-scroll');
+    window.parent.postMessage(
+      {
+        type: 'fixture-scroll-metrics',
+        top: pane?.scrollTop ?? 0,
+        height: pane?.clientHeight ?? 0,
+        documentTop: document.scrollingElement?.scrollTop ?? 0,
+      },
+      '*',
+    );
+  }, 500);
+}
 import { mountBriefingRoot } from '../src/root-mount';
 import { BriefingApp } from '../src/briefing-app';
 import { initialWorkspace } from '../src/fixtures';
@@ -237,7 +262,7 @@ if (new URLSearchParams(location.search).get('tags') === 'grid') {
 }
 let fixtureJob: Record<string, unknown> | null = null;
 const fixtureFeedback: Record<string, 'important' | 'not-interested'> = {};
-let fixturePreferences = {
+const fixturePreferences = {
   ...defaultAssistantPreferences(),
   mailRead: true,
   mailAi: true,
@@ -460,10 +485,41 @@ window.fetch = async (input, init) => {
     });
   if (url.endsWith('/assistant/settings/get'))
     return json({ preferences: fixturePreferences, approved: true });
-  if (url.endsWith('/assistant/model/save')) {
-    fixturePreferences = { ...fixturePreferences, ...body.selection };
-    return json({ saved: true, selection: body.selection });
-  }
+  if (url.endsWith('/assistant/model/current'))
+    return json({
+      modelId: 'fixture-strong',
+      displayName: 'Fixture strong',
+      reasoning: 'high',
+      usages: [
+        {
+          usage: 'briefing',
+          providerId: 'codex',
+          modelId: 'fixture-light',
+          displayName: 'Fixture light',
+          reasoning: 'low',
+          assigned: true,
+          available: true,
+        },
+        {
+          usage: 'briefingAssistant',
+          providerId: 'codex',
+          modelId: 'fixture-strong',
+          displayName: 'Fixture strong',
+          reasoning: 'high',
+          assigned: true,
+          available: true,
+        },
+        {
+          usage: 'lightweightTasks',
+          providerId: 'claude-code',
+          modelId: null,
+          displayName: '제공자 기본 모델',
+          reasoning: null,
+          assigned: false,
+          available: true,
+        },
+      ],
+    });
   if (url.endsWith('/collect'))
     return stream([
       {

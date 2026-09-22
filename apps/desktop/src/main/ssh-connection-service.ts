@@ -110,6 +110,7 @@ export class SshConnectionServiceError extends Error {
 }
 
 type PendingApproval = Readonly<{
+  reusedApprovedScope?: boolean;
   request: SshApprovalRequest;
   profile: SshConnectionProfile;
   command: SshAgentCommand;
@@ -531,6 +532,8 @@ function trustedAccessMatches(grant: RemoteWorkspaceGrant, profile: SshConnectio
 }
 
 export type SshConnectionServiceOptions = Readonly<{
+  reuseApprovedScopes?: (grantId: string) => boolean;
+  revokeReusedScope?: (grantId: string) => Promise<void>;
   approvalTimeoutMs?: number;
   now?: () => Date;
   resourceSnapshotTtlMs?: number;
@@ -550,6 +553,8 @@ export class SshConnectionService extends EventEmitter {
   private readonly now: () => number;
   private readonly resourceMonitor: SshResourceMonitor;
   private shuttingDown = false;
+  private readonly reuseApprovedScopes: (grantId: string) => boolean;
+  private readonly revokeReusedScope: (grantId: string) => Promise<void>;
 
   constructor(
     storage: SshConnectionStorage,
@@ -558,6 +563,8 @@ export class SshConnectionService extends EventEmitter {
   ) {
     super();
     this.storage = storage;
+    this.reuseApprovedScopes = options.reuseApprovedScopes ?? (() => false);
+    this.revokeReusedScope = options.revokeReusedScope ?? (async () => undefined);
     this.runner = runner;
     this.approvalTtlMs = Math.max(1, options.approvalTimeoutMs ?? SSH_APPROVAL_DEFAULT_TTL_MS);
     this.now = () => (options.now ?? (() => new Date()))().getTime();
@@ -788,7 +795,11 @@ export class SshConnectionService extends EventEmitter {
       if (current.version !== command.expectedVersion) {
         throw new SshConnectionServiceError('ssh_workspace_grant_conflict');
       }
-      if (!current.trustedAccess) return copy(current);
+      await this.revokeReusedScope(current.id);
+      if (!current.trustedAccess) {
+        this.cancelProject(command.projectId);
+        return copy(current);
+      }
       const updatedAt = new Date(this.now()).toISOString();
       const grant = RemoteWorkspaceGrantSchema.parse({
         ...current,
@@ -1099,6 +1110,17 @@ export class SshConnectionService extends EventEmitter {
     });
   }
 
+  canReuseApprovedScope(grant: RemoteWorkspaceGrant, profile: SshConnectionProfile) {
+    return (
+      this.reuseApprovedScopes(grant.id) &&
+      grant.permissionMode === 'workspace' &&
+      grant.connectionId === profile.id &&
+      Date.parse(profile.updatedAt) <= Date.parse(grant.updatedAt) &&
+      connectionPrivilegeClass(profile) === 'standard' &&
+      Boolean(profile.directTarget)
+    );
+  }
+
   private async requestApprovedExecution(
     command: SshAgentCommand,
     profile: SshConnectionProfile,
@@ -1110,6 +1132,9 @@ export class SshConnectionService extends EventEmitter {
     if (signal?.aborted) throw new SshConnectionServiceError('ssh_cancelled');
     if (workspaceBinding && trustedAccessMatches(workspaceBinding.grant, profile)) {
       return this.requestTrustedExecution(command, profile, workspaceBinding, signal);
+    }
+    if (workspaceBinding && this.canReuseApprovedScope(workspaceBinding.grant, profile)) {
+      return this.requestTrustedExecution(command, profile, workspaceBinding, signal, true);
     }
     if (
       this.pendingApprovals.size >= SSH_MAX_PENDING_APPROVALS ||
@@ -1195,12 +1220,17 @@ export class SshConnectionService extends EventEmitter {
     profile: SshConnectionProfile,
     workspaceBinding: WorkspaceExecutionBinding,
     signal?: AbortSignal,
+    reusedApprovedScope = false,
   ): Promise<SshCommandResult> {
     if (this.executionCapacityReached(command)) {
       throw new SshConnectionServiceError('ssh_capacity_exceeded');
     }
     const trustedAccess = workspaceBinding.grant.trustedAccess;
-    if (!trustedAccess || !trustedAccessMatches(workspaceBinding.grant, profile)) {
+    if (
+      reusedApprovedScope
+        ? !this.canReuseApprovedScope(workspaceBinding.grant, profile)
+        : !trustedAccess || !trustedAccessMatches(workspaceBinding.grant, profile)
+    ) {
       throw new SshConnectionServiceError('ssh_trusted_workspace_expired');
     }
     const request = this.createApprovalRequest(command, profile, workspaceBinding);
@@ -1212,7 +1242,7 @@ export class SshConnectionService extends EventEmitter {
       grantVersion: workspaceBinding.grant.version,
       connectionId: profile.id,
       connectionVersion: profile.version,
-      policyVersion: trustedAccess.policyVersion,
+      policyVersion: reusedApprovedScope ? 2 : trustedAccess!.policyVersion,
       sessionId: command.sessionId,
       attemptId: command.attemptId,
       turnId: command.turnId,
@@ -1240,7 +1270,9 @@ export class SshConnectionService extends EventEmitter {
         workspaceBinding,
         cancellation,
         settlement: singleSettlement(resolve, reject),
-        trustedAccess,
+        ...(reusedApprovedScope
+          ? { reusedApprovedScope: true }
+          : { trustedAccess: trustedAccess! }),
       };
       this.trustedReservations.set(request.id, pending);
       if (cancellation.controller.signal.aborted) {
@@ -1592,6 +1624,9 @@ export class SshConnectionService extends EventEmitter {
           (!trustedAccessMatches(grant, profile) ||
             JSON.stringify(grant.trustedAccess) !== JSON.stringify(pending.trustedAccess))
         ) {
+          throw new SshConnectionServiceError('ssh_trusted_workspace_expired');
+        }
+        if (pending.reusedApprovedScope && !this.canReuseApprovedScope(grant, profile)) {
           throw new SshConnectionServiceError('ssh_trusted_workspace_expired');
         }
       }

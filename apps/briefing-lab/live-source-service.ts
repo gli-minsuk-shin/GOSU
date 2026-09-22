@@ -1,11 +1,29 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import {
+  EMAIL_SUMMARY_CONCURRENCY,
+  PAPER_SUMMARY_CONCURRENCY,
+  runBatchesConcurrently,
+} from './briefing-batch-pool';
 import { BriefingChatQueue } from './briefing-chat-queue';
-import type { ProjectBridge } from './briefing-project-bridge';
+import { draftQuickBriefing } from './briefing-quick-briefing';
+import type { runRoutineWithGosuLanguage } from './briefing-native';
+import type { BriefingSnapshot } from './src/briefing-history-snapshot';
+import { confirmingAssistantWrites, type ProjectBridge } from './briefing-project-bridge';
+import { assistantTodoCreator } from './briefing-assistant-workspace';
 import type { ModelRouting } from '@gosu/contracts';
-import { routedBriefingPreferences } from './briefing-model-routing';
+import {
+  BRIEFING_MODEL_USAGES,
+  routedBriefingPreferences,
+  type BriefingModelUsage,
+} from './briefing-model-routing';
+import { isCredentialMail } from './briefing-credential-mail';
+import { draftEmailEvent, EmailEventRequestSchema } from './email-event-draft';
+import { draftEmailTask } from './email-task-draft';
+import { BriefingTaskCreateSchema, type BriefingTaskActions } from './src/briefing-task-actions';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { newPaperResults, summarizedPaperKeys } from './new-paper-results';
+import { PapersDiscoveryIncompleteError, searchCollectionPapers } from './briefing-paper-discovery';
 import { BriefingTodosSchema, type TodoReader } from './src/briefing-todos';
 import { sameVerifiedMail, deduplicateVerifiedMail } from './src/mail-duplicates';
 import { isPriorityOnlyEmailSummary } from './src/email-summary-quality';
@@ -16,8 +34,13 @@ import {
   mailTargets,
   MAX_MAIL_LIMIT,
   MAIL_LIMIT_ERROR,
+  type MailScope,
 } from '@gosu/briefing-core';
-import { AppleMailConnection, type MailReadProgress } from './live-mail';
+import {
+  APPLE_MAIL_FIRST_RESPONSE_MS,
+  AppleMailConnection,
+  type MailReadProgress,
+} from './live-mail';
 import {
   CityQuerySchema,
   findWeatherCities,
@@ -33,6 +56,7 @@ import { BriefingMemoryEntrySchema, type PaperInsight } from './src/briefing-int
 import { BriefingWorkspaceStore, type BriefingHistory } from './briefing-workspace-store';
 import { CalendarService } from './calendar-service';
 import {
+  assistantFixedContextText,
   assistantModel,
   runBriefingAssistant,
   ChatRequestSchema,
@@ -43,26 +67,42 @@ import { briefingClientContext, briefingClientHash } from './briefing-client-con
 import { SourceRateLimitError, SourceReadError } from './live-public-http';
 import { PublicPaperLookup } from './briefing-public-paper-lookup';
 import { saveHistoryFeedback } from './briefing-history-feedback';
-import { BriefingModelSaveSchema, saveBriefingModelSelection } from './briefing-model-settings';
 import { summarySourceDigest, summaryContextDigest } from './briefing-summary-cache';
 import type { SummaryProvenance } from './src/summary-provenance';
-import { MailOpenRequestSchema } from './src/mail-open-contract';
-import { markOriginalMailRead, readOriginalMailStatus } from './briefing-mail-mark-read';
+import {
+  MailMarkAllRequestSchema,
+  MailOpenRequestSchema,
+  type MailOpenTarget,
+} from './src/mail-open-contract';
+import {
+  markOriginalMailRead,
+  readOriginalMailStatus,
+  readOriginalMailSender,
+} from './briefing-mail-mark-read';
 import { catalogForHistory, curateHistoryTags } from './briefing-paper-tags';
 import { assignPaperTags } from './src/paper-tags';
 import { safeAppleMailUrl } from './src/apple-mail-url';
 import { openOriginalMail } from './briefing-mail-open';
 import { readSavedPaperLibrary } from './briefing-knowledge';
 import { resolveMailSearch } from './briefing-mail-search';
+import { withNativeUsageScope } from './native-usage-observer';
+import { createBriefingHostReads, type BriefingHostReads } from './briefing-host-reads';
 import { BriefingGeneration } from './briefing-generation';
-import { BriefingGenerationStore, generationProfileDigest } from './briefing-generation-store';
+import {
+  BriefingGenerationStore,
+  generationProfileMatches,
+  generationRunDigest,
+  generationScheduled,
+} from './briefing-generation-store';
+import type { BriefingGuidanceStore } from './briefing-guidance-store';
+import { feedbackSenderLookup } from './briefing-feedback-senders';
 import {
   GenerationRequestSchema,
   GenerationScheduleRequestSchema,
   type GenerationStatus,
 } from './src/briefing-generation-contract';
 import { savedPaperKey, type SavedPaper } from './src/paper-library-index';
-import { indexSavedPapers } from './src/paper-library-index';
+import { indexSavedPapers, matchesSavedPaper } from './src/paper-library-index';
 import type { classifySavedPaperTexts } from './paper-classification';
 import {
   classificationGuard,
@@ -79,6 +119,7 @@ import {
 import { PaperSummarySaveSchema } from './src/paper-summary-contract';
 import { sharedPaperView } from './src/shared-paper-view';
 import {
+  compactConversationNow,
   historyPlan,
   prepareConversationContext,
   searchConversationRecords,
@@ -99,7 +140,35 @@ import {
 } from './briefing-paper-cache';
 
 const routineId = z.string().min(1).max(128);
+/** Mail could not be read because it answered too slowly or not at all: a later read may work. */
+export const mailDelayed = (error: unknown) =>
+  error instanceof Error &&
+  /^mail_(?:timeout_(?:account|mailbox|metadata|body)|unavailable)$/.test(error.message);
+/** How long after such a run the automatic briefing looks at Mail again. */
+export const MAIL_FOLLOW_UP_MS = 10 * 60_000;
+function pause(ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) return reject(new Error('source_cancelled'));
+    const stop = () => {
+      clearTimeout(timer);
+      reject(new Error('source_cancelled'));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', stop);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', stop, { once: true });
+  });
+}
 function mailProgressDetail(value: MailReadProgress) {
+  if (value.waitedSeconds) {
+    const minutes = Math.floor(value.waitedSeconds / 60),
+      seconds = value.waitedSeconds % 60;
+    const waited = [minutes ? `${minutes}분` : '', seconds || !minutes ? `${seconds}초` : '']
+      .filter(Boolean)
+      .join(' ');
+    return `Apple Mail 응답 대기 중 · ${waited}째 · Mac이 바쁘면 Mail이 깨어나는 데 몇 분 걸릴 수 있습니다`;
+  }
   const label = {
     account: '계정 확인',
     mailbox: '메일함 확인',
@@ -144,22 +213,45 @@ export function automaticSummaryPlan(
   items: readonly LiveItem[],
   preferences: ReturnType<typeof defaultAssistantPreferences>,
 ) {
-  const selected = items.filter(
+  const eligible = items.filter(
     (item) =>
       (item.kind === 'email' && preferences.mailRead && preferences.mailAi) ||
       (item.kind === 'papers' &&
         preferences.autoPaperSummary &&
         (!item.privateOrigin || preferences.mailAi)),
   );
+  // Sign-in codes and password resets are neither sent to a model nor saved. Leaving them out here
+  // also marks them handled, so they are not picked up again by every later run.
+  const selected = eligible.filter((item) => !isCredentialMail(item));
   const kinds: ('email' | 'papers')[] = [];
   if (selected.some((item) => item.kind === 'email')) kinds.push('email');
   if (selected.some((item) => item.kind === 'papers')) kinds.push('papers');
-  return { selected, kinds, total: selected.length };
+  return {
+    selected,
+    kinds,
+    total: selected.length,
+    withheldCredentialMail: eligible.filter((item) => isCredentialMail(item)),
+  };
 }
 export const LiveCollectSchema = z
   .object({ routineId, live: LiveSettingsSchema, interest: InterestProfileSchema })
   .strict();
+export function papersIncompleteMessage(failures: readonly { source: string; code: string }[]) {
+  const failed = [...new Set(failures.map((failure) => failure.source))];
+  const answered = ['arXiv', 'Crossref', 'OpenReview'].filter((name) => !failed.includes(name));
+  const onlyArxivLimited =
+    failed.length === 1 &&
+    failed[0] === 'arXiv' &&
+    failures.every((failure) => failure.code === 'source_rate_limited');
+  if (onlyArxivLimited)
+    return `arXiv가 이 네트워크의 요청을 잠시 제한해 arXiv의 새 논문은 확인하지 못했습니다. ${answered.join('·')}는 확인했지만 조회 기간에 맞는 새 논문이 없었습니다. 기존 요약은 유지하며, 제한이 풀린 뒤 다시 조회해주세요.`;
+  return `${failed.join('·')} 응답을 받지 못해 새 논문 여부를 확인하지 못했습니다.${answered.length ? ` ${answered.join('·')}에는 조회 기간에 맞는 새 논문이 없었습니다.` : ''} 기존 요약은 유지합니다. 잠시 후 다시 조회해주세요.`;
+}
 export function sourceError(error: unknown) {
+  if (error instanceof PapersDiscoveryIncompleteError && error.failures.length)
+    return papersIncompleteMessage(error.failures);
+  if (error instanceof Error && error.message === 'papers_discovery_incomplete')
+    return '공개 논문 출처 일부가 응답하지 않아 새 논문 여부를 확인하지 못했습니다. arXiv뿐 아니라 Crossref·OpenReview도 확인했으며, 기존 요약은 유지합니다. 잠시 후 다시 조회해주세요.';
   if (error instanceof z.ZodError)
     return error.issues.some(
       (issue) =>
@@ -188,6 +280,20 @@ export function sourceError(error: unknown) {
   if (code === 'assistant_queue_limit')
     return '대기 질문은 최대 20개입니다. 기존 질문을 실행하거나 삭제해주세요.';
   if (code === 'assistant_chat_busy') return '이미 답변 중입니다. 질문을 대기열에 추가해주세요.';
+  if (code === 'assistant_context_command_busy')
+    return '답변이 진행 중이라 /new와 /compact를 실행하지 않았습니다. 답변이 끝난 뒤 다시 입력해주세요.';
+  if (code === 'briefing_guidance_text_invalid')
+    return '브리핑 지침은 한 항목에 1~300자로 입력해주세요.';
+  if (code === 'briefing_guidance_secret')
+    return '비밀번호·API 키처럼 보이는 내용은 브리핑 지침에 저장하지 않습니다. 해당 부분을 빼고 다시 입력해주세요.';
+  if (code === 'briefing_guidance_limit')
+    return '브리핑 지침은 최대 20개입니다. 기존 항목을 수정하거나 삭제해주세요.';
+  if (code === 'briefing_guidance_not_found')
+    return '이미 삭제되었거나 바뀐 브리핑 지침입니다. 목록을 다시 열어 확인해주세요.';
+  if (code === 'briefing_guidance_unavailable')
+    return '브리핑 지침은 설치된 GOSU 앱의 Briefing Lab에서 사용할 수 있습니다.';
+  if (code === 'briefing_guidance_unreadable')
+    return '브리핑 지침 파일을 읽지 못해 요약을 멈췄습니다. 지침 없이 요약하지 않습니다. GOSU를 다시 연 뒤에도 같으면 브리핑 지침을 다시 저장해주세요.';
   if (code === 'assistant_steer_text_only')
     return '현재 작업에는 텍스트만 보충할 수 있습니다. 첨부 질문은 먼저 실행을 사용해주세요.';
   if (code.startsWith('steer_') || code === 'assistant_turn_finished')
@@ -199,18 +305,21 @@ export function sourceError(error: unknown) {
       '확인 가능한 arXiv 논문 링크가 필요합니다. 일반 대화나 검색 결과 페이지는 저장하지 않습니다.',
       '논문 원문 정보를 확인하지 못했습니다. 저장하지 않았습니다.',
       '논문 요약을 완료하지 못했습니다. 불완전한 항목은 저장하지 않습니다.',
-      'Briefing Lab에서 논문 요약 모델을 설정해주세요.',
     ].includes(code)
   )
     return code;
-  if (code === 'model_routing_provider_permission_required')
-    return '설정의 역할별 모델과 Briefing 제공자가 다릅니다. Briefing 설정에서 제공자와 개인정보 전송 권한을 확인해주세요. 자동으로 제공자를 바꾸지 않습니다.';
   if (code === 'model_routing_unreadable')
     return 'GOSU 모델 사용 설정을 읽지 못했습니다. 다른 모델로 자동 전환하지 않습니다.';
   if (code === 'assistant_calendar_permission_required')
     return 'GOSU 연결 승인이 필요합니다. 설정의 Briefing Lab에서 캘린더를 확인하고 설정 저장을 눌러주세요. macOS 캘린더 권한은 별도입니다.';
   if (code === 'assistant_todo_permission_required')
-    return '설정에서 GOSU 할 일 조회를 허용하고 저장해주세요.';
+    return 'GOSU 설정 → Briefing Lab → AI 비서에서 할 일 접근을 허용하고 저장해주세요. 일정 권한과 할 일 권한은 별도입니다.';
+  if (code === 'reminders_permission_required')
+    return 'Apple 미리 알림 접근 권한이 필요합니다. 접근 허용을 눌러주세요. 이미 거부했다면 macOS 설정 → 개인정보 보호 및 보안 → 미리 알림에서 GOSU를 허용해주세요.';
+  if (code.startsWith('reminders_'))
+    return 'Apple 미리 알림 목록을 확인하지 못했습니다. 연결 권한과 목록을 확인해주세요.';
+  if (code.startsWith('briefing_task_'))
+    return '할 일 요청을 완료하지 못했습니다. 선택한 프로젝트와 이미 저장된 할 일을 확인해주세요. 저장된 요청의 내용을 바꿔 다시 생성하지 않습니다.';
   if (code === 'assistant_todo_unavailable')
     return 'GOSU 앱 안의 Briefing Lab에서 할 일에 접근할 수 있습니다.';
   if (code === 'generation_always_required')
@@ -238,6 +347,10 @@ export function sourceError(error: unknown) {
   if (code === 'mail_mark_not_applied')
     return 'Apple Mail에서 아직 읽지 않은 상태로 확인됐습니다. 원하시면 읽음 처리를 다시 요청해주세요.';
   if (code === 'mail_mark_busy') return '이 메일을 읽음 처리하는 중입니다.';
+  if (code === 'mail_search_index_required')
+    return '브리핑 조회 기간보다 이전의 메일 검색에는 Apple Mail 색인이 필요합니다. 색인 없이는 Mail이 메일함 전체를 하나씩 확인해 큰 메일함에서 몇 분씩 걸리므로 실행하지 않았습니다. 시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근 권한에서 GOSU를 켜거나, 기간을 브리핑 조회 기간 안으로 좁혀주세요.';
+  if (code === 'mail_search_too_broad')
+    return '조건에 맞는 메일이 한 번에 확인할 수 있는 2,000통보다 많습니다. 보낸 사람·제목 단어를 더하거나 기간을 좁혀주세요.';
   if (code === 'mail_open_target_missing' || code === 'mail_open_target_invalid')
     return '이 항목의 원본 메일 연결 정보를 확인하지 못했습니다. 메일을 다시 조회한 뒤 열어주세요.';
   if (code === 'mail_open_timeout')
@@ -246,26 +359,38 @@ export function sourceError(error: unknown) {
   if (code === 'mail_open_macos_required') return 'Apple Mail 원본 열기는 macOS에서만 지원합니다.';
   if (code === 'mail_open_failed')
     return 'Apple Mail에 열기 요청을 전달하지 못했습니다. Mail 앱을 실행할 수 있는지 확인해주세요.';
-  if (code === 'assistant_model_selection_stale')
-    return '다른 화면에서 모델 설정이 바뀌었습니다. 목록을 새로고침한 뒤 다시 선택해주세요.';
-  if (code === 'assistant_model_busy')
-    return '이 루틴의 자동 요약이 진행 중입니다. 완료 또는 중단 후 모델을 변경해주세요.';
   if (code === 'assistant_settings_required')
-    return '먼저 루틴 설정을 한 번 저장해주세요. 기존 메일·Calendar 권한을 모델 메뉴에서 자동으로 만들지 않습니다.';
+    return '먼저 루틴 설정을 한 번 저장해주세요. 메일·Calendar 권한은 자동으로 만들지 않습니다.';
   if (code === 'briefing_refresh_busy')
     return '이 루틴의 요약이 진행 중입니다. 완료된 뒤 다시 요약해주세요.';
+  if (code === 'briefing_refresh_mail_disabled')
+    return '저장된 설정에서 메일 읽기가 꺼져 있거나 연결된 메일함이 없습니다. GOSU 설정 → Briefing Lab에서 메일 읽기와 연결을 확인해주세요. 기존 요약은 유지했습니다.';
+  if (code === 'briefing_refresh_ai_disabled')
+    return '저장된 설정에서 비공개 자료의 AI 전달이 꺼져 있습니다. GOSU 설정 → Briefing Lab에서 AI 전달을 허용하고 저장해주세요. 메일 연결 오류는 아니며 기존 요약은 유지했습니다.';
+  if (code === 'briefing_refresh_body_unavailable')
+    return '메일은 찾았지만 Apple Mail에서 본문을 가져오지 못했습니다. 기존 요약은 유지했습니다. Mail에서 원문이 표시되는지 확인한 뒤 다시 요약해주세요. 제목만으로 재요약하지 않았습니다.';
   if (code === 'briefing_refresh_source_missing')
     return '현재 허용된 조회 범위에서 같은 원자료를 찾지 못했습니다. 기존 요약은 유지했습니다. 메일함·조회 기간 또는 논문 버전을 확인해주세요.';
   if (code.startsWith('briefing_refresh_read_failed:'))
     return code.slice('briefing_refresh_read_failed:'.length);
   if (code === 'briefing_history_item_missing')
     return '저장된 항목을 찾지 못했습니다. 브리핑 이력을 다시 열어주세요.';
+  if (code === 'assistant_client_required')
+    return '현재 앱 연결에서 저장된 루틴의 소유권을 확인하지 못했습니다. 기존 이력은 유지됩니다. GOSU 설정의 Briefing Lab 연결 상태를 확인해주세요.';
+  if (code === 'assistant_private_ai_required')
+    return '저장된 루틴에서 현재 AI 제공자로 메일·비공개 자료를 분석하는 승인을 확인하지 못했습니다. GOSU 설정 → Briefing Lab에서 메일 읽기와 AI 분석 허용을 확인해주세요. Apple Mail 본문 조회 실패와는 별개의 권한 오류입니다.';
+  if (code === 'assistant_settings_changed')
+    return '작업 중 설정이 변경되어 중단했습니다. 현재 설정으로 다시 시도해주세요. 기존 요약은 유지됩니다.';
   if (/assistant_.*permission|assistant_private_ai|assistant_client|assistant_settings/.test(code))
     return '이 브라우저의 루틴 설정에서 해당 자료 접근·AI 사용을 허용하고 설정을 저장해주세요.';
   if (/calendar_permission/.test(code))
     return '설정에서 Apple Calendar 연결을 누르고 macOS Calendar 접근을 허용해주세요.';
   if (/calendar_event_changed/.test(code))
     return '일정 내용이 다른 곳에서 변경되어 저장·삭제를 중단했습니다. 최신 일정을 불러온 뒤 다시 실행해주세요.';
+  if (code === 'email_event_unresolved')
+    return '이메일에서 하나의 확정된 일정과 날짜를 찾지 못했습니다. 어떤 약속을 등록할지 날짜·시간을 확인해주세요. 오늘 종일 일정으로 대체하지 않았습니다.';
+  if (code === 'email_task_unresolved')
+    return '이메일 요약에서 할 일의 근거를 확인하지 못했습니다. 내용을 확인한 뒤 다시 준비해주세요. 임의의 마감일이나 할 일은 저장하지 않았습니다.';
   if (/calendar_action_stale/.test(code))
     return '요청이 만료되었거나 이미 처리 중입니다. Calendar를 새로고침해 결과를 확인해주세요.';
   if (/calendar_readonly|calendar_invitation/.test(code))
@@ -275,7 +400,7 @@ export function sourceError(error: unknown) {
   if (/routine_timeout|codex_timeout|claude_code_timeout/.test(code))
     return 'AI 요약 응답 시간이 초과됐습니다. 메일 연결 실패가 아닙니다. 항목 수나 reasoning을 줄여 다시 시도해주세요.';
   if (/routine_model_unavailable|routine_reasoning_unavailable/.test(code))
-    return '선택한 AI 모델 또는 reasoning을 현재 사용할 수 없습니다. 모델 목록을 새로고침해주세요.';
+    return '설정 → Agent의 작업별 AI 모델에서 정한 모델 또는 추론 수준을 현재 사용할 수 없습니다. 그 제공자의 연결 상태와 모델 목록을 확인해주세요.';
   if (code === 'routine_output_schema_invalid')
     return 'AI 요청의 응답 형식이 서버 규칙과 맞지 않습니다. 앱 업데이트가 필요한 오류이며, 메일 연결을 다시 설정해도 해결되지 않습니다.';
   if (/routine_native_failed|routine_result_missing/.test(code))
@@ -321,14 +446,15 @@ export function sourceError(error: unknown) {
   if (/permission_denied/.test(code))
     return 'Apple Mail 자동화 접근이 거부됐습니다. macOS 시스템 설정 → 개인정보 보호 및 보안 → 자동화에서 로컬 실행기의 Mail 접근을 확인해주세요.';
   if (/mail_timeout/.test(code)) {
-    const stage = code.endsWith('_account')
-      ? '계정 응답'
-      : code.endsWith('_mailbox')
-        ? '메일함 응답'
-        : code.endsWith('_body')
-          ? '본문 읽기'
-          : '메일 목록 읽기';
-    return `Apple Mail의 ${stage}가 지연되고 있습니다. Mail 앱에서 선택한 메일함이 열리는지 확인해주세요. 아직 가져오지 못한 자료는 요약하지 않았습니다.`;
+    // Mail never answered at all: say how long GOSU waited and what usually causes it.
+    if (code.endsWith('_account'))
+      return `Apple Mail이 ${Math.round(APPLE_MAIL_FIRST_RESPONSE_MS / 60_000)}분 동안 응답하지 않아 메일을 읽지 못했습니다. Mac의 메모리가 부족하거나 Mail이 오래 켜져 있으면 Mail이 늦게 깨어납니다. Mail 앱이 열리는지 확인해주세요. 아직 가져오지 못한 메일은 요약하지 않았고 다음 브리핑에서 다시 읽습니다.`;
+    const stage = code.endsWith('_mailbox')
+      ? '메일함 응답이'
+      : code.endsWith('_body')
+        ? '본문 읽기가'
+        : '메일 목록 읽기가';
+    return `Apple Mail의 ${stage} 지연되고 있습니다. Mail 앱에서 선택한 메일함이 열리는지 확인해주세요. 아직 가져오지 못한 자료는 요약하지 않았습니다.`;
   }
   if (/mail_macos/.test(code)) return 'Apple Mail 연결은 macOS에서 사용할 수 있습니다.';
   if (/cancel|abort/i.test(code)) return '조회가 중단됐습니다.';
@@ -340,7 +466,19 @@ export function sourceError(error: unknown) {
     return '연구 키워드·동의어가 너무 많아 검색 요청을 만들지 못했습니다. 검색 주제를 줄여주세요.';
   if (/mail_/.test(code))
     return 'Apple Mail을 조회하지 못했습니다. Mail 앱 로그인·메일함 선택·자동화 권한을 확인해주세요.';
-  return '소스를 조회하지 못했습니다. 네트워크 또는 응답 형식을 확인해주세요. 샘플로 대체하지 않았습니다.';
+  if (/network_unavailable/.test(code))
+    return `AI 서버에 연결하지 못했습니다. 인터넷(DNS) 연결 문제로 Claude가 여러 번 다시 시도한 뒤 포기했습니다. 로그인이나 설정 문제는 아니며, 연결이 돌아오면 다음 브리핑에서 이 항목을 다시 요약합니다. (오류 코드: ${code})`;
+  if (/^(?:claude_code|codex)_not_connected$/.test(code))
+    return `AI 구독 연결이 끊어졌습니다. GOSU 설정에서 ${code.startsWith('claude') ? 'Claude Code' : 'Codex'} 연결과 로그인을 확인해주세요. (오류 코드: ${code})`;
+  if (
+    /^(?:claude_code|codex)_(?:result_invalid|empty_response|output_too_large|failed)$/.test(code)
+  )
+    return `AI 실행기가 요약을 시작하지 못했습니다. 메일 연결 오류가 아닙니다. 구독 로그인 상태와 실행기(CLI) 버전을 확인해주세요. (오류 코드: ${code})`;
+  // An unknown but stable internal code is far more useful to the user than "check the network".
+  // Only our own snake_case identifiers pass; provider text never reaches this message.
+  return /^[a-z][a-z0-9_]{2,63}$/.test(code)
+    ? `요청을 완료하지 못했습니다. 샘플로 대체하지 않았습니다. (오류 코드: ${code})`
+    : '소스를 조회하지 못했습니다. 네트워크 또는 응답 형식을 확인해주세요. 샘플로 대체하지 않았습니다.';
 }
 type CachedHistoryItem = BriefingHistory['items'][number];
 function inferHistoryKind(item: Pick<CachedHistoryItem, 'kind' | 'readScope'>): LiveItem['kind'] {
@@ -402,7 +540,10 @@ function toCachedInsight(item: LiveItem, cached: CachedHistoryItem): PaperInsigh
 export class LiveSourceService {
   private publicPaperLookup?: PublicPaperLookup;
   private paperLookup() {
-    return (this.publicPaperLookup ??= new PublicPaperLookup({ arxiv: this.providers.papers }));
+    return (this.publicPaperLookup ??= new PublicPaperLookup({
+      arxiv:
+        this.providers.papers === searchCollectionPapers ? searchPapers : this.providers.papers,
+    }));
   }
   private chatQueue?: BriefingChatQueue;
   private attachments?: BriefingAttachments;
@@ -425,8 +566,177 @@ export class LiveSourceService {
   paperClassifier?: typeof classifySavedPaperTexts;
   generation?: BriefingGeneration;
   todoReader?: TodoReader;
+  taskActions?: BriefingTaskActions;
   projectBridge?: ProjectBridge;
+  /** Settings → Agent: the only place that picks the provider and model of every Briefing usage. */
   modelRouting?: () => Promise<ModelRouting>;
+  // Wired by the production host; without it no quick first briefing is written.
+  quickBriefingRunner?: typeof runRoutineWithGosuLanguage;
+  // The user's standing instructions for AI summaries; wired by the production host.
+  guidance?: BriefingGuidanceStore;
+  /** How long a run waits before its one more attempt at a Mail that stopped answering. */
+  mailRetryPauseMs = 20_000;
+  /**
+   * An email whose AI summary failed still shows that it arrived: subject, sender, received time and
+   * the link to the original, with an empty summary (user request, 2026-09-21: "요약만 빠지게. 그래야
+   * 사용자가 적어도 이메일이 온건 알 수 있잖아"). The store already reads an empty email summary as
+   * "not summarized yet" everywhere (mail read plan, today's known items, notification counts,
+   * assistant memory), so the next briefing reads and summarizes the mail again, and within the same
+   * day that summary replaces this entry. Mail withheld for secrets is marked handled before this
+   * runs and is never kept. A cancelled run keeps nothing. Never throws: it must not hide the error
+   * that ended the run.
+   */
+  private async keepUnsummarizedMail(
+    profile: NonNullable<Awaited<ReturnType<BriefingWorkspaceStore['profile']>>>,
+    runId: string,
+    emails: LiveItem[],
+    signal: AbortSignal,
+    warnings: string[],
+  ) {
+    if (!emails.length || signal.aborted) return;
+    try {
+      // A history entry holds at most 15 items.
+      for (let start = 0; start < emails.length; start += 15) {
+        const chunk = emails.slice(start, start + 15);
+        await this.workspace.saveBriefing(
+          profile.routineId,
+          {
+            overview: '',
+            items: chunk.map((item) => ({
+              id: item.id,
+              summary: '',
+              importance: 'uncertain' as const,
+              importanceReason: '',
+              relevance: '',
+              action: '',
+              evidenceQuote: '',
+              equationIds: [],
+              figureIds: [],
+              memorySuggestion: null,
+            })),
+          },
+          chunk,
+          true,
+          profile,
+          undefined,
+          runId,
+        );
+      }
+      warnings.push(
+        `요약하지 못한 이메일 ${emails.length}통은 제목·보낸 사람·받은 시각만 브리핑에 남겼습니다. 다음 브리핑에서 다시 요약합니다.`,
+      );
+    } catch (error) {
+      warnings.push(
+        `요약하지 못한 이메일 ${emails.length}통을 브리핑에 남기지 못했습니다. ${sourceError(error)}`,
+      );
+    }
+  }
+  private async routineGuidance(routineId: string) {
+    if (!this.guidance) return [];
+    try {
+      return await this.guidance.list(routineId);
+    } catch (error) {
+      throw new Error('briefing_guidance_unreadable', { cause: error });
+    }
+  }
+  /**
+   * Writes the metadata-only first briefing (one small AI call over subjects, senders, paper titles
+   * and the agenda) so the user sees what to check within about a minute, while the detailed batches
+   * continue. It only runs where the detailed email summaries could run without asking, and its
+   * failure is a warning, not a failed run.
+   */
+  private async quickFirstBriefing(options: {
+    profile: NonNullable<Awaited<ReturnType<BriefingWorkspaceStore['profile']>>>;
+    runId: string;
+    mailScope: MailScope | null;
+    emails: LiveItem[];
+    papers: LiveItem[];
+    agenda: NonNullable<BriefingSnapshot['calendar']>;
+    signal: AbortSignal;
+    guard: () => Promise<void>;
+    update: (value: Partial<GenerationStatus>) => void;
+    warnings: string[];
+  }) {
+    const { profile, mailScope, signal } = options;
+    const run = this.quickBriefingRunner;
+    if (!run || !mailScope || !options.emails.length) return;
+    if (!profile.preferences.mailAi || this.workspace.requiresPerRequestConfirmation(profile))
+      return;
+    try {
+      const preferences = routedBriefingPreferences(
+        profile.preferences,
+        await this.modelRouting?.(),
+        'lightweightTasks',
+      );
+      if (!(await this.workspace.canPrivateAi(profile.routineId, preferences.providerId))) return;
+      const guard = async () => {
+        await options.guard();
+        if (signal.aborted) throw new Error('source_cancelled');
+        this.mail.assertScope(profile.routineId, mailScope);
+        await this.workspace.assertMail(profile.routineId, mailScope, true, preferences.providerId);
+        if (!(await this.workspace.canPrivateAi(profile.routineId, preferences.providerId)))
+          throw new Error('assistant_settings_changed');
+      };
+      await guard();
+      options.update({
+        detail:
+          '빠른 1차 브리핑 작성 중 · 메일 제목·보낸 사람 기준 · 오늘 앞선 브리핑이 있으면 이어서 씀',
+        quickBriefingState: 'running',
+      });
+      const model = await this.modelResolver(preferences);
+      // Today's record may already hold a briefing from an earlier run. This run only sees mail
+      // that arrived since, so it continues that briefing instead of replacing it.
+      const previous = await this.workspace.dailyQuickBriefing(profile.routineId, options.runId);
+      const draft = await draftQuickBriefing(
+        {
+          emails: options.emails,
+          papers: options.papers,
+          agenda: options.agenda,
+          timeZone: profile.timeZone,
+          now: Date.now(),
+          guidance: await this.routineGuidance(profile.routineId),
+          previous,
+        },
+        {
+          providerId: preferences.providerId,
+          modelId: model.modelId,
+          reasoning: preferences.reasoning,
+        },
+        signal,
+        guard,
+        run,
+      );
+      await this.workspace.saveQuickBriefing(
+        profile.routineId,
+        options.runId,
+        {
+          createdAt: new Date().toISOString(),
+          model: draft.model,
+          headline: draft.headline,
+          points: draft.points,
+          // An update counts the whole day, as its lines now cover the whole day.
+          emailCount: options.emails.length + (previous?.emailCount ?? 0),
+          paperCount: options.papers.length + (previous?.paperCount ?? 0),
+          ...('previousAt' in draft
+            ? { previousAt: draft.previousAt, newPoints: draft.newPoints }
+            : {}),
+        },
+        profile,
+        signal,
+      );
+      options.update({
+        quickBriefingAt: new Date().toISOString(),
+        quickBriefingState: 'saved',
+        detail: '빠른 1차 브리핑 표시 · 자세한 요약 계속',
+      });
+    } catch (error) {
+      if (signal.aborted) return;
+      options.update({ quickBriefingState: 'failed' });
+      options.warnings.push(
+        `빠른 1차 브리핑을 만들지 못했습니다(자세한 요약은 계속합니다): ${sourceError(error)}`,
+      );
+    }
+  }
   desktopConfiguration() {
     return this.workspace.desktopConfiguration();
   }
@@ -551,18 +861,23 @@ export class LiveSourceService {
     update: (value: Partial<GenerationStatus>) => void,
     scheduled: boolean,
   ) {
-    const digest = generationProfileDigest(profile);
+    const digest = generationRunDigest(profile);
     const guard = async () => {
       if (signal.aborted) throw new Error('source_cancelled');
       const current = await this.workspace.profile(profile.routineId);
-      if (!current || !this.workspace.owns(current) || generationProfileDigest(current) !== digest)
+      if (!current || !this.workspace.owns(current) || generationRunDigest(current) !== digest)
         throw new Error('generation_settings_changed');
       if (scheduled) {
+        // The schedule keeps the scheduler's own approval digest (generationProfileDigest); comparing
+        // it with this run's digest never matched, so every scheduled run stopped here.
         const schedule = await this.generation?.store.record(profile.routineId);
         if (
-          !schedule?.intervalHours ||
-          schedule.profileDigest !== digest ||
-          profile.preferences.confirmationPolicy !== 'always'
+          // An interval or the routine's own delivery times: a routine scheduled by its times
+          // alone has no interval, and was stopped here at every automatic run.
+          !schedule ||
+          !generationScheduled(schedule) ||
+          !generationProfileMatches(current, schedule) ||
+          current.preferences.confirmationPolicy !== 'always'
         )
           throw new Error('generation_settings_changed');
       }
@@ -579,6 +894,9 @@ export class LiveSourceService {
       ...(daily.hasWeather ? { weather: null } : {}),
       ...(!profile.preferences.mailRead ? { mail: null } : {}),
     };
+    // Mail stayed unread because it answered too slowly or not at all (a Mac out of memory, a Mail
+    // that was swapped out): the scheduler looks again in ten minutes, not at the next interval.
+    let mailWasDelayed = false;
     const results =
       live.weather || live.mail || live.papers.enabled
         ? await this.collect(
@@ -588,13 +906,18 @@ export class LiveSourceService {
             true,
             daily.runId,
             guard,
+            { retry: true, onDelayed: () => (mailWasDelayed = true) },
           )
         : [];
     await guard();
     const warnings = results.flatMap((r) => [
       ...(r.status === 'failed' ? [r.error ?? '자료 조회 실패'] : []),
       ...(r.historyWarning ? [r.historyWarning] : []),
+      ...(r.warning ? [r.warning] : []),
     ]);
+    // Mail was read with the slow scripted query because its index was unavailable (for example,
+    // no Full Disk Access): the header says so, not only the collapsed source note.
+    if (results.some((r) => r.kind === 'email' && r.warning)) update({ mailIndexFallback: true });
     const knownEmails = new Set(await this.workspace.dailyItemKeys(profile.routineId, daily.runId));
     const emailKeys = [
       ...new Set(
@@ -607,11 +930,8 @@ export class LiveSourceService {
       discoveredEmails: emailKeys.length,
       emailSourceState: results.find((r) => r.kind === 'email')?.status ?? 'disabled',
     });
-    if (
-      !daily.hasCalendar &&
-      profile.preferences.calendarRead &&
-      profile.preferences.calendarIds.length
-    ) {
+    let agendaEvents: NonNullable<BriefingSnapshot['calendar']> = [];
+    if (profile.preferences.calendarRead && profile.preferences.calendarIds.length) {
       try {
         update({
           detail: '오늘·내일 일정 준비 중…',
@@ -636,6 +956,7 @@ export class LiveSourceService {
           signal,
           range.start,
         );
+        agendaEvents = agenda.events;
       } catch (e) {
         if (signal.aborted) throw e;
         warnings.push(sourceError(e));
@@ -676,58 +997,258 @@ export class LiveSourceService {
     const receiptId = results[0]?.receiptId;
     if (receiptId) {
       const known = new Set(await this.workspace.dailyItemKeys(profile.routineId, daily.runId));
-      const { selected, kinds } = automaticSummaryPlan(
+      const { selected, kinds, withheldCredentialMail } = automaticSummaryPlan(
         results
           .flatMap((r) => r.items)
           .filter((item) => !known.has(`${item.kind}:${savedPaperKey(item)}`)),
         profile.preferences,
       );
-      let count = 0;
+      // Such a mail stays in the read window for days and is left out again at every run, so it is
+      // announced once: when it arrived after today's previous run (or within the last 12 hours
+      // for the day's first run).
+      const announceSince = daily.previousUpdatedAt
+        ? Date.parse(daily.previousUpdatedAt)
+        : Date.now() - 12 * 3600000;
+      const newlyWithheld = withheldCredentialMail.filter(
+        (item) => Date.parse(item.publishedAt ?? '') > announceSince,
+      ).length;
+      if (newlyWithheld)
+        warnings.push(
+          `인증 코드·일회용 비밀번호·비밀번호 재설정 메일 ${newlyWithheld}통은 AI로 보내지 않고 요약에서 제외했습니다. Apple Mail에서 직접 확인해주세요.`,
+        );
+      let count = 0,
+        summaryRejectedItems = 0,
+        summaryFailures = 0,
+        firstSummaryFailure: unknown;
+      // Mail the run handled: not selected for AI by the user's settings or already summarized
+      // today, or saved in a successful batch (with the copies merged into it).
+      const handledMail = new Set<string>();
+      const markHandled = (item: LiveItem) => {
+        handledMail.add(item.id);
+        for (const copy of item.mailCopies ?? []) handledMail.add(copy.id);
+      };
+      const selectedIds = new Set(selected.map((item) => item.id));
+      for (const item of results.flatMap((r) => r.items))
+        if (item.kind === 'email' && !selectedIds.has(item.id)) markHandled(item);
       const addedSummaries = { email: 0, papers: 0 };
       update({ progress: { stage: 'summarize', completed: 0, total: selected.length } });
-      let model: Awaited<ReturnType<typeof assistantModel>> | undefined;
-      for (const kind of kinds) {
-        const items = selected.filter((i) => i.kind === kind);
-        for (let offset = 0; offset < items.length; offset += 6) {
-          await guard();
-          // Analysis may outlive the original ten-minute UI receipt; only this owned active job extends it.
-          const receipt = this.receipts.get(receiptId);
-          if (receipt) receipt.expiresAt = Date.now() + 10 * 60000;
-          const batch = items.slice(offset, offset + 6);
-          update({
-            detail: `${kind === 'email' ? '이메일' : '논문'} ${offset + 1}–${offset + batch.length}번째 요약 준비 중`,
-          });
-          const result = await this.analyze(
-            {
-              routineId: profile.routineId,
-              receiptId,
-              itemIds: batch.map((i) => i.id),
-              providerId: profile.preferences.providerId,
-              modelId: profile.preferences.modelId || 'auto',
-              reasoning: profile.preferences.reasoning,
-              includeMail: profile.preferences.mailAi,
-              memory: [],
-            },
+      // The quick first briefing runs beside the detailed batches and never fails the run.
+      const quickController = new AbortController();
+      const stopQuick = () => quickController.abort();
+      signal.addEventListener('abort', stopQuick, { once: true });
+      const quickBriefing = this.quickFirstBriefing({
+        profile,
+        runId: daily.runId,
+        mailScope: live.mail,
+        emails: deduplicateVerifiedMail(results.flatMap((r) => r.items)).filter(
+          (item) =>
+            item.kind === 'email' &&
+            !known.has(`email:${savedPaperKey(item)}`) &&
+            // A sign-in code mail's preview can hold the code itself.
+            !isCredentialMail(item),
+        ),
+        papers: results
+          .flatMap((r) => r.items)
+          .filter((item) => item.kind === 'papers' && !known.has(`papers:${savedPaperKey(item)}`)),
+        agenda: agendaEvents,
+        signal: quickController.signal,
+        guard,
+        update,
+        warnings,
+      });
+      let model: Promise<Awaited<ReturnType<typeof assistantModel>>> | undefined;
+      // Per-kind progress for the verbose view: what is waiting, which batches run, what is saved.
+      const summaryKinds = kinds.map((kind) => ({
+        kind,
+        total: selected.filter((item) => item.kind === kind).length,
+        saved: 0,
+        failed: 0,
+        running: [] as string[],
+        state: 'waiting' as 'waiting' | 'running' | 'done',
+      }));
+      const publishKinds = () => update({ summaryKinds: structuredClone(summaryKinds) });
+      publishKinds();
+      try {
+        for (const kind of kinds) {
+          const status = summaryKinds.find((entry) => entry.kind === kind)!;
+          status.state = 'running';
+          publishKinds();
+          const items = selected.filter((i) => i.kind === kind);
+          const offsets = Array.from({ length: Math.ceil(items.length / 6) }, (_, i) => i * 6);
+          // Batches of one kind run concurrently; emails still finish before papers start.
+          await runBatchesConcurrently(
+            offsets,
+            kind === 'email' ? EMAIL_SUMMARY_CONCURRENCY : PAPER_SUMMARY_CONCURRENCY,
             signal,
-            (detail) => update({ detail }),
-            scheduled,
-            daily.runId,
-            async () => {
+            async (offset, batchSignal) => {
               await guard();
-              model ??= await this.modelResolver(profile.preferences);
-              return model.modelId;
+              // Analysis may outlive the original ten-minute UI receipt; only this owned active job extends it.
+              const receipt = this.receipts.get(receiptId);
+              if (receipt) receipt.expiresAt = Date.now() + 10 * 60000;
+              const batch = items.slice(offset, offset + 6);
+              const span = `${offset + 1}–${offset + batch.length}`;
+              const range = `${kind === 'email' ? '이메일' : '논문'} ${span}번째`;
+              status.running.push(span);
+              update({
+                detail: `${range} 요약 준비 중`,
+                summaryKinds: structuredClone(summaryKinds),
+              });
+              let result: Awaited<ReturnType<typeof this.analyze>>;
+              try {
+                result = await this.analyze(
+                  {
+                    routineId: profile.routineId,
+                    receiptId,
+                    itemIds: batch.map((i) => i.id),
+                    providerId: profile.preferences.providerId,
+                    modelId: profile.preferences.modelId || 'auto',
+                    reasoning: profile.preferences.reasoning,
+                    includeMail: profile.preferences.mailAi,
+                    memory: [],
+                  },
+                  batchSignal,
+                  (detail) => update({ detail: `${range} · ${detail}` }),
+                  scheduled,
+                  daily.runId,
+                  async () => {
+                    await guard();
+                    // Concurrent batches share one resolution; a failed one is retried by the next batch.
+                    model ??= this.modelResolver(profile.preferences).catch((error: unknown) => {
+                      model = undefined;
+                      throw error;
+                    });
+                    return (await model).modelId;
+                  },
+                  guard,
+                );
+              } catch (error) {
+                // One failed AI batch must not discard the batches before and after it. Cancellation,
+                // changed settings/ownership, consent and a lost login still stop the whole run.
+                const code = error instanceof Error ? error.message : '';
+                if (
+                  batchSignal.aborted ||
+                  /cancel|abort|settings_changed|client_required|settings_required|consent|confirmation|permission|auth_required|not_connected|subscription|model_unavailable|reasoning_unavailable/.test(
+                    code,
+                  )
+                )
+                  throw error;
+                firstSummaryFailure ??= error;
+                warnings.push(`${range} 요약 실패: ${sourceError(error)}`);
+                status.failed += batch.length;
+                status.running = status.running.filter((entry) => entry !== span);
+                update({
+                  summaryFailures: ++summaryFailures,
+                  detail: `${range} 요약 실패 · 다음 묶음 계속`,
+                  summaryKinds: structuredClone(summaryKinds),
+                });
+                return;
+              } finally {
+                if (batchSignal.aborted) status.running = status.running.filter((e) => e !== span);
+              }
+              // Only a store that failed stops the run. A batch whose every summary had to be
+              // withheld (secrets in the text) is finished: it is marked handled with a notice, and
+              // the other batches and the papers go on. One such batch used to end the whole run.
+              if (!result.historyId && result.historySaveFailed)
+                throw new Error('briefing_memory_unavailable');
+              if (!result.historyId) {
+                for (const item of batch) markHandled(item);
+                status.failed += batch.length;
+                status.running = status.running.filter((entry) => entry !== span);
+                warnings.push(
+                  `${range}는 비밀 정보로 보이는 내용이 있어 저장하지 않았습니다. Apple Mail에서 직접 확인해주세요.`,
+                );
+                update({
+                  detail: `${range} 저장 제외 · 다음 묶음 계속`,
+                  summaryKinds: structuredClone(summaryKinds),
+                });
+                return;
+              }
+              // Items without a valid summary after one correction stay unhandled: their mail keeps
+              // a coverage gap and papers stay unsaved, so the next briefing summarizes them again.
+              const rejected = new Set((result.rejectedItems ?? []).map((entry) => entry.id));
+              const accepted = batch.filter((item) => !rejected.has(item.id));
+              for (const item of accepted) markHandled(item);
+              count += accepted.length;
+              addedSummaries[kind] += accepted.length;
+              status.saved += accepted.length;
+              status.failed += rejected.size;
+              status.running = status.running.filter((entry) => entry !== span);
+              if (rejected.size) {
+                summaryRejectedItems += rejected.size;
+                warnings.push(
+                  `${range} 중 ${rejected.size}${kind === 'email' ? '통' : '편'} 요약 검증 실패: ${sourceError(new Error(result.rejectedItems![0]!.code))} · 나머지는 저장했고, 실패한 항목은 다음 브리핑에서 다시 요약합니다.`,
+                );
+              }
+              update({
+                newCount: count,
+                addedSummaries: { ...addedSummaries },
+                progress: { stage: 'summarize', completed: count, total: selected.length },
+                detail: `새 ${kind === 'email' ? '이메일' : '논문'} 요약 저장됨`,
+                summaryKinds: structuredClone(summaryKinds),
+                ...(summaryRejectedItems ? { summaryRejectedItems } : {}),
+              });
             },
-            guard,
           );
-          if (!result.historyId) throw new Error('briefing_memory_unavailable');
-          count += batch.length;
-          addedSummaries[kind] += batch.length;
-          update({
-            newCount: count,
-            addedSummaries: { ...addedSummaries },
-            progress: { stage: 'summarize', completed: count, total: selected.length },
-            detail: `새 ${kind === 'email' ? '이메일' : '논문'} 요약 저장됨`,
-          });
+          status.state = 'done';
+          publishKinds();
+        }
+      } catch (error) {
+        quickController.abort();
+        throw error;
+      } finally {
+        await quickBriefing;
+        signal.removeEventListener('abort', stopQuick);
+        // Whatever the summaries did (a failed batch, a rejected item, or a run that stops on a
+        // lost login), mail that arrived is never invisible: see keepUnsummarizedMail.
+        await this.keepUnsummarizedMail(
+          profile,
+          daily.runId,
+          selected.filter((item) => item.kind === 'email' && !handledMail.has(item.id)),
+          signal,
+          warnings,
+        );
+      }
+      // Nothing was summarized at all: that is a failed run, not a completed one with warnings.
+      if (summaryFailures && !count) throw firstSummaryFailure;
+      const coverage = results.flatMap((r) => r.mailCoverage ?? []);
+      if (coverage.length) {
+        await guard();
+        try {
+          const gaps = await this.workspace.commitMailCoverage(
+            profile,
+            coverage,
+            handledMail,
+            signal,
+          );
+          const at = (value: string) =>
+            new Intl.DateTimeFormat('ko-KR', {
+              timeZone: profile.timeZone,
+              month: 'numeric',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+              hour12: false,
+            }).format(new Date(value));
+          for (const gap of gaps)
+            warnings.push(
+              gap.agedOut
+                ? `메일 조회 기간(최근 ${profile.live.mail?.days ?? '?'}일)을 지나 확인하지 못한 구간 · ${gap.accountName} ${at(gap.from)}–${at(gap.to)} · Apple Mail에서 직접 확인해주세요.`
+                : gap.reason === 'read-failed'
+                  ? `메일 계정 조회 실패 · ${gap.accountName} ${at(gap.from)}–${at(gap.to)} 메일을 이번 브리핑에서 확인하지 못했습니다 · 다음 브리핑에서 다시 확인합니다.`
+                  : gap.reason === 'limit'
+                    ? `새 메일이 설정한 최대 개수를 넘었습니다 · ${gap.accountName} ${gap.pending ?? 0}${gap.pendingComplete === false ? '+' : ''}통(${at(gap.from)}–${at(gap.to)})은 다음 브리핑에서 이어서 요약합니다.`
+                    : gap.reason === 'body'
+                      ? `본문 대기 · ${gap.accountName} ${gap.bodyWaiting ?? 0}통은 Mail이 아직 본문을 받지 않아 제목으로 먼저 요약했습니다 · 다음 브리핑에서 본문으로 다시 요약합니다.`
+                      : `메일 미확인 구간 · ${gap.accountName} ${at(gap.from)}–${at(gap.to)} · 다음 브리핑에서 이어서 확인합니다.`,
+            );
+          if (gaps.length) update({ mailCoverageGaps: gaps.length });
+        } catch (error) {
+          if (signal.aborted || /settings_changed/.test(String((error as Error)?.message)))
+            throw error;
+          warnings.push(
+            `메일 확인 범위를 저장하지 못했습니다. 다음 브리핑은 같은 구간을 다시 확인합니다. ${sourceError(error)}`,
+          );
+          update({ mailCoverageGaps: 1 });
         }
       }
     }
@@ -736,15 +1257,16 @@ export class LiveSourceService {
       progress: { stage: 'finalize', completed: 0, total: null },
       detail: '브리핑 마무리 중…',
     });
-    if (warnings.length) update({ error: warnings.join(' ').slice(0, 1000) });
-    return { emailKeys };
+    // One warning per line: the header shows them as a list when the collapsed reason is opened.
+    if (warnings.length) update({ error: warnings.join('\n').slice(0, 1000) });
+    return { emailKeys, ...(mailWasDelayed ? { retryMailInMs: MAIL_FOLLOW_UP_MS } : {}) };
   }
   constructor(
     readonly mail = new AppleMailConnection(),
     private readonly providers = {
       cities: findWeatherCities,
       weather: readWeather,
-      papers: searchPapers,
+      papers: searchCollectionPapers,
     },
     private readonly consent = confirmPrivateBriefing,
     private readonly analyzer = analyzeBriefing,
@@ -755,7 +1277,72 @@ export class LiveSourceService {
     private readonly openMail = openOriginalMail,
     private readonly markMail = markOriginalMailRead,
     private readonly checkMail = readOriginalMailStatus,
-  ) {}
+    private readonly readMailSender = readOriginalMailSender,
+  ) {
+    // The store accepts a provider for private data when Settings → Agent assigned it to Briefing.
+    // It reads whatever policy this service holds at that moment (hosts and tests set it later).
+    this.workspace.modelRouting = async () => this.modelRouting?.();
+  }
+  private hostReadsCache?: BriefingHostReads;
+  /**
+   * Calendar, mail, saved briefings and saved paper summaries for another part of the GOSU app
+   * (Project Chat), under the settings this user approved in Briefing Lab. Read only.
+   */
+  hostReads(): BriefingHostReads {
+    return (this.hostReadsCache ??= createBriefingHostReads({
+      profile: (kind) => this.workspace.hostReadProfile(kind),
+      assert: async (kind, profile) => {
+        await this.workspace.assertHostRead(kind, profile);
+      },
+      privateAllowed: (profile) => this.workspace.hostPrivateAllowed(profile),
+      requiresConfirmation: (profile) => this.workspace.requiresPerRequestConfirmation(profile),
+      consent: (message, signal) => this.consent(message, signal),
+      calendar: (profile, start, end, signal) =>
+        this.calendar.events(profile.preferences.calendarIds, start, end, signal),
+      mail: async (profile, request, signal) => {
+        const scope = profile.live.mail;
+        if (!scope) throw new Error('assistant_mail_permission_required');
+        const search = resolveMailSearch(
+          {
+            query: request.query ?? '',
+            ...(request.sender ? { sender: request.sender } : {}),
+            ...(request.subject ? { subject: request.subject } : {}),
+            ...(request.account ? { account: request.account } : {}),
+            ...(request.from ? { from: request.from } : {}),
+            ...(request.to ? { to: request.to } : {}),
+          },
+          scope,
+          profile.timeZone,
+        );
+        await this.mail.restorePolicyGrant(profile.routineId, scope, signal);
+        const result = await this.mail.collect(
+          profile.routineId,
+          scope,
+          signal,
+          undefined,
+          undefined,
+          search,
+        );
+        return { items: result.items, ...(result.note ? { note: result.note } : {}) };
+      },
+      briefings: (routineId, query, limit) => this.workspace.history(routineId, query, limit),
+      briefingRecord: async (routineId, historyId) =>
+        (await this.workspace.historyRecord(routineId, historyId)) ?? null,
+      savedPapers: async (routineId, query, privateAllowed) => {
+        const history = await this.workspace.summaryHistory(routineId);
+        const visible = curateHistoryTags(history.filter((h) => !h.private || privateAllowed));
+        const papers = await this.workspace.visibleLibraryPapers(
+          routineId,
+          indexSavedPapers(visible).filter((paper) => matchesSavedPaper(paper, query)),
+        );
+        return {
+          papers,
+          privateOmitted:
+            !privateAllowed && history.some((h) => h.private && indexSavedPapers([h]).length > 0),
+        };
+      },
+    }));
+  }
   close() {
     this.generation?.close();
     this.mail.close();
@@ -941,6 +1528,9 @@ export class LiveSourceService {
     persistSnapshot = true,
     historyRunId?: string,
     beforeSave?: () => Promise<void>,
+    // A briefing run tries a Mail that stopped answering once more, and hears when mail stayed
+    // unread for that reason so it can look again soon instead of at the next scheduled time.
+    mailRecovery: { retry?: boolean; onDelayed?: () => void } = {},
   ) {
     const input = LiveCollectSchema.parse(raw);
     const summarized =
@@ -951,6 +1541,8 @@ export class LiveSourceService {
         : new Set<string>();
     if (signal.aborted) throw new Error('source_cancelled');
     let mailProfileSnapshot: string | undefined;
+    let scholarMail: LiveItem[] = [];
+    let scholarSearchNote = '';
     const tasks: { kind: LiveKind; run: () => Promise<{ items: LiveItem[]; note: string }> }[] = [];
     if (input.live.weather)
       tasks.push({
@@ -972,7 +1564,7 @@ export class LiveSourceService {
             undefined,
             summarized,
           ),
-          note: `루틴 키워드·저자·최근 ${input.live.papers.days}일 조건. 최신 후보 최대 ${Math.min(60, input.live.papers.limit * 3)}개 안에서 관련성으로 정렬하고, 저장된 동일 버전 요약을 먼저 제외한 뒤 최대 ${input.live.papers.limit}개를 선택합니다. AI 요약과 원문 발췌는 별도로 표시합니다.`,
+          note: `arXiv·Crossref·OpenReview에서 루틴 키워드·저자·최근 ${input.live.papers.days}일 조건으로 조회합니다. 대체 출처는 상위 2개 키워드별 최대 60개 후보를 확인하며 전체 문헌 검색은 아닙니다. 저장된 동일 버전 요약을 먼저 제외하고 관련성순 최대 ${input.live.papers.limit}개를 선택합니다. 초록·서지정보와 원문 분석은 구분합니다.`,
         }),
       });
     if (input.live.mail)
@@ -999,21 +1591,73 @@ export class LiveSourceService {
             const plan = persistSnapshot
               ? await this.workspace.mailReadPlan(input.routineId, input.live.mail!)
               : undefined;
-            const result = await this.mail.collect(
-              input.routineId,
-              input.live.mail!,
-              signal,
-              mailProgress,
-              plan,
-            );
+            // Mail answers Apple Events one at a time: the ordinary read finishes before the Scholar
+            // search starts, so neither spends its deadline queued behind the other.
+            const readOrdinary = () =>
+              Promise.allSettled([
+                this.mail.collect(input.routineId, input.live.mail!, signal, mailProgress, plan),
+              ]);
+            let [ordinary] = await readOrdinary();
+            // Mail answered and then stopped: a new reader a little later usually gets through. A
+            // Mail that never answered already had minutes; the run does not wait for it again.
+            const silent = (reason: unknown) =>
+              reason instanceof Error && reason.message === 'mail_timeout_account';
+            if (
+              mailRecovery.retry &&
+              ordinary.status === 'rejected' &&
+              mailDelayed(ordinary.reason) &&
+              !silent(ordinary.reason) &&
+              !signal.aborted
+            ) {
+              progress({
+                kind: 'email',
+                state: 'started',
+                detail: 'Apple Mail 응답이 끊겨 잠시 후 한 번 더 시도합니다…',
+              });
+              await pause(this.mailRetryPauseMs, signal);
+              [ordinary] = await readOrdinary();
+            }
+            if (
+              (ordinary.status === 'rejected' && mailDelayed(ordinary.reason)) ||
+              (ordinary.status === 'fulfilled' && ordinary.value.delayedAccounts)
+            )
+              mailRecovery.onDelayed?.();
+            // Scholar discovery is independent of the incremental email summary checkpoint.
+            // Apply the sender/topic predicate in Mail before the bounded result limit. It is not
+            // sent to a Mail that has just been silent for its whole waiting time.
+            const silentMail =
+              ordinary.status === 'rejected' && silent(ordinary.reason) ? ordinary.reason : null;
+            const [alerts] = await Promise.allSettled([
+              silentMail
+                ? Promise.reject(silentMail)
+                : input.live.papers.scholarAlerts !== false && input.live.mail!.bodyPreview
+                  ? this.mail.collect(
+                      input.routineId,
+                      input.live.mail!,
+                      signal,
+                      mailProgress,
+                      undefined,
+                      resolveMailSearch({ query: 'scholar' }, input.live.mail!, profile.timeZone),
+                    )
+                  : Promise.resolve(null),
+            ]);
             await this.workspace.assertMail(input.routineId, input.live.mail!);
+            if (signal.aborted) throw new Error('source_cancelled');
+            if (alerts.status === 'fulfilled' && alerts.value) {
+              scholarMail = alerts.value.items;
+              scholarSearchNote = ` Scholar 알림 전용 검색: ${scholarMail.length}개 메일 확인. ${alerts.value.note}`;
+            } else if (alerts.status === 'rejected') {
+              scholarSearchNote = ` Scholar 알림 검색 미완료: ${sourceError(alerts.reason)}`;
+            }
+            if (ordinary.status === 'rejected') throw ordinary.reason;
+            const result = ordinary.value!;
             if (plan)
               await this.workspace.completeMailRead(
                 profile,
                 result.completedAccounts ?? [],
                 signal,
               );
-            const { completedAccounts: _completed, ...display } = result;
+            const { completedAccounts: _completed, delayedAccounts: _delayed, ...display } = result;
             return display;
           }
           this.mail.assertScope(input.routineId, input.live.mail!);
@@ -1053,7 +1697,11 @@ export class LiveSourceService {
       }),
     );
     const checkCollectedMail = async () => {
-      if (!input.live.mail || !results.some((r) => r.kind === 'email' && r.items.length)) return;
+      if (
+        !input.live.mail ||
+        (!scholarMail.length && !results.some((r) => r.kind === 'email' && r.items.length))
+      )
+        return;
       const profile = await this.workspace.profile(input.routineId);
       if (signal.aborted) throw new Error('source_cancelled');
       if (JSON.stringify(profile) !== mailProfileSnapshot)
@@ -1064,7 +1712,10 @@ export class LiveSourceService {
     await checkCollectedMail();
     if (input.live.mail && input.live.papers.scholarAlerts !== false) {
       const candidates = input.live.mail.bodyPreview
-        ? scholarCandidates(results.find((r) => r.kind === 'email')?.items ?? [])
+        ? scholarCandidates([
+            ...(results.find((r) => r.kind === 'email')?.items ?? []),
+            ...scholarMail,
+          ])
         : [];
       let papers = results.find((r) => r.kind === 'papers');
       if (!papers) {
@@ -1087,6 +1738,7 @@ export class LiveSourceService {
       papers.note += input.live.mail.bodyPreview
         ? ` 조회한 메일에서 Google Scholar 알림의 논문 후보 ${candidates.length}개를 추출해 중복을 제거했습니다. 명백한 상업 광고 항목만 제외하며 애매한 항목은 유지합니다. 원본 메일은 삭제하지 않습니다. 메일함·기간·조회 개수 범위 안에서만 가져오며 발신 진위는 검증하지 않았습니다.`
         : ' Google Scholar 알림 추출에는 메일 본문 미리보기 허용이 필요합니다.';
+      papers.note += scholarSearchNote;
     }
     if (
       persistSnapshot &&
@@ -1167,6 +1819,7 @@ export class LiveSourceService {
     const routedPreferences = profile
       ? routedBriefingPreferences(profile.preferences, await this.modelRouting?.(), 'briefing')
       : undefined;
+    const guidance = await this.routineGuidance(input.routineId);
     const usesRouting = Boolean(profile && routedPreferences !== profile.preferences);
     if (usesRouting && routedPreferences) {
       input.providerId = routedPreferences.providerId;
@@ -1202,12 +1855,26 @@ export class LiveSourceService {
     };
     const feedbackProfileReader = (
       this.memory as unknown as {
-        feedbackProfile?: (routineId: string, includePrivate?: boolean) => Promise<FeedbackProfile>;
+        feedbackProfile?: (
+          routineId: string,
+          includePrivate?: boolean,
+          senderOf?: (itemId: string) => string | undefined,
+        ) => Promise<FeedbackProfile>;
       }
     ).feedbackProfile;
     if (typeof feedbackProfileReader === 'function') {
       try {
-        feedbackProfile = await feedbackProfileReader.call(this.memory, input.routineId, privateAi);
+        // Rated emails count for their sender, found in the saved briefings and this collection.
+        const senderOf = feedbackSenderLookup(
+          await this.workspace.summaryHistory(input.routineId),
+          available,
+        );
+        feedbackProfile = await feedbackProfileReader.call(
+          this.memory,
+          input.routineId,
+          privateAi,
+          senderOf,
+        );
       } catch (error) {
         progress(
           `개인화 피드백을 읽지 못했습니다. 현재 자료만으로 진행합니다: ${sourceError(error)}`,
@@ -1388,19 +2055,27 @@ export class LiveSourceService {
     await guard();
     if (privateItems.length) this.mail.assertScope(input.routineId, receipt.input.live.mail!);
     if (signal.aborted) throw new Error('source_cancelled');
+    const summarize = () =>
+      this.analyzer(
+        { ...input, memory: memoryInput },
+        enriched,
+        receipt.input.interest,
+        signal,
+        progress,
+        undefined,
+        guard,
+        feedbackProfile,
+        tagCatalog,
+        profile?.timeZone ?? 'Asia/Seoul',
+        guidance,
+      );
     const result =
       analysisItems.length > 0
-        ? await this.analyzer(
-            { ...input, memory: memoryInput },
-            enriched,
-            receipt.input.interest,
-            signal,
-            progress,
-            undefined,
-            guard,
-            feedbackProfile,
-            tagCatalog,
-          )
+        ? // Paper summaries are a feature of their own on the Usage screen. Briefing batches hold one
+          // kind each, so a paper-only batch is recorded as such; anything else stays a briefing.
+          await (enriched.every((item) => item.kind === 'papers')
+            ? withNativeUsageScope({ workloadKind: 'paper_summary', projectId: null }, summarize)
+            : summarize())
         : {
             overview: '',
             items: [],
@@ -1412,8 +2087,9 @@ export class LiveSourceService {
       const analyzed = new Set(result.items.map((i) => i.id));
       if (analyzed.size !== result.items.length)
         throw new Error('briefing_analysis_coverage_invalid');
+      const rejected = new Set((result.rejectedItems ?? []).map((entry) => entry.id));
       for (const item of items) {
-        if (!cachedItems.has(item.id) && !analyzed.has(item.id))
+        if (!cachedItems.has(item.id) && !analyzed.has(item.id) && !rejected.has(item.id))
           throw new Error('briefing_analysis_id_invalid');
       }
     }
@@ -1492,6 +2168,8 @@ export class LiveSourceService {
     if (privateItems.length) this.mail.assertScope(input.routineId, receipt.input.live.mail!);
     if (signal.aborted) throw new Error('source_cancelled');
     let historyId: string | null = null;
+    // Distinguishes "the store failed" from "nothing in this batch may be stored".
+    let historySaveFailed = false;
     await guard();
     try {
       historyId = await this.workspace.saveBriefing(
@@ -1505,6 +2183,7 @@ export class LiveSourceService {
         provenance,
       );
     } catch (error) {
+      historySaveFailed = true;
       memorySave.warning = [memorySave.warning, sourceError(error)].filter(Boolean).join(' ');
     }
     // Classify only freshly generated, durably saved paper summaries. Cache-only reads stay zero-inference.
@@ -1544,6 +2223,7 @@ export class LiveSourceService {
       provenance,
       memorySave,
       historyId,
+      historySaveFailed,
       evidence: items.map((item) => ({
         id: item.id,
         paper: item.paper ? { ...item.paper, excerpt: '' } : undefined,
@@ -1561,9 +2241,34 @@ export class LiveSourceService {
       .strict()
       .refine((v) => Boolean(v.receiptId) !== Boolean(v.historyId))
       .parse(raw);
-    const profile = await this.workspace.profile(input.routineId);
-    if (!briefingClientHash() || !profile || !this.workspace.owns(profile))
+    const initialProfile = await this.workspace.profile(input.routineId);
+    if (!briefingClientHash() || !initialProfile || !this.workspace.owns(initialProfile))
       throw new Error('assistant_client_required');
+    let profile = initialProfile;
+    const ensurePrivateApproval = async (mail: boolean) => {
+      if (mail && (!profile.live.mail || !profile.preferences.mailRead))
+        throw new Error('briefing_refresh_mail_disabled');
+      if (!profile.preferences.mailAi) throw new Error('briefing_refresh_ai_disabled');
+      if (!this.workspace.approved(profile)) {
+        // Renew the exact saved scope with native consent, never enable a disabled
+        // permission or adopt another browser's routine. A concurrent edit wins.
+        progress('저장된 연결 설정의 승인 확인 중 · 설정을 다시 입력할 필요는 없습니다.');
+        const {
+          approvedScope: _approved,
+          owners: _owners,
+          updatedAt: _updated,
+          ...saved
+        } = profile;
+        profile = await this.workspace.save(
+          saved,
+          (message) => this.consent(message, signal),
+          profile,
+          signal,
+        );
+      }
+      if (!(await this.workspace.canPrivateAi(input.routineId, profile.preferences.providerId)))
+        throw new Error('assistant_private_ai_required');
+    };
     if (
       this.refreshing.has(input.routineId) ||
       [...this.automaticSummaryJobs.values()].some(
@@ -1583,6 +2288,7 @@ export class LiveSourceService {
         if (!history || !saved || saved.kind === 'weather')
           throw new Error('briefing_history_item_missing');
         const kind = inferHistoryKind(saved);
+        if (kind === 'email' || history.private) await ensurePrivateApproval(kind === 'email');
         const match = (item: LiveItem) =>
           item.id === saved.id &&
           item.kind === kind &&
@@ -1594,21 +2300,23 @@ export class LiveSourceService {
               r.expiresAt > Date.now() &&
               r.input.routineId === input.routineId &&
               JSON.stringify(r.input.interest) === JSON.stringify(profile.interest) &&
-              r.results.some((s) => s.items.some(match)),
+              r.results.some((s) =>
+                s.items.some(
+                  (item) =>
+                    match(item) &&
+                    (kind !== 'email' ||
+                      (JSON.stringify(r.input.live.mail) === JSON.stringify(profile.live.mail) &&
+                        (!profile.live.mail?.bodyPreview ||
+                          (item.readScope === 'mail-preview' && Boolean(item.text.trim()))))),
+                ),
+              ),
           );
         if (existing) receiptId = existing[0];
         else {
           // No raw email archive: reacquire only the selected source in the saved permission scope.
           // Never send the old AI summary as if it were an original document.
-          if (kind === 'email' && (!profile.live.mail || !profile.preferences.mailRead))
-            throw new Error('assistant_private_ai_required');
           if (kind === 'papers' && !profile.live.papers.enabled)
             throw new Error('briefing_refresh_source_missing');
-          if (
-            (kind === 'email' || history.private) &&
-            !(await this.workspace.canPrivateAi(input.routineId, profile.preferences.providerId))
-          )
-            throw new Error('assistant_private_ai_required');
           progress('같은 원자료를 저장된 조회 범위에서 다시 확인하는 중');
           const results = await this.collect(
             {
@@ -1636,21 +2344,45 @@ export class LiveSourceService {
             if (failure?.error) throw new Error(`briefing_refresh_read_failed:${failure.error}`);
             throw new Error('briefing_refresh_source_missing');
           }
+          const original = results.flatMap((s) => s.items).find(match);
+          if (
+            kind === 'email' &&
+            profile.live.mail?.bodyPreview &&
+            (original?.readScope !== 'mail-preview' || !original.text.trim())
+          )
+            throw new Error('briefing_refresh_body_unavailable');
           receiptId = results[0]!.receiptId;
         }
         historyRunId = history.runId ?? history.id;
+      } else if (receiptId) {
+        const receipt = this.receipts.get(receiptId);
+        if (
+          !receipt ||
+          receipt.expiresAt < Date.now() ||
+          receipt.input.routineId !== input.routineId
+        )
+          throw new Error('briefing_receipt_expired');
+        const item = receipt.results.flatMap((r) => r.items).find((i) => i.id === input.itemId);
+        if (!item || item.kind === 'weather') throw new Error('briefing_analysis_id_invalid');
+        if (item.kind === 'email' || item.privateOrigin === 'mail')
+          await ensurePrivateApproval(true);
       }
       if (JSON.stringify(await this.workspace.profile(input.routineId)) !== JSON.stringify(profile))
         throw new Error('assistant_settings_changed');
-      const model = await this.modelResolver(profile.preferences);
+      const summaryPreferences = routedBriefingPreferences(
+        profile.preferences,
+        await this.modelRouting?.(),
+        'briefing',
+      );
+      const model = await this.modelResolver(summaryPreferences);
       const result = await this.analyze(
         {
           routineId: input.routineId,
           receiptId,
           itemIds: [input.itemId],
-          providerId: profile.preferences.providerId,
+          providerId: summaryPreferences.providerId,
           modelId: model.modelId,
-          reasoning: profile.preferences.reasoning,
+          reasoning: summaryPreferences.reasoning,
           includeMail: profile.preferences.mailAi,
           memory: [],
           refresh: true,
@@ -1667,6 +2399,162 @@ export class LiveSourceService {
       return result;
     } finally {
       this.refreshing.delete(input.routineId);
+    }
+  }
+  /**
+   * One displayed mail: mark it read, check its read state, or recover its sender. The single-mail
+   * routes and the "mark the whole briefing" route share this, so every mail goes through the same
+   * ownership, target and write checks. `consented` is true only when the caller already asked once
+   * for a whole batch.
+   */
+  private async mailItemAction(
+    path: '/mail/mark-read' | '/mail/read-status' | '/mail/read-sender',
+    input: MailOpenTarget,
+    signal: AbortSignal,
+    consented = false,
+  ) {
+    const readOnly = path === '/mail/read-status';
+    const senderOnly = path === '/mail/read-sender';
+    const profile = await this.workspace.profile(input.routineId);
+    if (!profile?.live.mail) throw new Error('assistant_mail_permission_required');
+    const check = async () => {
+      if (signal.aborted) throw new Error('source_cancelled');
+      const current = await this.workspace.assertMail(input.routineId, profile.live.mail!);
+      if (JSON.stringify(current) !== JSON.stringify(profile))
+        throw new Error('assistant_settings_changed');
+    };
+    await check();
+    const key = JSON.stringify([input.routineId, input.itemId]);
+    if (this.markingMail.has(key)) throw new Error('mail_mark_busy');
+    this.markingMail.add(key);
+    try {
+      const resolve = async () => {
+        await check();
+        if ('receiptId' in input) {
+          const receipt = this.receipts.get(input.receiptId);
+          if (
+            !receipt ||
+            receipt.expiresAt < Date.now() ||
+            receipt.input.routineId !== input.routineId
+          )
+            throw new Error('briefing_receipt_expired');
+          return receipt.results
+            .flatMap((r) => r.items)
+            .find((i) => i.kind === 'email' && i.id === input.itemId);
+        }
+        return (await this.workspace.summaryHistory(input.routineId))
+          .find((h) => h.id === input.historyId)
+          ?.items.find(
+            (i) => (i.kind === 'email' || i.readScope.startsWith('mail')) && i.id === input.itemId,
+          );
+      };
+      const item = await resolve(),
+        url = safeAppleMailUrl(item?.mailMessageUrl);
+      const targets = mailTargets(profile.live.mail);
+      const target = item?.mailAccount
+        ? targets.find((candidate) => candidate.accountId === item.mailAccount!.id)
+        : targets.length === 1
+          ? targets[0]
+          : undefined;
+      if (!url || !target) throw new Error('mail_mark_target_missing');
+      if (!consented && this.workspace.requiresPerRequestConfirmation(profile))
+        await this.consent(
+          senderOnly
+            ? '이메일 발신자 확인\n선택한 한 통의 발신자 헤더만 읽어 요약에 저장합니다. 본문을 읽거나 읽음 상태를 변경하지 않습니다.'
+            : readOnly
+              ? '이메일 읽음 상태 확인\n선택한 한 통의 읽음 상태만 확인합니다. 메일을 변경하거나 열지 않습니다.'
+              : '이메일 읽음 처리\n선택한 한 통만 Apple Mail에서 읽음으로 표시합니다. 메일을 열거나 보내거나 삭제하지 않습니다.',
+          signal,
+        );
+      const mailbox = await this.mail.resolveMailbox({ ...profile.live.mail, ...target }, signal);
+      const beforeWrite = async () => {
+        const current = await resolve();
+        if (safeAppleMailUrl(current?.mailMessageUrl) !== url)
+          throw new Error('mail_mark_target_missing');
+      };
+      if (senderOnly) {
+        const sender = await this.readMailSender(
+          mailbox,
+          input.itemId,
+          url,
+          signal,
+          beforeWrite,
+          undefined,
+          item?.mailNativeId,
+        );
+        await beforeWrite();
+        await this.workspace.recordMailSender(
+          input.routineId,
+          input.itemId,
+          url,
+          sender,
+          profile,
+          signal,
+        );
+        for (const receipt of this.receipts.values())
+          if (receipt.input.routineId === input.routineId)
+            for (const source of receipt.results)
+              for (const value of source.items) {
+                if (
+                  value.kind === 'email' &&
+                  value.id === input.itemId &&
+                  value.mailMessageUrl === url
+                )
+                  value.details[0] = sender;
+              }
+        return { sender };
+      }
+      const result = readOnly
+        ? await this.checkMail(
+            mailbox,
+            input.itemId,
+            url,
+            signal,
+            beforeWrite,
+            undefined,
+            item?.mailNativeId,
+          )
+        : await this.markMail(
+            mailbox,
+            input.itemId,
+            url,
+            signal,
+            beforeWrite,
+            undefined,
+            item?.mailNativeId,
+          );
+      if (result.status !== 'read') return { status: 'unread' as const };
+      for (const receipt of this.receipts.values())
+        if (receipt.input.routineId === input.routineId)
+          for (const source of receipt.results)
+            for (const value of source.items) {
+              if (
+                value.id === input.itemId &&
+                value.kind === 'email' &&
+                value.mailMessageUrl === url
+              )
+                value.mailMarkedReadAt = result.markedAt;
+            }
+      let historyWarning = '';
+      try {
+        await this.workspace.markMailRead(
+          input.routineId,
+          input.itemId,
+          url,
+          result.markedAt,
+          profile,
+          signal,
+        );
+      } catch {
+        historyWarning = 'Apple Mail은 읽음 처리됐지만 브리핑 표시를 저장하지 못했습니다.';
+      }
+      return { ...result, ...(historyWarning ? { historyWarning } : {}) };
+    } catch (error) {
+      if (error instanceof Error && error.message === 'mail_mark_unconfirmed')
+        return { status: 'unconfirmed' as const, error: sourceError(error) };
+      throw error;
+    } finally {
+      this.markingMail.delete(key);
     }
   }
   async handle(req: IncomingMessage, res: ServerResponse, signal: AbortSignal) {
@@ -1702,7 +2590,12 @@ export class LiveSourceService {
           const input = GenerationScheduleRequestSchema.parse(body);
           return json(
             200,
-            await this.generation.configure(input.routineId, input.intervalHours, signal),
+            await this.generation.configure(
+              input.routineId,
+              input.intervalHours,
+              signal,
+              input.routineSchedule,
+            ),
           );
         }
         const input = GenerationRequestSchema.parse(body);
@@ -1844,15 +2737,20 @@ export class LiveSourceService {
               '저장된 비공개 논문 요약을 선택한 AI에 보내 연구 분야를 분류합니다. 원문은 다시 조회하지 않습니다.',
               signal,
             );
-          const model = await this.modelResolver(profile.preferences);
+          const classifierPreferences = routedBriefingPreferences(
+            profile.preferences,
+            await this.modelRouting?.(),
+            'briefing',
+          );
+          const model = await this.modelResolver(classifierPreferences);
           saved = await classifyResolvedPapers(
             this.workspace,
             profile,
             pending,
             {
-              providerId: profile.preferences.providerId,
+              providerId: classifierPreferences.providerId,
               modelId: model.modelId,
-              reasoning: profile.preferences.reasoning,
+              reasoning: classifierPreferences.reasoning,
             },
             this.paperClassifier,
             signal,
@@ -1861,120 +2759,76 @@ export class LiveSourceService {
         }
         return json(200, { saved, skipped: selected.length - saved.length });
       }
-      if (path === '/mail/mark-read' || path === '/mail/read-status') {
-        const readOnly = path === '/mail/read-status';
-        const input = MailOpenRequestSchema.parse(body);
+      if (
+        path === '/mail/mark-read' ||
+        path === '/mail/read-status' ||
+        path === '/mail/read-sender'
+      )
+        return json(
+          200,
+          await this.mailItemAction(path, MailOpenRequestSchema.parse(body), signal),
+        );
+      if (path === '/mail/mark-read-all') {
+        // "모두 읽음" of one briefing: one request and one confirmation, but every mail still goes
+        // through the single-message writer, one at a time. A mail that fails does not stop the rest.
+        const input = MailMarkAllRequestSchema.parse(body);
         const profile = await this.workspace.profile(input.routineId);
         if (!profile?.live.mail) throw new Error('assistant_mail_permission_required');
-        const check = async () => {
-          if (signal.aborted) throw new Error('source_cancelled');
-          const current = await this.workspace.assertMail(input.routineId, profile.live.mail!);
-          if (JSON.stringify(current) !== JSON.stringify(profile))
-            throw new Error('assistant_settings_changed');
-        };
-        await check();
-        const key = JSON.stringify([input.routineId, input.itemId]);
-        if (this.markingMail.has(key)) throw new Error('mail_mark_busy');
-        this.markingMail.add(key);
-        try {
-          const resolve = async () => {
-            await check();
-            if ('receiptId' in input) {
-              const receipt = this.receipts.get(input.receiptId);
-              if (
-                !receipt ||
-                receipt.expiresAt < Date.now() ||
-                receipt.input.routineId !== input.routineId
-              )
-                throw new Error('briefing_receipt_expired');
-              return receipt.results
-                .flatMap((r) => r.items)
-                .find((i) => i.kind === 'email' && i.id === input.itemId);
-            }
-            return (await this.workspace.summaryHistory(input.routineId))
-              .find((h) => h.id === input.historyId)
-              ?.items.find(
-                (i) =>
-                  (i.kind === 'email' || i.readScope.startsWith('mail')) && i.id === input.itemId,
-              );
-          };
-          const item = await resolve(),
-            url = safeAppleMailUrl(item?.mailMessageUrl);
-          const targets = mailTargets(profile.live.mail);
-          const target = item?.mailAccount
-            ? targets.find((candidate) => candidate.accountId === item.mailAccount!.id)
-            : targets.length === 1
-              ? targets[0]
-              : undefined;
-          if (!url || !target) throw new Error('mail_mark_target_missing');
-          if (this.workspace.requiresPerRequestConfirmation(profile))
-            await this.consent(
-              readOnly
-                ? '이메일 읽음 상태 확인\n선택한 한 통의 읽음 상태만 확인합니다. 메일을 변경하거나 열지 않습니다.'
-                : '이메일 읽음 처리\n선택한 한 통만 Apple Mail에서 읽음으로 표시합니다. 메일을 열거나 보내거나 삭제하지 않습니다.',
-              signal,
-            );
-          const mailbox = await this.mail.resolveMailbox(
-            { ...profile.live.mail, ...target },
+        await this.workspace.assertMail(input.routineId, profile.live.mail);
+        const saved = new Map(
+          (await this.workspace.summaryHistory(input.routineId)).flatMap((h) =>
+            h.items.map((i) => [JSON.stringify([h.id, i.id]), i] as const),
+          ),
+        );
+        const targets = [
+          ...new Map(
+            input.items.map((item) => [JSON.stringify([item.historyId, item.itemId]), item]),
+          ).values(),
+        ];
+        const pending = targets.filter(
+          (item) => !saved.get(JSON.stringify([item.historyId, item.itemId]))?.mailMarkedReadAt,
+        );
+        if (pending.length && this.workspace.requiresPerRequestConfirmation(profile))
+          await this.consent(
+            `이메일 ${pending.length}통 읽음 처리\n이 브리핑의 메일 ${pending.length}통을 Apple Mail에서 읽음으로 표시합니다. 메일을 열거나 보내거나 삭제하지 않습니다.`,
             signal,
           );
-          const beforeWrite = async () => {
-            const current = await resolve();
-            if (safeAppleMailUrl(current?.mailMessageUrl) !== url)
-              throw new Error('mail_mark_target_missing');
-          };
-          const result = readOnly
-            ? await this.checkMail(
-                mailbox,
-                input.itemId,
-                url,
-                signal,
-                beforeWrite,
-                undefined,
-                item?.mailNativeId,
-              )
-            : await this.markMail(
-                mailbox,
-                input.itemId,
-                url,
-                signal,
-                beforeWrite,
-                undefined,
-                item?.mailNativeId,
-              );
-          if (result.status !== 'read') return json(200, { status: 'unread' });
-          for (const receipt of this.receipts.values())
-            if (receipt.input.routineId === input.routineId)
-              for (const source of receipt.results)
-                for (const value of source.items) {
-                  if (
-                    value.id === input.itemId &&
-                    value.kind === 'email' &&
-                    value.mailMessageUrl === url
-                  )
-                    value.mailMarkedReadAt = result.markedAt;
-                }
-          let historyWarning = '';
-          try {
-            await this.workspace.markMailRead(
-              input.routineId,
-              input.itemId,
-              url,
-              result.markedAt,
-              profile,
-              signal,
-            );
-          } catch {
-            historyWarning = 'Apple Mail은 읽음 처리됐지만 브리핑 표시를 저장하지 못했습니다.';
+        const results: {
+          itemId: string;
+          historyId: string;
+          status: 'read' | 'unread' | 'unconfirmed' | 'failed';
+          markedAt?: string;
+          error?: string;
+          historyWarning?: string;
+        }[] = [];
+        let marked = 0;
+        for (const item of targets) {
+          const already = saved.get(
+            JSON.stringify([item.historyId, item.itemId]),
+          )?.mailMarkedReadAt;
+          if (already) {
+            results.push({ ...item, status: 'read', markedAt: already });
+            continue;
           }
-          return json(200, { ...result, ...(historyWarning ? { historyWarning } : {}) });
-        } catch (error) {
-          if (error instanceof Error && error.message === 'mail_mark_unconfirmed')
-            return json(200, { status: 'unconfirmed', error: sourceError(error) });
-          throw error;
-        } finally {
-          this.markingMail.delete(key);
+          if (signal.aborted) throw new Error('source_cancelled');
+          try {
+            const result = await this.mailItemAction(
+              '/mail/mark-read',
+              { routineId: input.routineId, ...item },
+              signal,
+              true,
+            );
+            if ('status' in result && result.status === 'read') marked += 1;
+            results.push({
+              ...item,
+              ...(result as Omit<(typeof results)[number], 'itemId' | 'historyId'>),
+            });
+          } catch (error) {
+            if (signal.aborted) throw error;
+            results.push({ ...item, status: 'failed', error: sourceError(error) });
+          }
         }
+        return json(200, { marked, results });
       }
       if (path === '/mail/open') {
         const input = MailOpenRequestSchema.parse(body);
@@ -2037,48 +2891,176 @@ export class LiveSourceService {
           this.openingMail.delete(key);
         }
       }
-      if (path === '/assistant/model/save') {
-        const input = BriefingModelSaveSchema.parse(body);
-        const idle = () => {
-          if (
-            [...this.automaticSummaryJobs.values()].some(
-              (j) => j.routineId === input.routineId && j.state === 'running',
-            )
-          )
-            throw new Error('assistant_model_busy');
-        };
-        idle();
-        return json(
-          200,
-          await saveBriefingModelSelection(
-            input,
-            this.workspace,
-            this.modelResolver,
-            this.consent,
-            signal,
-            idle,
-          ),
-        );
-      }
       if (path === '/assistant/model/current') {
         const input = z.object({ routineId }).strict().parse(body);
         const profile = await this.workspace.profile(input.routineId);
         if (!profile) throw new Error('assistant_settings_required');
-        const preferences = routedBriefingPreferences(
-          profile.preferences,
-          await this.modelRouting?.(),
-          'briefingAssistant',
+        const policy = await this.modelRouting?.();
+        // What runs right now for each Briefing usage, and whether Settings → Agent picked it.
+        const usages = await Promise.all(
+          BRIEFING_MODEL_USAGES.map(async (usage: BriefingModelUsage) => {
+            const preferences = routedBriefingPreferences(profile.preferences, policy, usage);
+            const base = {
+              usage,
+              providerId: preferences.providerId,
+              reasoning: preferences.reasoning,
+              assigned: preferences !== profile.preferences,
+            };
+            try {
+              const model = await this.modelResolver(preferences);
+              return {
+                ...base,
+                modelId: model.modelId,
+                displayName: model.displayName,
+                available: true,
+              };
+            } catch {
+              return {
+                ...base,
+                modelId: preferences.modelId,
+                displayName: preferences.modelId ?? '제공자 기본 모델',
+                available: false,
+              };
+            }
+          }),
         );
-        const model = await this.modelResolver(preferences);
+        const assistant = usages.find((u) => u.usage === 'briefingAssistant')!;
         return json(200, {
-          modelId: model.modelId,
-          displayName: model.displayName,
-          reasoning: preferences.reasoning,
+          modelId: assistant.modelId,
+          displayName: assistant.displayName,
+          reasoning: assistant.reasoning,
+          usages,
         });
+      }
+      if (path.startsWith('/assistant/guidance/')) {
+        if (!this.guidance) throw new Error('briefing_guidance_unavailable');
+        const store = this.guidance;
+        const text = z.string().max(4000);
+        const id = z.string().uuid();
+        const items =
+          path === '/assistant/guidance/list'
+            ? await store.list(z.object({ routineId }).strict().parse(body).routineId)
+            : path === '/assistant/guidance/add'
+              ? await (async () => {
+                  const input = z.object({ routineId, text }).strict().parse(body);
+                  return store.add(input.routineId, input.text);
+                })()
+              : path === '/assistant/guidance/edit'
+                ? await (async () => {
+                    const input = z.object({ routineId, id, text }).strict().parse(body);
+                    return store.edit(input.routineId, input.id, input.text);
+                  })()
+                : path === '/assistant/guidance/delete'
+                  ? await (async () => {
+                      const input = z.object({ routineId, id }).strict().parse(body);
+                      return store.remove(input.routineId, input.id);
+                    })()
+                  : null;
+        if (!items) return json(404, { error: '알 수 없는 브리핑 지침 요청입니다.' });
+        return json(200, { items });
       }
       if (path === '/assistant/settings/get') {
         const input = z.object({ routineId }).strict().parse(body);
         return json(200, await this.workspace.publicProfile(input.routineId));
+      }
+      if (
+        ['/todo/options', '/todo/authorize', '/todo/create', '/todo/preferences'].includes(path)
+      ) {
+        const input =
+          path === '/todo/create'
+            ? BriefingTaskCreateSchema.parse(body)
+            : path === '/todo/preferences'
+              ? z
+                  .object({ routineId, enabled: z.boolean(), listId: z.string().max(500) })
+                  .strict()
+                  .parse(body)
+              : z.object({ routineId }).strict().parse(body);
+        const profile = await this.workspace.profile(input.routineId);
+        if (!profile || !this.workspace.owns(profile)) throw new Error('assistant_client_required');
+        const guard = async () => {
+          if (signal.aborted) throw new Error('source_cancelled');
+          if (
+            JSON.stringify(await this.workspace.profile(input.routineId)) !==
+            JSON.stringify(profile)
+          )
+            throw new Error('assistant_settings_changed');
+          // Direct, reviewed UI task creation does not read the user's existing task list for AI.
+          // Keep routine/client approval; AI tool reads still use assertTodoRead separately.
+          if (!this.workspace.approved(profile)) throw new Error('assistant_client_required');
+        };
+        await guard();
+        if (!this.taskActions) throw new Error('assistant_todo_unavailable');
+        if (path === '/todo/preferences') {
+          if (!this.taskActions.configure) throw Error('assistant_todo_unavailable');
+          const value = z
+            .object({ routineId, enabled: z.boolean(), listId: z.string().max(500) })
+            .strict()
+            .parse(body);
+          return json(
+            200,
+            await this.taskActions.configure(
+              { enabled: value.enabled, listId: value.listId },
+              signal,
+              guard,
+            ),
+          );
+        }
+        if (path === '/todo/create')
+          return json(
+            200,
+            await this.taskActions.create(BriefingTaskCreateSchema.parse(body), signal, guard),
+          );
+        const result = await this.taskActions.options(signal, path === '/todo/authorize');
+        await guard();
+        return json(200, result);
+      }
+      if (path === '/mail/event-draft' || path === '/todo/draft') {
+        const isTask = path === '/todo/draft';
+        const input = EmailEventRequestSchema.parse(body);
+        const profile = await this.workspace.profile(input.routineId);
+        if (!profile || !this.workspace.owns(profile)) throw new Error('assistant_client_required');
+        const preferences = routedBriefingPreferences(
+          profile.preferences,
+          await this.modelRouting?.(),
+          'lightweightTasks',
+        );
+        const guard = async () => {
+          if (signal.aborted) throw new Error('source_cancelled');
+          if (
+            JSON.stringify(await this.workspace.profile(input.routineId)) !==
+            JSON.stringify(profile)
+          )
+            throw new Error('assistant_settings_changed');
+          if (!(await this.workspace.canPrivateAi(input.routineId, preferences.providerId)))
+            throw new Error('assistant_private_ai_required');
+          if (isTask) {
+            if (!this.workspace.approved(profile)) throw new Error('assistant_client_required');
+          } else
+            await this.workspace.assertCalendar(input.routineId, profile.preferences.calendarIds);
+        };
+        await guard();
+        if (this.workspace.requiresPerRequestConfirmation(profile))
+          await this.consent(
+            isTask
+              ? '이 이메일 요약을 AI로 분석해 할 일과 마감일 초안을 준비할까요? 아직 저장하지 않습니다.'
+              : '이 이메일 요약을 AI로 분석해 일정 초안을 준비할까요? 일정은 아직 등록하지 않습니다.',
+            signal,
+          );
+        const model = await this.modelResolver(preferences);
+        return json(
+          200,
+          await (isTask ? draftEmailTask : draftEmailEvent)(
+            input,
+            profile.timeZone,
+            {
+              providerId: preferences.providerId,
+              modelId: model.modelId,
+              reasoning: preferences.reasoning,
+            },
+            signal,
+            guard,
+          ),
+        );
       }
       if (
         path === '/assistant/settings/connection-status' ||
@@ -2290,6 +3272,110 @@ export class LiveSourceService {
         if (!profile) throw new Error('assistant_settings_required');
         return json(200, await this.workspace.conversationDisplay(profile));
       }
+      if (path === '/assistant/conversation/new' || path === '/assistant/conversation/compact') {
+        const input = z.object({ routineId }).strict().parse(body);
+        const profile = await this.workspace.profile(input.routineId);
+        if (!profile) throw new Error('assistant_settings_required');
+        if (!this.workspace.owns(profile)) throw new Error('assistant_client_required');
+        this.chatQueue ??= new BriefingChatQueue(this.workspace, () => this.attachments);
+        // A running answer was planned against the context these commands change, and it appends
+        // to the conversation when it ends. One run per routine covers both.
+        let chat: ReturnType<BriefingChatQueue['begin']>;
+        try {
+          chat = this.chatQueue.begin(profile, signal);
+        } catch (error) {
+          throw error instanceof Error && error.message === 'assistant_chat_busy'
+            ? new Error('assistant_context_command_busy')
+            : error;
+        }
+        if (path.endsWith('/new')) {
+          try {
+            return json(200, await this.workspace.startNewConversationContext(profile));
+          } finally {
+            chat.finish();
+          }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store' });
+        res.flushHeaders();
+        const send = (value: unknown) => {
+          if (!signal.aborted && !res.destroyed) res.write(`${JSON.stringify(value)}\n`);
+        };
+        try {
+          const past = await this.workspace.conversation(profile);
+          const checkpoint = await this.workspace.conversationCheckpoint(profile);
+          const policy = await this.modelRouting?.();
+          // Same model and summarizer as a turn's automatic compaction: Settings → Agent decides.
+          const model = await assistantModel(
+            routedBriefingPreferences(profile.preferences, policy, 'briefingAssistant'),
+          );
+          const fixedText = assistantFixedContextText(profile);
+          const maintenance: NonNullable<ContextUsage['maintenance']> = {
+            calls: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+          };
+          const before = historyPlan(model, past, fixedText, checkpoint);
+          send({ type: 'context-usage', usage: before.report });
+          const result = await compactConversationNow(
+            model,
+            past,
+            fixedText,
+            checkpoint,
+            async (older, summary) => {
+              const current = await this.workspace.profile(input.routineId);
+              if (
+                !current ||
+                !this.workspace.owns(current) ||
+                JSON.stringify(current) !== JSON.stringify(profile)
+              )
+                throw new Error('assistant_settings_changed');
+              return compactConversation(
+                older,
+                summary,
+                routedBriefingPreferences(profile.preferences, policy, 'briefing'),
+                chat.signal,
+                (detail) => send({ type: 'progress', detail }),
+                undefined,
+                (usage) => {
+                  maintenance.calls++;
+                  maintenance.inputTokens =
+                    maintenance.inputTokens === null ||
+                    usage?.inputTokens === null ||
+                    usage?.inputTokens === undefined
+                      ? null
+                      : maintenance.inputTokens + usage.inputTokens;
+                  maintenance.outputTokens =
+                    maintenance.outputTokens === null ||
+                    usage?.outputTokens === null ||
+                    usage?.outputTokens === undefined
+                      ? null
+                      : maintenance.outputTokens + usage.outputTokens;
+                },
+              );
+            },
+            (next) => this.workspace.saveConversationCheckpoint(profile, next),
+          );
+          const contextUsage = {
+            ...result.plan.report,
+            ...(maintenance.calls ? { maintenance } : {}),
+          };
+          send({ type: 'context-usage', usage: contextUsage });
+          send({
+            type: 'result',
+            result: {
+              compacted: result.compacted,
+              summarizedMessages: result.summarizedMessages,
+              contextUsage,
+            },
+          });
+        } catch (error) {
+          send({ type: 'error', message: sourceError(error) });
+        } finally {
+          chat.finish();
+          res.end();
+        }
+        return;
+      }
       if (path.startsWith('/assistant/queue/')) {
         this.chatQueue ??= new BriefingChatQueue(this.workspace, () => this.attachments);
         return json(200, await this.chatQueue.handle(path, body));
@@ -2329,6 +3415,12 @@ export class LiveSourceService {
           );
           const checkpoint = await this.workspace.conversationCheckpoint(profile);
           const policy = await this.modelRouting?.();
+          // The assistant's provider and model come from Settings → Agent, like every Briefing usage.
+          const assistantPreferences = routedBriefingPreferences(
+            profile.preferences,
+            policy,
+            'briefingAssistant',
+          );
           await this.workspace.appendConversation(profile, {
             role: 'user',
             text: input.prompt,
@@ -2339,6 +3431,7 @@ export class LiveSourceService {
               feedbackProfile?: (routineId: string) => Promise<FeedbackProfile>;
             }
           ).feedbackProfile;
+          // The chat gets no sender lists: rated senders are used per email in summaries only.
           const feedbackProfile =
             typeof feedbackProfileReader === 'function'
               ? await feedbackProfileReader.call(this.memory, input.routineId)
@@ -2350,20 +3443,39 @@ export class LiveSourceService {
             Promise<Awaited<ReturnType<AppleMailConnection['collect']>>>
           >();
           let mailReady: Promise<void> | undefined;
+          let mailWideReady: Promise<void> | undefined;
           let mailFailure: unknown;
           const result = await runBriefingAssistant(
             input,
             profile,
             this.workspace,
             {
-              ...(this.projectBridge ? { projectBridge: this.projectBridge } : {}),
+              ...(this.projectBridge
+                ? {
+                    projectBridge: confirmingAssistantWrites(
+                      this.projectBridge,
+                      () => this.workspace.requiresPerRequestConfirmation(profile),
+                      (message, sig) => this.consent(message, sig),
+                    ),
+                  }
+                : {}),
+              ...(this.taskActions
+                ? {
+                    // A to-do the user asked for in this message, through the reviewed UI path.
+                    createTodo: assistantTodoCreator({
+                      actions: this.taskActions,
+                      routineId: input.routineId,
+                      approvedScope: profile.approvedScope,
+                      workspace: this.workspace,
+                      needsConfirmation: () =>
+                        this.workspace.requiresPerRequestConfirmation(profile),
+                      consent: (message, sig) => this.consent(message, sig),
+                    }),
+                  }
+                : {}),
               ...(attached ? { attachments: attached } : {}),
               onActiveTurn: chat.onActiveTurn,
-              modelPreferences: routedBriefingPreferences(
-                profile.preferences,
-                policy,
-                'briefingAssistant',
-              ),
+              modelPreferences: assistantPreferences,
               onContextUsage: (usage) => send({ type: 'context-usage', usage }),
               prepareContext: async (model, fixedText) => {
                 if (!past.length)
@@ -2371,13 +3483,16 @@ export class LiveSourceService {
                     model,
                     input.history.map((m) => ({ ...m, createdAt: new Date().toISOString() })),
                     fixedText,
+                    undefined,
+                    !attached && !input.paperReference ? input.prompt : undefined,
                   );
                 const maintenance: NonNullable<ContextUsage['maintenance']> = {
                   calls: 0,
                   inputTokens: 0,
                   outputTokens: 0,
                 };
-                const initial = historyPlan(model, past, fixedText, checkpoint);
+                const contextQuery = !attached && !input.paperReference ? input.prompt : undefined;
+                const initial = historyPlan(model, past, fixedText, checkpoint, contextQuery);
                 send({ type: 'context-usage', usage: initial.report });
                 const prepared = await prepareConversationContext(
                   model,
@@ -2418,12 +3533,14 @@ export class LiveSourceService {
                     );
                   },
                   (next) => this.workspace.saveConversationCheckpoint(profile, next),
+                  contextQuery,
                 );
                 return {
                   ...prepared,
                   report: { ...prepared.report, ...(maintenance.calls ? { maintenance } : {}) },
                 };
               },
+              // The current context only: what is above a `/new` line is not reachable by the model.
               searchConversation: async (query, from, to) =>
                 searchConversationRecords(
                   await this.workspace.conversation(profile),
@@ -2486,7 +3603,7 @@ export class LiveSourceService {
                   profile.routineId,
                   profile.live.mail,
                   true,
-                  profile.preferences.providerId,
+                  assistantPreferences.providerId,
                 );
                 const scope = profile.live.mail;
                 const search = resolveMailSearch(
@@ -2506,6 +3623,19 @@ export class LiveSourceService {
                   await this.mail.restorePolicyGrant(profile.routineId, scope, sig);
                 })();
                 await mailReady;
+                // The saved days bound a briefing, not a search. A search that reaches further
+                // back is named once per turn under the ask policy, with the date it starts at.
+                if (
+                  search &&
+                  Date.parse(search.from) < mailSearchAt - scope.days * 86400000 &&
+                  this.workspace.requiresPerRequestConfirmation(profile)
+                ) {
+                  mailWideReady ??= this.consent(
+                    `AI 비서가 연결된 메일함에서 브리핑 조회 기간(최근 ${scope.days}일)보다 이전인 ${new Intl.DateTimeFormat('sv-SE', { timeZone: profile.timeZone }).format(new Date(search.from))}부터의 메일을 검색합니다. 보낸 사람·제목·받은 날짜로만 찾습니다. 현재 요청에만 허용할까요?`,
+                    sig,
+                  );
+                  await mailWideReady;
+                }
                 if (!mailReads.has(key)) {
                   if (mailReads.size >= 4) throw new Error('mail_search_turn_limit');
                   const pending = this.mail
@@ -2532,7 +3662,7 @@ export class LiveSourceService {
                   profile.routineId,
                   profile.live.mail,
                   true,
-                  profile.preferences.providerId,
+                  assistantPreferences.providerId,
                 );
                 return {
                   note: result.note,
@@ -2945,7 +4075,7 @@ export class LiveSourceService {
             routineId,
             receiptId: z.string().uuid(),
             itemId: z.string(),
-            decision: z.enum(['important', 'not-interested']),
+            decision: z.enum(['important', 'not-interested']).nullable(),
             keywords: z.array(z.string().trim().min(1).max(120)).max(12).optional(),
           })
           .strict()

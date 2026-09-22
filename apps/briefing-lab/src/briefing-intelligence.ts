@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { EmailPreparedActionsSchema } from './email-prepared-actions';
+import { compareEmails } from './email-presentation';
 export const BriefingMemoryEntrySchema = z
   .object({
     id: z.string().max(128),
@@ -34,6 +36,7 @@ export function rememberBriefingEntry(
 }
 export const PaperInsightSchema = z
   .object({
+    preparedActions: EmailPreparedActionsSchema.nullable().optional(),
     id: z.string().max(160),
     summary: z.string().min(1).max(1400),
     keywords: z.array(z.string().trim().min(1).max(80)).max(6).optional(),
@@ -79,12 +82,11 @@ export type BriefingInsight = z.infer<typeof BriefingInsightSchema>;
 // Provider strict structured output requires every property, including paper-only fields.
 // Email supplies empty strings for those fields; the legacy/history reader stays optional.
 export const BriefingGenerationSchema = BriefingInsightSchema.extend({
-  items: z.array(PaperInsightSchema.omit({ tags: true }).required()).max(15),
+  items: z.array(PaperInsightSchema.omit({ tags: true, preparedActions: true }).required()).max(15),
 });
-export function prioritizeBriefingItems<T extends { id: string; kind?: string }>(
-  items: readonly T[],
-  insight: BriefingInsight | null,
-): T[] {
+export function prioritizeBriefingItems<
+  T extends { id: string; kind?: string; publishedAt?: string },
+>(items: readonly T[], insight: BriefingInsight | null): T[] {
   const priority = { high: 0, medium: 1, uncertain: 2, low: 3 };
   const rank = (item: T) => {
     const found = insight?.items.find((i) => i.id === item.id);
@@ -92,7 +94,13 @@ export function prioritizeBriefingItems<T extends { id: string; kind?: string }>
       return found ? { high: 0, medium: 1, low: 2, uncertain: 3 }[found.importance] : 4;
     return found ? priority[found.importance] : 4;
   };
-  return [...items].sort((a, b) => rank(a) - rank(b));
+  return [...items].sort(
+    (a, b) =>
+      rank(a) - rank(b) ||
+      (a.kind === 'email' && b.kind === 'email'
+        ? compareEmails({ receivedAt: a.publishedAt }, { receivedAt: b.publishedAt })
+        : 0),
+  );
 }
 export const BriefingProjectContextSchema = z
   .object({

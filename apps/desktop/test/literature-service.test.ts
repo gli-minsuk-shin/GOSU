@@ -357,6 +357,61 @@ describe('LiteratureService', () => {
     expect(JSON.stringify(storage.candidates)).not.toContain('abstract');
   });
 
+  it('refuses a search text that names no topic before any run or provider call is made', async () => {
+    const storage = new MemoryLiteratureStorage();
+    const begin = vi.spyOn(storage, 'beginLiteratureSearch');
+    const search = vi.fn(async () => []);
+    const literature = service(storage, {
+      provider: {
+        providerId: 'balanced',
+        policyId: 'balanced-three-layer',
+        policyVersion: 4,
+        search,
+      },
+    });
+
+    for (const query of ['논문 검색', 'find papers', '관련 논문 찾아줘']) {
+      await expect(literature.search({ projectId: PROJECT_ID, query })).rejects.toMatchObject({
+        code: 'literature_query_without_topic',
+      });
+    }
+    expect(begin).not.toHaveBeenCalled();
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it('returns why a provider was dropped without storing that detail in the run', async () => {
+    const storage = new MemoryLiteratureStorage();
+    const discoveryProvider: LiteratureDiscoveryProvider = {
+      providerId: 'balanced',
+      policyId: 'balanced-three-layer',
+      policyVersion: 4,
+      search: vi.fn(async () => ({
+        candidates: [],
+        retrievedCount: 0,
+        selectedCount: 0,
+        tierCounts: { core: 0, rising: 0, broad: 0 },
+        coverage: {
+          source: 'crossref' as const,
+          availableSignals: ['relevance' as const],
+          degradationReasons: ['semantic-scholar-unavailable' as const],
+        },
+        providerFailures: [
+          { provider: 'semantic-scholar' as const, cause: 'rate_limited' as const, attempts: 3 },
+        ],
+      })),
+    };
+
+    const result = await service(storage, { provider: discoveryProvider }).search({
+      projectId: PROJECT_ID,
+      query: 'tabular foundation models',
+    });
+
+    expect(result.providerFailures).toEqual([
+      { provider: 'semantic-scholar', cause: 'rate_limited', attempts: 3 },
+    ]);
+    expect(JSON.stringify(result.run)).not.toContain('rate_limited');
+  });
+
   it('persists explicit topic and keyword provenance tags on each search run', async () => {
     const storage = new MemoryLiteratureStorage();
     const result = await service(storage, { provider: provider([]) }).search({
@@ -700,6 +755,353 @@ describe('LiteratureService', () => {
       manualAnnotations: { summary: 'Human note' },
     });
     expect(JSON.stringify(storage.candidates[0])).not.toContain('private-ai');
+  });
+
+  it('adds assistant-found papers as imported records with DOI, arXiv id and the record limit', async () => {
+    const storage = new MemoryLiteratureStorage();
+    const projection = { syncLiterature: vi.fn(async () => undefined) };
+    const literature = service(storage, { projection });
+    const paper = {
+      title: 'Learned LASSO Solvers',
+      authors: ['A. Kim', 'B. Lee'],
+      publishedYear: 2024,
+      venue: 'ICML',
+      abstractText: 'One-pass coefficients.',
+      sourceUrl: 'https://arxiv.org/abs/2401.00001v2',
+      doi: null,
+    };
+    const result = await literature.addFromAssistant({
+      projectId: PROJECT_ID,
+      papers: [paper, { ...paper, title: 'Other', sourceUrl: 'https://doi.org/10.1000/XYZ.1' }],
+    });
+    expect(result).toEqual({
+      projectId: PROJECT_ID,
+      importedCount: 2,
+      updatedCount: 0,
+      unchangedCount: 0,
+    });
+    expect(storage.candidates[0]).toMatchObject({
+      provider: 'import',
+      canonicalId: 'arxiv:2401.00001',
+      title: 'Learned LASSO Solvers',
+      authors: ['A. Kim', 'B. Lee'],
+      containerTitle: 'ICML',
+      publishedYear: 2024,
+      abstractText: 'One-pass coefficients.',
+      topics: [],
+      fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    });
+    expect(storage.candidates[1]).toMatchObject({ doi: '10.1000/xyz.1' });
+    expect(projection.syncLiterature).toHaveBeenCalledWith(PROJECT_ID);
+    // Non-HTTPS links, archived projects and a full library are refused.
+    await expect(
+      literature.addFromAssistant({
+        projectId: PROJECT_ID,
+        papers: [{ ...paper, sourceUrl: 'http://example.test/p' }],
+      }),
+    ).rejects.toThrow();
+    await expect(
+      service(new MemoryLiteratureStorage(), { workspace: workspace('archived') }).addFromAssistant(
+        { projectId: PROJECT_ID, papers: [paper] },
+      ),
+    ).rejects.toMatchObject({ code: 'literature_project_unavailable' });
+    const full = new MemoryLiteratureStorage();
+    for (let index = 0; index < 500; index += 1) full.records.push(record({ id: randomUUID() }));
+    await expect(
+      service(full).addFromAssistant({ projectId: PROJECT_ID, papers: [paper] }),
+    ).rejects.toMatchObject({ code: 'literature_record_limit_reached' });
+  });
+
+  it('never sends a paper that is already in the table through the import upsert, which would reset its notes', async () => {
+    const storage = new MemoryLiteratureStorage();
+    const annotated = record({
+      doi: '10.1000/xyz.1',
+      reviewStatus: 'included',
+      manualAnnotations: { topics: ['mine'], summary: 'My own note', relevance: 'Core to aim 1' },
+    });
+    const byArxiv = record({
+      doi: null,
+      providerRecordId: 'other',
+      canonicalId: 'arxiv:2401.00001',
+      fingerprint: 'c'.repeat(64),
+    });
+    storage.records.push(annotated, byArxiv);
+    const upsert = vi.spyOn(storage, 'upsertLiteratureCandidates');
+    const paper = {
+      title: 'Different title on purpose',
+      authors: ['A. Kim'],
+      publishedYear: 2024,
+      venue: null,
+      abstractText: null,
+      doi: null,
+    };
+
+    const result = await service(storage).addFromAssistant({
+      projectId: PROJECT_ID,
+      papers: [
+        { ...paper, sourceUrl: 'https://doi.org/10.1000/XYZ.1' },
+        { ...paper, sourceUrl: 'https://arxiv.org/abs/2401.00001v3' },
+        { ...paper, title: 'Genuinely new', sourceUrl: 'https://arxiv.org/abs/2409.09999' },
+      ],
+    });
+
+    expect(result).toEqual({
+      projectId: PROJECT_ID,
+      importedCount: 1,
+      updatedCount: 0,
+      unchangedCount: 2,
+    });
+    expect(upsert).toHaveBeenCalledTimes(1);
+    expect(upsert.mock.calls[0]?.[1]).toHaveLength(1);
+    expect(upsert.mock.calls[0]?.[1][0]).toMatchObject({ title: 'Genuinely new' });
+    expect(storage.records[0]?.manualAnnotations.summary).toBe('My own note');
+  });
+
+  it('adds saved paper summaries as imported records that carry their tags and a labelled summary', async () => {
+    const storage = new MemoryLiteratureStorage();
+    storage.records.push(record({ doi: '10.1093/biostatistics/kxm045' }));
+    const entry = {
+      id: 'a'.repeat(64),
+      title: 'TabPFN: A Transformer That Solves Small Tabular Classification Problems',
+      authors: ['Noah Hollmann', 'Frank Hutter'],
+      venue: 'ICLR',
+      year: 2022,
+      sourceUrl: 'https://arxiv.org/abs/2207.01848',
+      savedAt: '2026-09-20T00:00:00.000Z',
+      summary: 'A prior-fitted transformer that classifies small tables in one forward pass.',
+      keywords: ['TabPFN', 'in-context learning'],
+      tags: ['tabular'],
+    };
+
+    const result = await service(storage).addLibraryPapers({
+      projectId: PROJECT_ID,
+      papers: [
+        entry,
+        {
+          ...entry,
+          id: 'b'.repeat(64),
+          title: 'Graphical lasso',
+          sourceUrl: 'https://doi.org/10.1093/biostatistics/kxm045',
+        },
+      ],
+    });
+
+    expect(result).toEqual({ projectId: PROJECT_ID, importedCount: 1, alreadySavedCount: 1 });
+    expect(storage.candidates).toHaveLength(1);
+    expect(storage.candidates[0]).toMatchObject({
+      provider: 'import',
+      canonicalId: 'arxiv:2207.01848',
+      title: entry.title,
+      authors: entry.authors,
+      containerTitle: 'ICLR',
+      publishedYear: 2022,
+      sourceUrl: 'https://arxiv.org/abs/2207.01848',
+      searchTags: { topics: ['tabular'], keywords: ['TabPFN', 'in-context learning'] },
+      manualAnnotations: {
+        topics: [],
+        summary: `[논문 요약 보관함] ${entry.summary}`,
+        relevance: '',
+      },
+    });
+    expect(JSON.stringify(storage.candidates[0])).not.toContain('abstractText');
+  });
+
+  it('lists the papers of one search with canonical links, best layer first, for Project Chat', async () => {
+    const storage = new MemoryLiteratureStorage();
+    const RUN = '22222222-2222-4222-8222-222222222222';
+    const classified = (
+      tier: 'core' | 'rising' | 'broad',
+      tierRank: number,
+      searchRunId = RUN,
+    ): NonNullable<LiteratureRecord['discovery']> => ({
+      tier,
+      matchedLayers: [tier],
+      tierRank,
+      overallScore: 0.5,
+      relevanceScore: 0.5,
+      authorityScore: 0,
+      momentumScore: 0,
+      citationVelocityProxy: null,
+      influentialCitationCount: null,
+      maxAuthorHIndex: null,
+      reasons: ['broad-recall'],
+      signalSources: ['crossref'],
+      searchRunId,
+      query: 'tabular foundation models',
+      policyId: 'balanced-three-layer',
+      policyVersion: 4,
+      classifiedAt: NOW.toISOString(),
+    });
+    storage.records.push(
+      record({ title: 'Broad two', doi: null, sourceUrl: null, discovery: classified('broad', 2) }),
+      record({
+        title: 'Core one',
+        doi: '10.1000/core',
+        discovery: classified('core', 1),
+      }),
+      record({
+        title: 'Rising arXiv',
+        doi: null,
+        canonicalId: 'arxiv:2501.01234v2',
+        sourceUrl: 'https://www.semanticscholar.org/paper/abc',
+        discovery: classified('rising', 1),
+      }),
+      record({ title: 'Other search', discovery: classified('core', 1, randomUUID()) }),
+    );
+
+    const papers = await service(storage).papersOfSearch({
+      projectId: PROJECT_ID,
+      runId: RUN,
+      limit: 2,
+    });
+
+    expect(papers).toEqual({
+      papers: [
+        {
+          title: 'Core one',
+          authors: ['Ada Researcher'],
+          year: 2026,
+          tier: 'core',
+          url: 'https://doi.org/10.1000/core',
+        },
+        {
+          title: 'Rising arXiv',
+          authors: ['Ada Researcher'],
+          year: 2026,
+          tier: 'rising',
+          url: 'https://arxiv.org/abs/2501.01234',
+        },
+      ],
+      omittedCount: 1,
+    });
+  });
+
+  describe('undoing the additions of a search', () => {
+    const RUN_ID = '22222222-2222-4222-8222-222222222222';
+    const OTHER_RUN_ID = '33333333-3333-4333-8333-333333333333';
+    const COMPLETED_AT = '2026-08-04T00:00:05.000Z';
+    function discovery(searchRunId: string): NonNullable<LiteratureRecord['discovery']> {
+      return {
+        tier: 'broad',
+        matchedLayers: ['broad'],
+        tierRank: 1,
+        overallScore: 0.5,
+        relevanceScore: 0.5,
+        authorityScore: 0,
+        momentumScore: 0,
+        citationVelocityProxy: null,
+        influentialCitationCount: null,
+        maxAuthorHIndex: null,
+        reasons: ['broad-recall'],
+        signalSources: ['crossref'],
+        searchRunId,
+        query: 'tabular foundation models',
+        policyId: 'balanced-three-layer',
+        policyVersion: 4,
+        classifiedAt: COMPLETED_AT,
+      };
+    }
+    function storageWithRun() {
+      const storage = new MemoryLiteratureStorage();
+      storage.runs.push({
+        schemaVersion: 1,
+        id: RUN_ID,
+        projectId: PROJECT_ID,
+        provider: 'balanced',
+        policyId: 'balanced-three-layer',
+        policyVersion: 4,
+        query: 'tabular foundation models',
+        searchTags: { topics: ['tabular foundation models'], keywords: [] },
+        authorQuery: null,
+        venueQuery: null,
+        fromYear: null,
+        toYear: null,
+        requestedLimit: 50,
+        status: 'complete',
+        foundCount: 4,
+        retrievedCount: 4,
+        selectedCount: 4,
+        tierCounts: { core: 0, rising: 0, broad: 4 },
+        newCount: 3,
+        updatedCount: 1,
+        unchangedCount: 0,
+        conflictCount: 0,
+        conflicts: [],
+        createdAt: NOW.toISOString(),
+        completedAt: COMPLETED_AT,
+      });
+      return storage;
+    }
+
+    it('removes only untouched papers that this search created and keeps everything else', async () => {
+      const storage = storageWithRun();
+      const added = record({ createdAt: COMPLETED_AT, discovery: discovery(RUN_ID) });
+      const addedThenOrganized = record({
+        createdAt: COMPLETED_AT,
+        version: 2,
+        annotationVersion: 1,
+        discovery: discovery(RUN_ID),
+      });
+      const addedThenReviewed = record({
+        createdAt: COMPLETED_AT,
+        version: 2,
+        reviewStatus: 'included',
+        discovery: discovery(RUN_ID),
+      });
+      const addedWithNote = record({
+        createdAt: COMPLETED_AT,
+        version: 2,
+        manualAnnotations: { topics: [], summary: 'My note', relevance: '' },
+        discovery: discovery(RUN_ID),
+      });
+      const olderButReclassified = record({
+        createdAt: NOW.toISOString(),
+        discovery: discovery(RUN_ID),
+      });
+      const fromAnotherSearch = record({
+        createdAt: COMPLETED_AT,
+        discovery: discovery(OTHER_RUN_ID),
+      });
+      storage.records.push(
+        added,
+        addedThenOrganized,
+        addedThenReviewed,
+        addedWithNote,
+        olderButReclassified,
+        fromAnotherSearch,
+      );
+      const syncLiterature = vi.fn(async () => undefined);
+
+      const receipt = await service(storage, {
+        projection: { syncLiterature },
+      }).undoSearchAdditions({
+        projectId: PROJECT_ID,
+        runIds: [RUN_ID],
+      });
+
+      expect(receipt).toEqual({ projectId: PROJECT_ID, removedCount: 2, keptCount: 2 });
+      expect(storage.records.map(({ id }) => id).sort()).toEqual(
+        [
+          addedThenReviewed.id,
+          addedWithNote.id,
+          olderButReclassified.id,
+          fromAnotherSearch.id,
+        ].sort(),
+      );
+      expect(syncLiterature).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses runs of another project or runs that are not complete', async () => {
+      const storage = storageWithRun();
+      storage.runs[0] = { ...storage.runs[0]!, status: 'running', completedAt: null };
+
+      await expect(
+        service(storage).undoSearchAdditions({ projectId: PROJECT_ID, runIds: [RUN_ID] }),
+      ).rejects.toMatchObject({ code: 'literature_record_not_found' });
+      await expect(
+        service(storage).undoSearchAdditions({ projectId: PROJECT_ID, runIds: [OTHER_RUN_ID] }),
+      ).rejects.toMatchObject({ code: 'literature_record_not_found' });
+    });
   });
 
   it('rejects missing, foreign, and stale annotation targets without cross-project writes', async () => {

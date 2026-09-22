@@ -1,7 +1,8 @@
 import { resolve } from 'node:path';
-import { cp, mkdir } from 'node:fs/promises';
+import { cp } from 'node:fs/promises';
 import react from '@vitejs/plugin-react';
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
+import { replaceLabBundle } from '../../scripts/lab-bundles.mjs';
 
 export default defineConfig({
   main: {
@@ -19,12 +20,8 @@ export default defineConfig({
       {
         name: 'bundle-model-lab',
         async closeBundle() {
-          await mkdir(resolve('out/model-lab'), { recursive: true });
-          await cp(resolve('../model-lab/dist'), resolve('out/model-lab'), { recursive: true });
-          await mkdir(resolve('out/briefing-lab'), { recursive: true });
-          await cp(resolve('../briefing-lab/dist'), resolve('out/briefing-lab'), {
-            recursive: true,
-          });
+          await replaceLabBundle(resolve('../model-lab/dist'), resolve('out/model-lab'));
+          await replaceLabBundle(resolve('../briefing-lab/dist'), resolve('out/briefing-lab'));
           await cp(
             resolve('../model-lab/python-architecture-analyzer.py'),
             resolve('out/main/python-architecture-analyzer.py'),

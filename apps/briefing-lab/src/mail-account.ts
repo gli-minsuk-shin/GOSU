@@ -17,18 +17,44 @@ export function receivingAccountLabel(account: MailAccountContext | undefined) {
     (account.addresses.length > 1 ? ` 외 ${account.addresses.length - 1}개 주소` : '')
   );
 }
-export function emailDeliveryForPrompt(source: {
-  mailAccount?: MailAccountContext | undefined;
-  publishedAt?: string | undefined;
-  receivedAt?: string | undefined;
-}) {
+export function emailDeliveryForPrompt(
+  source: {
+    mailAccount?: MailAccountContext | undefined;
+    publishedAt?: string | undefined;
+    receivedAt?: string | undefined;
+  },
+  timeZone?: string,
+) {
   const time = source.receivedAt ?? source.publishedAt;
+  const valid = MailReceivedAtSchema.safeParse(time).success;
+  // The local date with its weekday, so a bare "Saturday" needs no date arithmetic from the model.
+  const receivedLocal = valid && timeZone ? localReceivedLabel(time!, timeZone) : null;
   return {
-    receivedAt: MailReceivedAtSchema.safeParse(time).success ? time : null,
+    receivedAt: valid ? time : null,
+    ...(receivedLocal ? { receivedLocal } : {}),
     receivingAccount: source.mailAccount
       ? { name: source.mailAccount.name, addresses: source.mailAccount.addresses }
       : null,
   };
+}
+/** e.g. "2026-09-18 (Fri) 06:51" in the routine's time zone. */
+function localReceivedLabel(value: string, timeZone: string) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      weekday: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(new Date(value));
+    const part = (type: string) => parts.find((entry) => entry.type === type)?.value ?? '';
+    return `${part('year')}-${part('month')}-${part('day')} (${part('weekday')}) ${part('hour')}:${part('minute')}`;
+  } catch {
+    return null;
+  }
 }
 export function receivedTimeLabel(
   value: string | undefined,

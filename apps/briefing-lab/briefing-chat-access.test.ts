@@ -363,6 +363,39 @@ it('passes separate date/account/sender filters without changing approved scope 
   expect(s.collect.mock.calls[1]?.[4]).toBeUndefined();
   expect(s.collect.mock.calls[1]?.[1]).toEqual(s.scope);
 });
+// 2026-09-22 user decision: "메일 조회 범위는 Briefing 만들 때만 적용하게."
+it('searches before the briefing window when asked, and under the ask policy names that window once', async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-10T12:00:00Z'));
+  const s = await setup();
+  await owner(() =>
+    s.store.save(
+      { ...s.settings, preferences: { ...s.settings.preferences, confirmationPolicy: 'ask' } },
+      async () => undefined,
+    ),
+  );
+  s.consent.mockClear();
+  vi.mocked(runRoutineWithGosuLanguage).mockImplementation(
+    async (_input, signal, _progress, options) => {
+      const execute = options!.structuredJob!.executeTool!;
+      await execute('search_email', { query: 'grant', from: '2025-01-01' }, signal);
+      await execute('search_email', { query: 'report', from: '2024-06-01' }, signal);
+      return answer();
+    },
+  );
+  await s.invoke();
+  // Searched as asked, although the saved briefing window is a few days.
+  expect(s.collect.mock.calls[0]?.[5]).toMatchObject({
+    query: 'grant',
+    from: '2024-12-31T15:00:00.000Z',
+  });
+  expect(s.collect.mock.calls[1]?.[5]).toMatchObject({ from: '2024-05-31T15:00:00.000Z' });
+  // The saved scope itself is what Mail is asked with: the search carries the wider window.
+  expect(s.collect.mock.calls[0]?.[1]).toEqual(s.scope);
+  const asked = s.consent.mock.calls.map((call) => String((call as unknown[])[0]));
+  expect(asked.filter((text) => text.includes('이전인'))).toHaveLength(1);
+  // The date is said in the routine's own time zone, as the user wrote it.
+  expect(asked.find((text) => text.includes('이전인'))).toContain('2025-01-01');
+});
 it('does not re-read a failed Mail source under a different query in the same turn', async () => {
   const s = await setup();
   s.collect.mockRejectedValueOnce(new Error('mail_timeout_metadata'));

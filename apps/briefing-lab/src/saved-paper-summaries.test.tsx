@@ -284,6 +284,7 @@ it('shows saved papers and their original date without source/LLM work; only the
     { routineId: 'r', historyId: 'h', itemId: 'p' },
     expect.any(AbortSignal),
     expect.any(Function),
+    'papers',
   );
   expect(JSON.stringify(ui.toJSON())).toContain('Saved result');
   expect(JSON.stringify(ui.toJSON())).toContain('기존 요약 유지');
@@ -296,4 +297,81 @@ it('shows saved papers and their original date without source/LLM work; only the
   expect(JSON.stringify(ui.toJSON())).toContain('새 요약을 저장하지 못해 이전 요약을 유지합니다');
   expect(sourceRequest).toHaveBeenCalledTimes(1);
   expect(ui.root.findByType('time').props.dateTime).toBe(item.provenance.summarizedAt);
+});
+it('exports the visible papers, then only the selected one, as a .bib download with no extra source call', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  vi.mocked(sourceRequest).mockResolvedValue({
+    papers: tagPapers.map((p, index) =>
+      index
+        ? p
+        : {
+            ...p,
+            item: {
+              ...p.item,
+              sourceUrl: 'https://arxiv.org/abs/2405.01234v1',
+              paperPublishedAt: '2024-05-02T00:00:00Z',
+              bibliography: { authors: ['Ana Müller', 'Bo Li'], source: 'arXiv' },
+            },
+          },
+    ),
+    feedback: {},
+  });
+  await act(() => {
+    ui = create(<SavedPaperSummaries routineId="r" />);
+  });
+  const blobs: Blob[] = [];
+  const revoked: string[] = [];
+  class UrlStub extends URL {
+    static override createObjectURL = (blob: Blob) => `blob:${blobs.push(blob)}`;
+    static override revokeObjectURL = (url: string) => void revoked.push(url);
+  }
+  const anchor = { href: '', download: '', click: vi.fn() };
+  vi.stubGlobal('URL', UrlStub);
+  vi.stubGlobal('document', { createElement: vi.fn(() => anchor) });
+  const exportButton = () =>
+    ui.root.findAllByType('button').find((b) => b.children.join('').includes('BibTeX 내보내기'))!;
+  expect(exportButton().children.join('')).toBe('BibTeX 내보내기 (3)');
+  await act(() =>
+    ui.root
+      .findByProps({ 'aria-label': 'Language study 선택' })
+      .props.onChange({ target: { checked: true } }),
+  );
+  expect(exportButton().children.join('')).toBe('BibTeX 내보내기 (1)');
+  await act(() => exportButton().props.onClick());
+  expect(anchor.click).toHaveBeenCalledOnce();
+  expect(anchor.href).toBe('blob:1');
+  expect(anchor.download).toMatch(/^gosu-paper-summaries-\d{8}\.bib$/);
+  expect(blobs[0]!.type).toBe('application/x-bibtex');
+  expect(await blobs[0]!.text()).toBe(
+    [
+      '@misc{Muller2024Language,',
+      '  title = {{Language study}},',
+      '  author = {Ana Müller and Bo Li},',
+      '  year = {2024},',
+      '  eprint = {2405.01234},',
+      '  archivePrefix = {arXiv},',
+      '  url = {https://arxiv.org/abs/2405.01234v1}',
+      '}',
+      '',
+    ].join('\n'),
+  );
+  const notice = () =>
+    ui.root
+      .findAllByProps({ role: 'status' })
+      .find((n) => n.children.join('').includes('BibTeX 파일로 내보냈습니다'));
+  expect(notice()?.children.join('')).toBe('1편을 BibTeX 파일로 내보냈습니다.');
+  await act(() =>
+    ui.root
+      .findAllByType('button')
+      .find((b) => b.children.join('').includes('선택 해제'))!
+      .props.onClick(),
+  );
+  await act(() => exportButton().props.onClick());
+  expect(await blobs[1]!.text()).toContain('@misc{PaperndImage,');
+  expect(notice()?.children.join('')).toBe(
+    '3편을 BibTeX 파일로 내보냈습니다. 이 중 2편은 저자나 연도 정보가 없습니다.',
+  );
+  expect(revoked).toEqual([]);
+  expect(vi.mocked(sourceRequest).mock.calls.map((c) => c[0])).toEqual(['/papers/saved']);
+  expect(refreshBriefingSummary).not.toHaveBeenCalled();
 });

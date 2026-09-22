@@ -138,7 +138,7 @@ it('shows a prominent verified connection with scope/expiry, then removes it whe
   expect(text()).toContain('INBOX');
   expect(text()).toContain('유효 시각');
   await act(() =>
-    field('메일 검색 기간 (최근 일수)')
+    field('브리핑 메일 조회 기간 (최근 일수)')
       .findByType('input')
       .props.onChange({ target: { value: '7' } }),
   );

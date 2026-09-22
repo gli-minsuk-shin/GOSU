@@ -9,6 +9,11 @@ import { BalancedLiteratureProvider } from '../src/main/literature-discovery';
 import type { HuggingFaceLiteratureProvider } from '../src/main/literature-hugging-face';
 import type { SemanticScholarLiteratureProvider } from '../src/main/literature-semantic-scholar';
 
+const ON_TOPIC_ABSTRACT =
+  'tabular foundation models, partial semantic crossref coverage, combined discovery, agentic ' +
+  'research, citation aware fallback, canonical arxiv identity, large bounded author pool, empty ' +
+  'supplement, semantic matches';
+
 function candidate(
   id: string,
   overrides: Partial<LiteratureProviderCandidate> = {},
@@ -19,6 +24,9 @@ function candidate(
     doi: `10.1000/${id}`,
     fingerprint: id.padEnd(64, '0').slice(0, 64),
     title: `Paper ${id}`,
+    // Policy v4 keeps a paper only when its own text mentions the search terms. Every stub mentions
+    // the words of the queries used below; the gate itself is tested at the end of this file.
+    abstractText: ON_TOPIC_ABSTRACT,
     authors: [`Author ${id}`],
     publishedYear: 2020,
     topics: ['machine learning'],
@@ -41,6 +49,7 @@ function providerWithMocks(
     crossref: crossref as CrossrefLiteratureProvider,
     huggingFace: huggingFace as HuggingFaceLiteratureProvider,
     now: () => new Date('2026-08-05T00:00:00.000Z'),
+    retryDelaysMs: [0, 0],
   });
 }
 
@@ -155,7 +164,7 @@ describe('balanced literature discovery provider', () => {
 
     expect(provider.providerId).toBe('balanced');
     expect(provider.policyId).toBe('balanced-three-layer');
-    expect(provider.policyVersion).toBe(3);
+    expect(provider.policyVersion).toBe(4);
     expect(crossref.search).toHaveBeenCalledTimes(3);
     expect(crossref.search).toHaveBeenNthCalledWith(
       1,
@@ -635,5 +644,170 @@ describe('balanced literature discovery provider', () => {
     expect(result.coverage.source).toBe('crossref');
     expect(result.coverage.degradationReasons).toEqual(['semantic-scholar-no-eligible-results']);
     expect(semanticScholar.authorMetrics).not.toHaveBeenCalled();
+  });
+});
+
+describe('balanced literature discovery resilience (policy v4)', () => {
+  const semanticPaper = (id: string, overrides: Partial<LiteratureProviderCandidate> = {}) => ({
+    candidate: candidate(id, { provider: 'semantic-scholar', ...overrides }),
+    authorIds: [],
+    influentialCitationCount: 0,
+    publicationDate: '2024-01-01',
+  });
+  const emptyCrossref = { search: vi.fn(async () => []) };
+
+  it('retries the Semantic Scholar relevance lane after a rate limit and then reports a complete search', async () => {
+    let relevanceCalls = 0;
+    const semanticScholar = {
+      search: vi.fn(
+        async (_query: string, _limit: number, options?: { sort?: string | undefined }) => {
+          if (!options?.sort) {
+            relevanceCalls += 1;
+            if (relevanceCalls === 1) throw new LiteratureProviderError('rate_limited');
+          }
+          return [semanticPaper('a'), semanticPaper('b'), semanticPaper('c')];
+        },
+      ),
+      authorMetrics: vi.fn(async () => new Map()),
+    };
+    const provider = providerWithMocks(semanticScholar, emptyCrossref);
+
+    const result = await provider.search('tabular foundation models', 3);
+
+    expect(relevanceCalls).toBe(2);
+    expect(result.selectedCount).toBe(3);
+    expect(result.coverage.degradationReasons).not.toContain('semantic-scholar-unavailable');
+    expect(result.providerFailures).toBeUndefined();
+    expect(emptyCrossref.search).not.toHaveBeenCalled();
+  });
+
+  it('gives up after three attempts, falls back, and says why Semantic Scholar was dropped', async () => {
+    const semanticScholar = {
+      search: vi.fn(async () => {
+        throw new LiteratureProviderError('rate_limited');
+      }),
+      authorMetrics: vi.fn(async () => new Map()),
+    };
+    const crossref = { search: vi.fn(async () => [candidate('fallback')]) };
+    const provider = providerWithMocks(semanticScholar, crossref);
+
+    const result = await provider.search('tabular foundation models', 3);
+
+    expect(semanticScholar.search).toHaveBeenCalledTimes(3);
+    expect(result.coverage.degradationReasons).toContain('semantic-scholar-unavailable');
+    expect(result.providerFailures).toEqual([
+      { provider: 'semantic-scholar', cause: 'rate_limited', attempts: 3 },
+    ]);
+    expect(result.candidates.map(({ providerId }) => providerId)).toEqual(['fallback']);
+  });
+
+  it('does not retry a malformed Semantic Scholar response', async () => {
+    const semanticScholar = {
+      search: vi.fn(async () => {
+        throw new LiteratureProviderError('invalid_response');
+      }),
+      authorMetrics: vi.fn(async () => new Map()),
+    };
+    const provider = providerWithMocks(semanticScholar, {
+      search: vi.fn(async () => [candidate('fallback')]),
+    });
+
+    const result = await provider.search('tabular foundation models', 3);
+
+    expect(semanticScholar.search).toHaveBeenCalledTimes(1);
+    expect(result.providerFailures).toEqual([
+      { provider: 'semantic-scholar', cause: 'invalid_response', attempts: 1 },
+    ]);
+  });
+
+  it('stops waiting for a retry as soon as the search is cancelled', async () => {
+    const controller = new AbortController();
+    const semanticScholar = {
+      search: vi.fn(async () => {
+        controller.abort();
+        throw new LiteratureProviderError('timeout');
+      }),
+      authorMetrics: vi.fn(async () => new Map()),
+    };
+    const crossref = { search: vi.fn(async () => [candidate('fallback')]) };
+    const provider = new BalancedLiteratureProvider({
+      semanticScholar: semanticScholar as unknown as SemanticScholarLiteratureProvider,
+      crossref: crossref as unknown as CrossrefLiteratureProvider,
+      huggingFace: { search: vi.fn(async () => []) } as unknown as HuggingFaceLiteratureProvider,
+      now: () => new Date('2026-08-05T00:00:00.000Z'),
+      retryDelaysMs: [60_000, 60_000],
+    });
+
+    await expect(
+      provider.search('tabular foundation models', 3, { signal: controller.signal }),
+    ).rejects.toEqual(new LiteratureProviderError('cancelled'));
+    expect(semanticScholar.search).toHaveBeenCalledTimes(1);
+    expect(crossref.search).not.toHaveBeenCalled();
+  });
+
+  it('saves nothing when the providers could not read a sentence and returned unrelated works', async () => {
+    const semanticScholar = {
+      search: vi.fn(async () => {
+        throw new LiteratureProviderError('unavailable');
+      }),
+      authorMetrics: vi.fn(async () => new Map()),
+    };
+    const unrelated = (id: string) =>
+      candidate(id, {
+        title: `Soil moisture retrieval ${id}`,
+        abstractText: 'Farmland hydrology.',
+      });
+    const crossref = {
+      search: vi.fn(async () => Array.from({ length: 20 }, (_, index) => unrelated(`cr-${index}`))),
+    };
+    const huggingFace = {
+      search: vi.fn(async () =>
+        Array.from({ length: 20 }, (_, index) => ({
+          candidate: unrelated(`hf-${index}`),
+          upvotes: 0,
+        })),
+      ),
+    };
+    const provider = providerWithMocks(
+      semanticScholar,
+      crossref,
+      huggingFace as unknown as Pick<HuggingFaceLiteratureProvider, 'search'>,
+    );
+
+    const result = await provider.search(
+      'TabPFN 클래스 확장과 관련된 논문 찾아줘. 라벨 임베딩 확장을 중심으로 정리해줘.',
+      50,
+    );
+
+    expect(result.retrievedCount).toBeGreaterThan(0);
+    expect(result.selectedCount).toBe(0);
+    expect(result.candidates).toEqual([]);
+    expect(result.tierCounts).toEqual({ core: 0, rising: 0, broad: 0 });
+  });
+
+  it('does not call the Crossref supplement only because the query gate kept fewer papers than requested', async () => {
+    const semanticScholar = {
+      search: vi.fn(async () => [
+        semanticPaper('on-topic-1'),
+        semanticPaper('on-topic-2'),
+        ...Array.from({ length: 8 }, (_, index) =>
+          semanticPaper(`off-topic-${index}`, {
+            title: `Soil moisture retrieval ${index}`,
+            abstractText: 'Farmland hydrology.',
+          }),
+        ),
+      ]),
+      authorMetrics: vi.fn(async () => new Map()),
+    };
+    const provider = providerWithMocks(semanticScholar, emptyCrossref);
+    emptyCrossref.search.mockClear();
+
+    const result = await provider.search('tabular foundation models', 5);
+
+    expect(result.selectedCount).toBe(2);
+    expect(emptyCrossref.search).not.toHaveBeenCalled();
+    expect(result.coverage.degradationReasons).not.toContain(
+      'semantic-scholar-insufficient-results',
+    );
   });
 });

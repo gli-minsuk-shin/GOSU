@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { createBriefingMiddleware } from './briefing-server';
 import type { TodoReader } from './src/briefing-todos';
+import type { BriefingTaskActions } from './src/briefing-task-actions';
 import type { ModelRouting } from '@gosu/contracts';
 import type { ProjectBridge } from './briefing-project-bridge';
 import type { ProjectChatAttachmentService } from '../desktop/src/main/project-chat-attachment-service';
@@ -21,6 +22,8 @@ export class BriefingDesktopHost {
     private readonly consent?: (message: string, signal: AbortSignal) => Promise<void>,
     private readonly projectBridge?: ProjectBridge,
     private readonly attachments?: ProjectChatAttachmentService,
+    private readonly reuseApprovedScopes?: () => boolean,
+    private readonly taskActions?: BriefingTaskActions,
   ) {}
   private async ensureStarted() {
     if (!this.server?.listening) {
@@ -41,6 +44,14 @@ export class BriefingDesktopHost {
     await this.ensureStarted();
     return this.service!.notificationSnapshot();
   }
+  /**
+   * Calendar, mail, saved briefings and saved paper summaries for another part of the app, under
+   * the settings approved in Briefing Lab. The in-process service starts on first use.
+   */
+  async reads() {
+    await this.ensureStarted();
+    return this.service!.hostReads;
+  }
   private async start() {
     await readFile(resolve(this.assetsDirectory, 'index.html'));
     const service = this.serviceFactory(
@@ -51,6 +62,8 @@ export class BriefingDesktopHost {
       this.consent,
       this.projectBridge,
       this.attachments,
+      this.reuseApprovedScopes,
+      this.taskActions,
     );
     const server = createServer((req, res) => {
       void (async () => {

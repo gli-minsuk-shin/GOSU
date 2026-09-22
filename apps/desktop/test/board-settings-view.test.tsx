@@ -82,7 +82,15 @@ describe('Board settings UI', () => {
     );
 
     expect(html).toContain('aria-label="To-do list"');
-    expect(html).toContain('changes also appear on Kanban');
+    // One line per task: no second heading above the groups, no badge repeating the group's
+    // stage, and the description only as the title's tooltip.
+    expect(html).not.toContain('todo-list-summary');
+    expect(html).not.toContain('todo-status-badge');
+    expect(html).not.toContain('todo-task-description');
+    expect(html).toContain(
+      '<h4 class="todo-task-title" title="Reproduce the strongest reported score">Run tagged baseline</h4>',
+    );
+    expect(html).toMatch(/<time class="task-due overdue"[^>]*title="Overdue · 2026-08-11"/u);
     expect(html).toContain('Run tagged baseline');
     expect(html).toContain('In Progress');
     expect(html).toContain('urgent');
@@ -113,7 +121,6 @@ describe('Board settings UI', () => {
       version: 7,
     };
     const sharedProps = {
-      statusLabel: 'In Progress',
       reopenLabel: 'Planned',
       reopenStatus: 'planned' as const,
       busy: false,
@@ -185,7 +192,12 @@ describe('Board settings UI', () => {
     expect(html).toContain('Task trash (1)');
     expect(html).toContain('class="task-delete-button"');
     expect(html).toContain('aria-label="Delete Run baseline"');
-    expect(html).toContain('>Delete</button>');
+    // An icon with the task's name, not a red word on every card.
+    expect(html).toMatch(
+      /<button[^>]*class="task-delete-button"[^>]*aria-label="Delete Run baseline"[^>]*><svg class="task-icon"/u,
+    );
+    expect(html).not.toContain('>Delete</button>');
+    expect(html).not.toContain('task-version');
     expect(html).not.toContain('>Archive</button>');
 
     const trashHtml = renderToStaticMarkup(

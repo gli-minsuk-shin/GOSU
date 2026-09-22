@@ -206,6 +206,7 @@ export function applyModelBuilderNarrativeRepair(
     const module = modules.find((item) => item.id === patch.moduleId);
     if (!module) invalidPatch('target module missing from candidate');
     module.formula = patch.formula;
+    delete module.presentation;
     module.explanation = patch.explanation;
     module.activation = patch.activation;
     seen.add(patch.moduleId);

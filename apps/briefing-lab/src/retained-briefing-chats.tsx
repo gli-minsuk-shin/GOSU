@@ -15,7 +15,6 @@ export function RetainedBriefingChats({
   selectedId,
   visible,
   recommendationRequest,
-  blocked,
   onBusyChange,
   onSettings,
 }: {
@@ -25,7 +24,6 @@ export function RetainedBriefingChats({
   selectedId: string | undefined;
   visible: boolean;
   recommendationRequest: number;
-  blocked: boolean;
   onBusyChange: (busy: boolean) => void;
   onSettings: (proposal?: SettingsProposal) => void;
 }) {
@@ -55,7 +53,6 @@ export function RetainedBriefingChats({
                 routine={routine}
                 visible={active}
                 recommendationRequest={active ? recommendationRequest : 0}
-                blocked={selected && blocked}
                 {...(selected ? { onBusyChange } : {})}
                 onSettings={onSettings}
               />

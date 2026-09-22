@@ -454,7 +454,9 @@ export class WorkspaceService {
         ...current,
         revision: current.revision + 1,
         projects: current.projects.filter((project) => !removedIds.has(project.id)),
-        tasks: current.tasks.filter((task) => !removedIds.has(task.projectId)),
+        tasks: current.tasks.filter(
+          (task) => task.projectId === null || !removedIds.has(task.projectId),
+        ),
         objectives: current.objectives.filter((objective) => !removedIds.has(objective.projectId)),
       });
       const operation = WorkspaceOperationSchema.parse({
@@ -508,19 +510,22 @@ export class WorkspaceService {
     return result;
   }
 
-  createTask(input: CreateTaskInput): Promise<WorkspaceTask> {
+  createTask(input: CreateTaskInput, trustedTaskId?: string): Promise<WorkspaceTask> {
+    const taskId = trustedTaskId === undefined ? undefined : z.string().uuid().parse(trustedTaskId);
     return this.mutate(async (state) => {
       const command = CreateTaskInputSchema.parse(input);
-      this.requireActiveProject(state, command.projectId);
+      if (command.projectId !== null) this.requireActiveProject(state, command.projectId);
+      if (state.tasks.some((task) => task.id === taskId)) throw new Error('briefing_task_exists');
       const now = new Date().toISOString();
       const task: WorkspaceTask = {
-        id: randomUUID(),
+        id: taskId ?? randomUUID(),
         projectId: command.projectId,
         title: command.title,
         status: command.status,
         ...(command.description ? { description: command.description } : {}),
         ...(command.priority === undefined ? {} : { priority: command.priority }),
         ...(command.dueDate === undefined ? {} : { dueDate: command.dueDate }),
+        ...(command.dueAt === undefined ? {} : { dueAt: command.dueAt }),
         ...(command.labels === undefined || command.labels.length === 0
           ? {}
           : { labels: command.labels }),
@@ -555,12 +560,12 @@ export class WorkspaceService {
   updateTask(input: UpdateTaskInput): Promise<WorkspaceTask> {
     return this.mutate(async (state) => {
       const command = UpdateTaskInputSchema.parse(input);
-      this.requireActiveProject(state, command.projectId);
+      if (command.projectId !== null) this.requireActiveProject(state, command.projectId);
       const task = state.tasks.find((candidate) => candidate.id === command.taskId);
       if (!task) throw new WorkspaceServiceError('task_not_found', { taskId: command.taskId });
       if (task.projectId !== command.projectId) {
         throw new WorkspaceServiceError('cross_project_access_denied', {
-          projectId: command.projectId,
+          projectId: command.projectId ?? 'personal',
           entityId: command.taskId,
         });
       }
@@ -584,6 +589,7 @@ export class WorkspaceService {
         else delete updated.priority;
       }
       if (Object.prototype.hasOwnProperty.call(command, 'dueDate')) {
+        if (command.dueDate !== task.dueDate) delete updated.dueAt;
         if (command.dueDate) updated.dueDate = command.dueDate;
         else delete updated.dueDate;
       }
@@ -664,12 +670,12 @@ export class WorkspaceService {
   setTaskArchived(input: SetTaskArchivedInput): Promise<WorkspaceTask> {
     return this.mutate(async (state) => {
       const command = SetTaskArchivedInputSchema.parse(input);
-      this.requireActiveProject(state, command.projectId);
+      if (command.projectId !== null) this.requireActiveProject(state, command.projectId);
       const task = state.tasks.find((candidate) => candidate.id === command.taskId);
       if (!task) throw new WorkspaceServiceError('task_not_found', { taskId: command.taskId });
       if (task.projectId !== command.projectId) {
         throw new WorkspaceServiceError('cross_project_access_denied', {
-          projectId: command.projectId,
+          projectId: command.projectId ?? 'personal',
           entityId: command.taskId,
         });
       }
@@ -1026,7 +1032,7 @@ export class WorkspaceService {
   private operation(
     commandType: WorkspaceOperation['commandType'],
     scope: string,
-    projectId: string | undefined,
+    projectId: string | null | undefined,
     entityType: WorkspaceOperation['entityType'],
     entityId: string,
     baseVersion: number | null,
@@ -1039,7 +1045,7 @@ export class WorkspaceService {
       id,
       idempotencyKey: id,
       scope,
-      ...(projectId === undefined ? {} : { projectId }),
+      ...(projectId == null ? {} : { projectId }),
       entityType,
       entityId,
       commandType,

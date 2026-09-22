@@ -1,5 +1,10 @@
 # Native context capacity and assistant token accounting
 
+2026-09-14 follow-up: [request selection and accounting](TOKEN_EFFICIENCY_AND_ACCOUNTING.md)
+supersedes the all-history-by-default policy for greetings and long ordinary requests. Original
+history, explicit full-history access, native capacity and compaction are preserved. It also wires
+native assistant/model-lab counters into the Usage page and repairs optional-counter validation.
+
 ## Explicit extension versus detected limits — candidate 0.58.45
 
 The [Astra specification](https://developers.openai.com/api/docs/models/gpt-6-astra) still states
@@ -71,6 +76,16 @@ SQLCipher `project_chat_context_state` stores the checkpoint and latest context 
 app bundle. Original messages are untouched. Cancellation during preparation aborts the compactor
 before an answer turn is started. Preparation failure keeps original data; compaction is additional
 model work, not a free capacity increase.
+
+Since 0.58.143 the reader can ask for the same compaction with `/compact`, and start an empty context
+with `/new`, in Project Chat, the assistant chat and Model Assistant. `compactConversationNow` is the
+same engine without the pressure check: it keeps the latest four messages exact, extends a valid
+checkpoint and calls no model when nothing older is left. It uses the same summary model, usage kind,
+checkpoint store and stale guard, so the next turn finds the checkpoint. In Project Chat it is the
+`compactSession` IPC command, which runs only while the session is idle, is cancelled by the same Stop
+control as a turn's own preparation, and returns expected failures as a bounded reason instead of
+throwing. A command is recognized only when the whole message is the command and is never sent to a
+model or stored. See [0.58.143](releases/0.58.143.md).
 
 Both chats render the same collapsed-by-default `ContextUsageMeter`: native current occupancy vs
 capacity, usable remaining after response reserve, source of the limit, original/compacted/omitted

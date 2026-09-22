@@ -45,12 +45,12 @@ const EXPECTED_ICONS = [
   'model-lab',
   'repository',
   'manuscript',
+  'review',
   'board',
   'objective',
   'experiments',
   'literature',
   'notes',
-  'review',
   'lecture',
   'connections',
   'usage',
@@ -267,6 +267,32 @@ async function run() {
         await nextFrame(window);
         await checkNavigation(window);
         const metrics = await readMetrics(window);
+        const sparkle = await window.webContents.executeJavaScript(`(() => {
+          const path = document.querySelector('[data-assistant-sparkle]');
+          const bounds = path.getBBox();
+          return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height,
+            fill: getComputedStyle(path).fill,
+            slotColor: getComputedStyle(path.closest('.sidebar-nav-icon')).color };
+        })()`);
+        invariant(sparkle.width === 12 && sparkle.height === 12, 'assistant_sparkle_too_small');
+        const bubble = await window.webContents.executeJavaScript(`(() => {
+          const path = document.querySelector('[data-assistant-bubble]');
+          const bounds = path.getBBox();
+          const glyph = path.closest('svg').getBoundingClientRect();
+          const button = path.closest('button').getBoundingClientRect();
+          return { width: bounds.width, height: bounds.height,
+            fitsButton: glyph.left - 2 >= button.left && glyph.top - 2 >= button.top && glyph.right + 2 <= button.right && glyph.bottom + 2 <= button.bottom };
+        })()`);
+        invariant(bubble.width === 20 && bubble.height === 18, 'assistant_chat_bubble_was_shrunk');
+        invariant(bubble.fitsButton, 'assistant_badge_halo_outside_button');
+        invariant(
+          sparkle.x >= 0 &&
+            sparkle.y >= 0 &&
+            sparkle.x + sparkle.width < 24 &&
+            sparkle.y + sparkle.height < 24,
+          'assistant_sparkle_clipped',
+        );
+        invariant(sparkle.fill !== sparkle.slotColor, 'assistant_sparkle_lacks_accent');
         invariant(
           JSON.stringify(metrics.icons.map((icon) => icon.name)) === JSON.stringify(EXPECTED_ICONS),
           'sidebar_icon_coverage_mismatch',
@@ -333,6 +359,14 @@ async function run() {
         );
         await mkdir(dirname(screenshotPath), { recursive: true });
         await writeFile(screenshotPath, (await window.webContents.capturePage()).toPNG());
+        const assistantButtonRect = await window.webContents.executeJavaScript(`(() => {
+          const r = document.querySelector('[data-sidebar-icon="assistant"]').closest('button').getBoundingClientRect();
+          return { x: Math.floor(r.x) - 4, y: Math.floor(r.y) - 4, width: Math.ceil(r.width) + 8, height: Math.ceil(r.height) + 8 };
+        })()`);
+        await writeFile(
+          `${screenshotBase}-assistant-${theme}-${width}.png`,
+          (await window.webContents.capturePage(assistantButtonRect)).toPNG(),
+        );
         results.push({ theme, width, screenshotPath, metrics });
       }
     }

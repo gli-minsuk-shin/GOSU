@@ -16,6 +16,10 @@ import {
   LITERATURE_RISING_MIN_INFLUENTIAL_CITATIONS,
   LITERATURE_RISING_MIN_RELEVANCE_SCORE,
 } from '../shared/literature-ranking-policy';
+import {
+  literatureTermMatchCount,
+  requiredLiteratureTermMatches,
+} from '../shared/literature-query';
 import { literatureFingerprint, type LiteratureProviderCandidate } from './literature-crossref';
 
 export { BALANCED_LITERATURE_POLICY_ID, BALANCED_LITERATURE_POLICY_VERSION };
@@ -58,7 +62,26 @@ type ScoredCandidate = Readonly<{
   relevantCoreEligible: boolean;
   canonicalCoreEligible: boolean;
   risingEligible: boolean;
+  broadEligible: boolean;
 }>;
+
+export type LiteratureRankingOptions = Readonly<{
+  /**
+   * Topic words of the search (see `literatureQueryTerms`). When given, a paper whose own title,
+   * abstract, provider topics and venue never mention them is left out of every layer: a provider
+   * that ranks unrelated works for a sentence it could not read must not fill the evidence table.
+   */
+  queryTerms?: readonly string[] | undefined;
+}>;
+
+function candidateOwnText(candidate: LiteratureProviderCandidate) {
+  return [
+    candidate.title,
+    candidate.abstractText ?? '',
+    candidate.containerTitle ?? '',
+    ...candidate.topics,
+  ].join(' ');
+}
 
 const excludedWorkTypes = new Set([
   'dataset',
@@ -399,8 +422,23 @@ export function rankLiteratureCandidates(
   inputs: readonly LiteratureRankingCandidate[],
   requestedLimit: number,
   referenceYear = new Date().getUTCFullYear(),
+  options: LiteratureRankingOptions = {},
 ): RankedLiteratureSearch {
   const limit = Math.max(1, Math.min(Math.trunc(requestedLimit), 50));
+  const queryTerms = options.queryTerms ?? [];
+  const rankedLaneRequirement = requiredLiteratureTermMatches(queryTerms.length);
+  // A sorted lane lists whatever shares a word with the query, ordered by citations or date, so a
+  // paper seen only there has to mention at least half of the terms before it counts as on topic.
+  const sortedLaneRequirement = Math.min(
+    queryTerms.length,
+    Math.max(2, Math.ceil(queryTerms.length / 2)),
+  );
+  const mentionsQuery = (input: LiteratureRankingCandidate) => {
+    if (queryTerms.length === 0) return true;
+    const required =
+      input.relevanceRank === undefined ? sortedLaneRequirement : rankedLaneRequirement;
+    return literatureTermMatchCount(candidateOwnText(input.candidate), queryTerms) >= required;
+  };
   const deduplicated = new Map<string, LiteratureRankingCandidate>();
   for (const input of inputs) {
     if (!isResearchWork(input.candidate)) continue;
@@ -454,17 +492,21 @@ export function rankLiteratureCandidates(
     const established =
       publishedYear !== undefined &&
       publishedYear <= referenceYear - LITERATURE_CANONICAL_MIN_AGE_YEARS;
+    const onTopic = mentionsQuery(input);
     const relevantCoreEligible =
+      onTopic &&
       bibliographicEligible &&
       input.relevanceRank !== undefined &&
       relevanceScore >= LITERATURE_CORE_MIN_RELEVANCE_SCORE &&
       citationImpactEligible;
     const canonicalCoreEligible =
+      onTopic &&
       bibliographicEligible &&
       established &&
       input.citationRank !== undefined &&
       citationImpactEligible;
     const risingEligible =
+      onTopic &&
       bibliographicEligible &&
       recent &&
       input.relevanceRank !== undefined &&
@@ -497,6 +539,9 @@ export function rankLiteratureCandidates(
       relevantCoreEligible,
       canonicalCoreEligible,
       risingEligible,
+      // Broad keeps recall, but only for papers that mention the search terms. When the terms are
+      // unknown nothing can vouch for a sorted-lane leftover, so it needs the relevance lane.
+      broadEligible: onTopic && (queryTerms.length > 0 || input.relevanceRank !== undefined),
     };
   });
 
@@ -541,12 +586,13 @@ export function rankLiteratureCandidates(
     'rising',
     ({ risingScore }) => risingScore,
   );
-  const broad = choose(scored, target.broad, 'broad', ({ broadScore }) => broadScore);
+  const broadPool = scored.filter(({ broadEligible }) => broadEligible);
+  const broad = choose(broadPool, target.broad, 'broad', ({ broadScore }) => broadScore);
   const initial = [...core, ...rising, ...broad];
   const remainingSlots = limit - initial.length;
   const fill =
     remainingSlots > 0
-      ? choose(scored, remainingSlots, 'broad', ({ broadScore }) => broadScore).map(
+      ? choose(broadPool, remainingSlots, 'broad', ({ broadScore }) => broadScore).map(
           (candidate, index) => ({
             ...candidate,
             discovery: {

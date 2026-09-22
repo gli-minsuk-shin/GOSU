@@ -4,7 +4,8 @@ import { resolveInstalledCodexExecutable } from '@gosu/integrations/codex-runtim
 
 import { resolveCodexCommand } from '../src/main/codex-app-server';
 
-vi.mock('@gosu/integrations/codex-runtime-discovery', () => ({
+vi.mock('@gosu/integrations/codex-runtime-discovery', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   resolveInstalledCodexExecutable: vi.fn(),
 }));
 
@@ -39,6 +40,19 @@ describe('desktop Codex runtime selection', () => {
       prefixArgs: [expect.stringMatching(/bin\/codex\.js$/)],
       runAsNode: true,
     });
+  });
+
+  it('can resolve the bundled runtime alone, for the retry after an installed one fails to start', async () => {
+    vi.stubEnv('GOSU_CODEX_BIN', '');
+    vi.mocked(resolveInstalledCodexExecutable).mockResolvedValue(
+      '/Applications/ChatGPT.app/Contents/Resources/codex',
+    );
+    await expect(resolveCodexCommand({ bundledOnly: true })).resolves.toEqual({
+      executable: process.execPath,
+      prefixArgs: [expect.stringMatching(/bin\/codex\.js$/)],
+      runAsNode: true,
+    });
+    expect(resolveInstalledCodexExecutable).not.toHaveBeenCalled();
   });
 
   it('honors an explicitly configured binary before automatic discovery', async () => {

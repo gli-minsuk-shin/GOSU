@@ -67,7 +67,23 @@ import type {
 import type { SaveOverleafPersonalTokenInput } from '../../shared/overleaf-personal-token-contracts';
 import { BoardView } from './board-view';
 import { ProjectModelLabWorkspaces } from './project-model-lab-view';
+import {
+  useSidebarAiActivity,
+  projectChatAiScope,
+  trackProjectAiWork,
+} from './sidebar-ai-activity';
+import { trackAiActivity } from '@gosu/ui/ai-activity';
 import { GlobalBriefingView } from './global-briefing-view';
+import { TitlebarQuote } from './titlebar-quote';
+import { TitlebarAiStatus, aiWorkItems } from './titlebar-ai-status';
+import { UsageLimitPills } from './usage-limit-pills';
+import { useUsageLimits } from './use-usage-limits';
+import { FullDiskAccessNotice, useFullDiskAccess } from './full-disk-access-notice';
+import {
+  PermissionsHelper,
+  markPermissionsHelperSeen,
+  permissionsHelperPending,
+} from './permissions-helper';
 import { useNotificationInbox } from './use-notification-inbox';
 import { usePersonalNotifications } from './use-personal-notifications';
 import type { BriefingNotificationTarget } from '../../../../briefing-lab/src/briefing-notifications';
@@ -129,11 +145,10 @@ import {
   saveProjectChatModelSelection,
 } from './project-chat-model-selection-store';
 import {
-  enqueueVisibleSshApproval,
+  enqueueBackgroundSshApproval,
   mergeHydratedSshApprovals,
   rememberResolvedSshApproval,
   removeSshApproval,
-  shouldPresentSshApproval,
 } from './ssh-approval-state';
 import {
   buildSshConnectionRemovalConfirmation,
@@ -241,8 +256,16 @@ const literatureAdapter: LiteratureViewAdapter = {
   deleteRecord: (input) => window.gosu.literature.deleteRecord(input),
   importRecords: (input) => window.gosu.literature.importRecords(input),
   exportRecords: (input) => window.gosu.literature.exportRecords(input),
-  organize: (input) => window.gosu.literature.organize(input),
+  organize: (input) =>
+    trackProjectAiWork(input.projectId, 'literature', () => window.gosu.literature.organize(input)),
   cancelOrganize: (input) => window.gosu.literature.cancelOrganize(input),
+  planSearch: (input) =>
+    trackProjectAiWork(input.projectId, 'literature', () =>
+      window.gosu.literature.planSearch(input),
+    ),
+  undoSearch: (input) => window.gosu.literature.undoSearch(input),
+  listPaperLibrary: () => window.gosu.paperSummaries.list(),
+  importPaperSummaries: (input) => window.gosu.paperSummaries.importToLiterature(input),
   createPaperNote: (input) => window.gosu.researchNotes.createPaperNote(input),
 };
 
@@ -260,7 +283,10 @@ const experimentEvaluationAdapter: ExperimentEvaluationStudioAdapter = {
   list: (input) => window.gosu.experimentEvaluation.list(input),
   detail: (input) => window.gosu.experimentEvaluation.detail(input),
   createSession: (input) => window.gosu.experimentEvaluation.createSession(input),
-  send: (input) => window.gosu.experimentEvaluation.send(input),
+  send: (input) =>
+    trackProjectAiWork(input.projectId, 'experiments', () =>
+      window.gosu.experimentEvaluation.send(input),
+    ),
   cancel: (input) => window.gosu.experimentEvaluation.cancel(input),
   approve: (input) => window.gosu.experimentEvaluation.approve(input),
   reuseProfile: (input) => window.gosu.experimentEvaluation.reuseProfile(input),
@@ -288,8 +314,8 @@ const lectureStudioAdapter: LectureStudioViewAdapter = {
     window.gosu.lectureStudio.stageDroppedFigures(input, files),
   removeFigure: (input) => window.gosu.lectureStudio.removeFigure(input),
   previewFigure: (input) => window.gosu.lectureStudio.previewFigure(input),
-  generate: (input) => window.gosu.lectureStudio.generate(input),
-  send: (input) => window.gosu.lectureStudio.send(input),
+  generate: (input) => trackAiActivity('lecture', () => window.gosu.lectureStudio.generate(input)),
+  send: (input) => trackAiActivity('lecture', () => window.gosu.lectureStudio.send(input)),
   cancel: (input) => window.gosu.lectureStudio.cancel(input),
   trash: (input) => window.gosu.lectureStudio.trash(input),
   restore: (input) => window.gosu.lectureStudio.restore(input),
@@ -307,6 +333,8 @@ const searchAdapter: SearchViewAdapter = {
 
 const usageAdapter: UsageViewAdapter = {
   query: (input) => window.gosu.modelUsage.query(input),
+  prices: () => window.gosu.modelUsage.prices(),
+  refreshPrices: () => window.gosu.modelUsage.refreshPrices(),
 };
 
 function createProjectCommand(
@@ -543,6 +571,7 @@ function isProjectWorkspaceTab(tab: WorkspaceTabId): tab is ProjectWorkspaceTabI
 }
 
 export function DesktopApp({ initialPreferences }: { initialPreferences: UserPreferences }) {
+  const sidebarAi = useSidebarAiActivity();
   const notificationText = useUiText();
   useApplicationLanguageSync();
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null);
@@ -734,7 +763,6 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const lectureStudioDraftsRef = useRef(new VolatileLectureStudioDrafts());
   const chatScrollPositionsRef = useRef(new VolatileProjectChatScrollPositions());
   const chatUnreadAssistantMessagesRef = useRef(new VolatileProjectChatUnreadAssistantMessages());
-  const visibleChatSshScopeRef = useRef<{ projectId: string; sessionId: string } | null>(null);
   const sshResolvedApprovalIdsRef = useRef<ReadonlySet<string>>(new Set());
   const visibleChatHermesAcpScopeRef = useRef<HermesAcpApprovalScope | null>(null);
   const hermesAcpApprovalsRef = useRef<readonly HermesAcpApprovalRequest[]>([]);
@@ -760,6 +788,11 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       ...claudeCodeProjectChatModels,
     ],
     [claudeCodeProjectChatModels, hermesProjectChatModel, models],
+  );
+  // Lecture Studio runs on Codex or a connected Claude Code subscription; Hermes stays Project Chat only.
+  const lectureStudioModels = useMemo(
+    () => [...models, ...claudeCodeProjectChatModels],
+    [claudeCodeProjectChatModels, models],
   );
   const codexSurfaceDefaultAiSelection = useMemo(
     () =>
@@ -850,9 +883,26 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     }
     return busyProjects;
   }, [chatInFlight, chatStartingSessionKeys, snapshot?.projects]);
+  useEffect(() => {
+    if (activeSurface !== 'workspace') return;
+    if (activeTab === 'briefing-lab')
+      sidebarAi.acknowledge(
+        briefingView === 'assistant'
+          ? 'assistant'
+          : briefingView === 'papers'
+            ? 'papers'
+            : 'briefing',
+      );
+    else if (activeTab === 'lecture') sidebarAi.acknowledge('lecture');
+    else if (!['connections', 'search', 'usage', 'calendar', 'tasks'].includes(activeTab))
+      sidebarAi.acknowledge(`project:${activeProjectId}:${activeTab}`);
+  }, [activeSurface, activeTab, activeProjectId, briefingView, sidebarAi.acknowledge]);
 
   const updateProjectNavigation = useCallback((next: ProjectNavigationState) => {
+    const orderChanged = next.projectOrder !== projectNavigationRef.current.projectOrder;
     projectNavigationRef.current = next;
+    if (orderChanged && !saveProjectNavigationState(window.localStorage, next))
+      setAnnouncement(uiText('Could not save sidebar order. Try again before closing GOSU.'));
     setProjectNavigation(next);
   }, []);
 
@@ -928,13 +978,13 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const loadScopedProjectChatModelSelection = useCallback(
     (projectId: string, sessionId: string) => {
       const loaded = loadProjectChatModelSelectionState(window.localStorage, projectId, sessionId);
-      const saved =
-        loaded.status === 'missing'
-          ? projectChatSelectionFromDefault(routedProjectDefault)
-          : loaded.selection;
-      if (loaded.status === 'missing' && modelRouting.ready) {
-        saveProjectChatModelSelection(window.localStorage, projectId, sessionId, saved);
-      }
+      // Only a model picked in this chat's own menu is pinned. Every other chat follows the role
+      // model from Settings → Agent, now and whenever it changes; nothing is saved for it, so a
+      // default can never again pass for a choice.
+      const followsSettings = loaded.status === 'missing' || loaded.status === 'inherited';
+      const saved = followsSettings
+        ? projectChatSelectionFromDefault(routedProjectDefault)
+        : loaded.selection;
       const withoutHermes =
         preferences.agentAddOns.hermes === 'connect-local'
           ? saved
@@ -949,7 +999,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
               removedProviderId: 'claude-code',
               reason: 'explicit-disconnect',
             });
-      if (selection !== saved) {
+      if (selection !== saved && !followsSettings) {
         saveProjectChatModelSelection(window.localStorage, projectId, sessionId, selection);
       }
       return selection;
@@ -1035,6 +1085,13 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           : loaded;
       const resolvedSessionId = next.session?.id ?? sessionId;
       const resolvedSessionKey = projectChatSessionKey(projectId, resolvedSessionId);
+      if (next.activeTurnId)
+        sidebarAi.report(projectChatAiScope(projectId, next.session), {
+          type: 'gosu-ai-activity',
+          workload: 'chat',
+          runId: `${resolvedSessionId}:${next.activeTurnId}`,
+          phase: 'running',
+        });
       updateUnreadAssistantMessage(
         resolvedSessionKey,
         chatUnreadAssistantMessagesRef.current.observe(projectId, resolvedSessionId, next.messages),
@@ -1462,6 +1519,38 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     () => window.gosu.app.onToggleSidebar(toggleProjectSidebarVisibility),
     [toggleProjectSidebarVisibility],
   );
+  useEffect(
+    () =>
+      window.gosu.app.onOpenAssistant(() => {
+        setBriefingView('assistant');
+        selectGlobalTab('briefing-lab');
+      }),
+    [],
+  );
+  // ⇧⌘C / ⇧⌘T / ⇧⌘B (changeable in Settings): straight to Calendar, To-do or Briefing Lab.
+  // ⇧⌘Enter (changeable too) starts a new briefing, but only from the Briefing Lab screen, so a
+  // stray chord elsewhere never spends a run: there it opens Briefing Lab instead.
+  const briefingFeedShowing =
+    activeSurface === 'workspace' && activeTab === 'briefing-lab' && briefingView === 'history';
+  const briefingFeedShowingRef = useRef(briefingFeedShowing);
+  briefingFeedShowingRef.current = briefingFeedShowing;
+  const [briefingRunRequest, setBriefingRunRequest] = useState(0);
+  useEffect(
+    () =>
+      window.gosu.app.onOpenSurface?.((target) => {
+        if (target === 'briefingRun') {
+          if (briefingFeedShowingRef.current) setBriefingRunRequest((request) => request + 1);
+          else {
+            setBriefingView('history');
+            selectGlobalTab('briefing-lab');
+          }
+        } else if (target === 'briefing') {
+          setBriefingView('history');
+          selectGlobalTab('briefing-lab');
+        } else selectGlobalTab(target);
+      }),
+    [],
+  );
 
   useEffect(
     () =>
@@ -1509,6 +1598,20 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           return;
         }
         if (event.type === 'turn.started') {
+          sidebarAi.report(
+            projectChatAiScope(
+              event.projectId,
+              projectChatSessionsRef.current[event.projectId]?.find(
+                (s) => s.id === event.sessionId,
+              ),
+            ),
+            {
+              type: 'gosu-ai-activity',
+              workload: 'chat',
+              runId: `${event.sessionId}:${event.turnId}`,
+              phase: 'running',
+            },
+          );
           setChatInFlight((current) => ({ ...current, [sessionKey]: true }));
           setChatAgentProgress((current) => reduceProjectChatToolActivity(current, event));
           return;
@@ -1518,6 +1621,25 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           return;
         }
         if (event.type === 'turn.completed') {
+          sidebarAi.report(
+            projectChatAiScope(
+              event.projectId,
+              projectChatSessionsRef.current[event.projectId]?.find(
+                (s) => s.id === event.sessionId,
+              ),
+            ),
+            {
+              type: 'gosu-ai-activity',
+              workload: 'chat',
+              runId: `${event.sessionId}:${event.turnId}`,
+              phase:
+                event.status === 'complete'
+                  ? 'completed'
+                  : event.status === 'interrupted'
+                    ? 'cancelled'
+                    : 'failed',
+            },
+          );
           recordNotificationTurn(
             event,
             readChatNotificationOnArrival(
@@ -1578,30 +1700,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     () =>
       window.gosu.ssh.onEvent((event: SshEvent) => {
         if (event.type === 'approval.requested') {
-          const visibleScope = visibleChatSshScopeRef.current;
           if (sshResolvedApprovalIdsRef.current.has(event.request.id)) return;
-          if (
-            !shouldPresentSshApproval(
-              event.request,
-              visibleScope,
-              sshResolvedApprovalIdsRef.current,
-            )
-          ) {
-            void window.gosu.ssh
-              .resolveApproval({
-                approvalId: event.request.id,
-                decision: 'deny',
-              })
-              .catch(() => undefined);
-            return;
-          }
           setSshApprovals((current) =>
-            enqueueVisibleSshApproval(
-              current,
-              event.request,
-              visibleChatSshScopeRef.current,
-              sshResolvedApprovalIdsRef.current,
-            ),
+            enqueueBackgroundSshApproval(current, event.request, sshResolvedApprovalIdsRef.current),
           );
           return;
         }
@@ -1901,6 +2002,49 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       return false;
     }
   }, [applyClaudeCodeProjectChatStatus, removeClaudeCodeProjectChatDescriptors]);
+
+  const [claudeCodeLoginPhase, setClaudeCodeLoginPhase] = useState<
+    'idle' | 'signing-in' | 'failed'
+  >('idle');
+  const [claudeCodeLoginMessage, setClaudeCodeLoginMessage] = useState<string | null>(null);
+  const startClaudeCodeLogin = useCallback(
+    (enableClaudeCode: () => void) => {
+      setClaudeCodeLoginPhase('signing-in');
+      setClaudeCodeLoginMessage(
+        '브라우저에서 Claude 계정으로 로그인한 뒤, 표시된 Authentication code를 복사해 아래 칸에 붙여넣으세요.',
+      );
+      void window.gosu.claudeCode.login().then(
+        async () => {
+          setClaudeCodeLoginPhase('idle');
+          setClaudeCodeLoginMessage('Claude 로그인이 완료되었습니다.');
+          // Enabling the preference triggers the connection effect; an already
+          // enabled provider needs an explicit refresh to pick up the new login.
+          if (claudeCodeProjectChatPreferenceRef.current === 'connect-local') {
+            await refreshClaudeCodeProjectChatConnection();
+          } else {
+            enableClaudeCode();
+          }
+        },
+        (error: unknown) => {
+          const code = describeError(error);
+          if (code.includes('claude_code_login_cancelled')) {
+            setClaudeCodeLoginPhase('idle');
+            setClaudeCodeLoginMessage('Claude 로그인을 취소했습니다.');
+            return;
+          }
+          setClaudeCodeLoginPhase('failed');
+          setClaudeCodeLoginMessage(
+            code.includes('claude_code_not_detected')
+              ? '이 Mac에서 Claude Code를 찾을 수 없습니다. Claude Code를 설치한 뒤 다시 시도하세요.'
+              : code.includes('claude_code_login_timeout')
+                ? '로그인 제한 시간이 지났습니다. 다시 시도하세요.'
+                : 'Claude 로그인을 완료하지 못했습니다. 다시 시도하세요.',
+          );
+        },
+      );
+    },
+    [refreshClaudeCodeProjectChatConnection],
+  );
 
   useEffect(() => {
     const preference = preferences.agentAddOns['claude-code'];
@@ -2281,28 +2425,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       activeSurface === 'workspace' && activeTab === 'chat' && activeProjectId && selectedSessionId
         ? { projectId: activeProjectId, sessionId: selectedSessionId }
         : null;
-    const previousScope = visibleChatSshScopeRef.current;
-    if (
-      previousScope &&
-      (previousScope.projectId !== currentScope?.projectId ||
-        previousScope.sessionId !== currentScope?.sessionId)
-    ) {
-      setSshApprovals((current) =>
-        current.filter(
-          (request) =>
-            request.projectId !== previousScope.projectId ||
-            request.sessionId !== previousScope.sessionId,
-        ),
-      );
-      void window.gosu.ssh
-        .cancelScope(previousScope)
-        .catch(() => setWorkspaceError('Could not cancel the previous SSH activity safely.'));
-      void window.gosu.projectChat
-        .revokeSsh(previousScope.projectId, previousScope.sessionId)
-        .catch(() => setWorkspaceError('Could not revoke the previous SSH capability safely.'));
-    }
-    visibleChatSshScopeRef.current = currentScope;
-
+    // Navigation is not cancellation or revocation. Pending SSH requests stay in the global
+    // approval center with their original project/session labels and Main-process scope checks.
     // Hermes turns may continue concurrently in background project/chat sessions. Navigation does
     // not revoke their scoped requests; the global approval dialog labels the owning project and
     // session. Actual cancel, thread release, disconnect, and expiry still fail closed in Main.
@@ -2407,7 +2531,22 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     setShowProjectForm(false);
   };
 
+  // Remaining plan limits of the connected CLIs. A connection that just came up (or went away)
+  // refreshes them at once, so the title bar shows connected services only.
+  const usageLimits = useUsageLimits(
+    `${codexConnectionState}:${claudeCodeProjectChatConnection.phase}`,
+  );
+  // Apple Mail's fast read needs Full Disk Access; GOSU says so at start while it is missing.
+  const fullDiskAccess = useFullDiskAccess();
+  // The first start on a Mac opens the permissions helper once; Settings → Briefing Lab reopens it.
+  const [permissionsHelperOpen, setPermissionsHelperOpen] = useState(permissionsHelperPending);
+  const closePermissionsHelper = () => {
+    markPermissionsHelperSeen();
+    setPermissionsHelperOpen(false);
+  };
   const selectGlobalTab = (tab: GlobalWorkspaceTabId) => {
+    if (tab === 'tasks')
+      void loadWorkspace().catch((error: unknown) => setWorkspaceError(describeError(error)));
     setBriefingTarget(undefined);
     setPersonalNavigationRevision((n) => n + 1);
     setPendingSearchNavigation(null);
@@ -2416,8 +2555,57 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     setShowProjectForm(false);
   };
 
+  /**
+   * The title bar's AI line. The four workspace-wide jobs have fixed names; a project's job is
+   * named after the project and the screen doing the work. A scope for a project that is no longer
+   * in the workspace is left unnamed, so it is simply not shown.
+   */
+  const describeAiWork = (scope: string) => {
+    const global: Readonly<Record<string, string>> = {
+      assistant: uiText('AI assistant'),
+      briefing: uiText('Briefing'),
+      papers: uiText('Paper summaries'),
+      lecture: uiText('Lecture generation'),
+    };
+    if (global[scope]) return global[scope]!;
+    const match = /^project:([\w-]{36}):(chat|review|experiments|literature)$/u.exec(scope);
+    if (!match) return null;
+    const project = (snapshot?.projects ?? []).find((candidate) => candidate.id === match[1]);
+    if (!project) return null;
+    const screen: Readonly<Record<string, string>> = {
+      chat: uiText('Project chat'),
+      review: uiText('Critical Review'),
+      experiments: uiText('Experiments'),
+      literature: uiText('Literature'),
+    };
+    return `${project.name} · ${screen[match[2]!]!}`;
+  };
+  const aiWork = aiWorkItems(sidebarAi.activity, describeAiWork);
+  const openAiWork = (scope: string) => {
+    if (scope === 'assistant' || scope === 'briefing' || scope === 'papers') {
+      setBriefingView(scope === 'briefing' ? 'history' : scope);
+      selectGlobalTab('briefing-lab');
+      return;
+    }
+    if (scope === 'lecture') {
+      selectGlobalTab('lecture');
+      return;
+    }
+    const match = /^project:([\w-]{36}):(chat|review|experiments|literature)$/u.exec(scope);
+    if (match) selectProjectTab(match[1]!, match[2] as ProjectWorkspaceTabId);
+  };
+
   const openWorkspaceNotification = (notification: WorkspaceNotification) => {
     const target = notification.target;
+    if (target.kind === 'personal-task') {
+      if (
+        snapshot?.tasks.some((t) => t.id === target.taskId && t.projectId === null && !t.archivedAt)
+      ) {
+        setTaskTarget({ id: target.taskId, requestId: Date.now() });
+        selectGlobalTab('tasks');
+      }
+      return;
+    }
     if (target.kind === 'task') {
       const hit = taskNotificationSearchHit(
         target,
@@ -2491,7 +2679,11 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       setPendingSearchNavigation(null);
       setSettingsCategory('projects');
       setActiveSurface('settings');
-      setAnnouncement(`Restore ${project.name} before opening this archived result.`);
+      setAnnouncement(
+        uiText('Restore {name} from the archive before opening this result.', {
+          name: project.name,
+        }),
+      );
       return;
     }
     const shown = showProjectLocally(projectNavigationRef.current, project.id);
@@ -2980,26 +3172,17 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         />
         <div className="logo">G</div>
         <strong>{uiText('GOSU')}</strong>
-        <span>
-          {uiText('Local Research Workspace')}
-          {runtime ? ` · v${runtime.app.version}` : ''}
-        </span>
+        {runtime && <span className="titlebar-version">v{runtime.app.version}</span>}
+        <TitlebarQuote />
         <i className="titlebar-spacer" />
-        <span
-          className={`sync-pill ${pendingCount > 0 ? 'pending' : snapshot && pendingSummary === null ? 'offline' : runtime?.syncApi.ready ? 'ready' : 'offline'}`}
-          aria-live="polite"
-        >
-          <i />
-          {pendingCount > 0
-            ? uiText('Local · queued for future sync ({pendingCount})', {
-                pendingCount: pendingCount,
-              })
-            : snapshot && pendingSummary === null
-              ? uiText('Local · queue status unavailable')
-              : runtime?.syncApi.ready
-                ? uiText('Sync API reachable · delivery off')
-                : uiText('Local only')}
-        </span>
+        <UsageLimitPills
+          status={usageLimits.status}
+          now={usageLimits.now}
+          timeZone={Intl.DateTimeFormat().resolvedOptions().timeZone}
+          onOpen={() => selectGlobalTab('usage')}
+        />
+        {/* Where the sync pill was: what AI is doing now, and a way straight to it. */}
+        <TitlebarAiStatus items={aiWork} onOpen={openAiWork} />
       </header>
 
       <aside
@@ -3010,6 +3193,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         inert={projectNavigation.sidebarCollapsed ? true : undefined}
       >
         <ProjectSidebar
+          aiActivity={sidebarAi.activity}
+          onAcknowledgeAi={sidebarAi.acknowledge}
           briefingView={briefingView}
           onOpenAssistant={() => {
             setBriefingView('assistant');
@@ -3057,7 +3242,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   expectedVersion: project.version,
                   archived: true,
                 }),
-              `Archived ${project.name}.`,
+              uiText(
+                'Moved {name} to the archive. Restore it from “Archived” at the bottom of the project list.',
+                { name: project.name },
+              ),
             );
           }}
           onRestoreProject={(project) => {
@@ -3069,7 +3257,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   expectedVersion: project.version,
                   archived: false,
                 }),
-              `Restored ${project.name} to active projects.`,
+              uiText('Restored {name} to the active projects.', { name: project.name }),
             ).then((succeeded) => {
               if (succeeded) showProject(project.id);
             });
@@ -3178,6 +3366,11 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           {announcement}
         </p>
         <GlobalBriefingView
+          onAiActivity={sidebarAi.report}
+          onAiReset={sidebarAi.reset}
+          onWorkspaceChanged={() => {
+            void loadWorkspace().catch((error: unknown) => setWorkspaceError(describeError(error)));
+          }}
           briefingTarget={briefingTarget}
           calendarTarget={calendarTarget}
           onOpenItem={(target) => {
@@ -3194,7 +3387,17 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
             setSettingsCategory('briefing');
             setActiveSurface('settings');
           }}
+          onAgentSettings={() => {
+            setSettingsCategory('agent');
+            setActiveSurface('settings');
+          }}
           navigationRevision={personalNavigationRevision}
+          runRequest={briefingRunRequest}
+          fullDiskAccess={fullDiskAccess.state}
+          onPermissionsHelper={() => {
+            fullDiskAccess.check();
+            setPermissionsHelperOpen(true);
+          }}
           view={
             activeSurface === 'settings' && settingsCategory === 'briefing'
               ? 'settings'
@@ -3208,6 +3411,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           }
         />
         <ProjectModelLabWorkspaces
+          onAiActivity={sidebarAi.report}
+          onAiReset={sidebarAi.reset}
           onReferenceModel={(projectId, model) => void openModelProjectChat(projectId, model)}
           textSize={preferences.textSize}
           projects={(snapshot?.projects ?? []).filter((project) => !project.trashedAt)}
@@ -3217,6 +3422,19 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
               : null
           }
         />
+        {permissionsHelperOpen ? (
+          <PermissionsHelper
+            fullDiskAccess={fullDiskAccess.state}
+            onCheck={fullDiskAccess.check}
+            onClose={closePermissionsHelper}
+          />
+        ) : (
+          <FullDiskAccessNotice
+            state={fullDiskAccess.state}
+            failure={fullDiskAccess.failure}
+            onCheck={fullDiskAccess.check}
+          />
+        )}
         {sshRefreshWarning && (
           <div className="notice" role="status">
             <span>{sshRefreshWarning}</span>
@@ -3279,6 +3497,29 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
             onRefreshHermesConnection={refreshHermesProjectChatConnection}
             claudeCodeConnection={claudeCodeProjectChatConnection}
             onRefreshClaudeCodeConnection={refreshClaudeCodeProjectChatConnection}
+            claudeCodeLogin={{
+              phase: claudeCodeLoginPhase,
+              message: claudeCodeLoginMessage,
+              onLogin: () =>
+                startClaudeCodeLogin(() =>
+                  updatePreferences({
+                    ...preferences,
+                    agentAddOns: { ...preferences.agentAddOns, 'claude-code': 'connect-local' },
+                  }),
+                ),
+              onCancel: () => void window.gosu.claudeCode.cancelLogin(),
+              onOpenSignInPage: () => void window.gosu.claudeCode.openLoginPage(),
+              onSubmitCode: (code) =>
+                void window.gosu.claudeCode
+                  .submitLoginCode(code)
+                  .then((accepted) =>
+                    setClaudeCodeLoginMessage(
+                      accepted
+                        ? '코드를 확인하는 중입니다…'
+                        : '코드를 전달하지 못했습니다. 로그인을 취소한 뒤 다시 시작하세요.',
+                    ),
+                  ),
+            }}
             workspaceSnapshot={snapshot}
             busyAction={busyAction}
             chatBusyProjectIds={chatBusyProjectIds}
@@ -3595,6 +3836,24 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                       activeTab === 'review' ? criticalReviewMode : undefined,
                     )
                   }
+                  onCompactContext={async () => {
+                    if (!activeProjectChatSessionId) {
+                      setWorkspaceError(describeError(new Error('chat_session_not_found')));
+                      return null;
+                    }
+                    setWorkspaceError(null);
+                    try {
+                      // The summary is written by the model a turn here would use: Settings → Agent.
+                      return await window.gosu.projectChat.compactSession({
+                        projectId: activeProject.id,
+                        sessionId: activeProjectChatSessionId,
+                        requestedModelId: projectChatModelSelection.modelId,
+                      });
+                    } catch (error) {
+                      setWorkspaceError(describeError(error));
+                      return null;
+                    }
+                  }}
                   onRenameSession={renameChatSession}
                   onBranchSession={(messageId) => branchChatSession(activeProject.id, messageId)}
                   onSelectedModel={(modelId) =>
@@ -4143,7 +4402,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 projects={snapshot.projects}
                 adapter={lectureStudioAdapter}
                 draftStore={lectureStudioDraftsRef.current}
-                models={models}
+                models={lectureStudioModels}
                 modelsLoading={codexBusy}
                 defaultModelSelection={codexSurfaceDefaultAiSelection}
                 defaultStructure={preferences.defaultLectureStructure}
@@ -4159,11 +4418,22 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
               />
             )}
             {activeTab === 'usage' && (
-              <UsageView projects={snapshot.projects} adapter={usageAdapter} />
+              <UsageView
+                projects={snapshot.projects}
+                adapter={usageAdapter}
+                limits={{
+                  status: usageLimits.status,
+                  now: usageLimits.now,
+                  failure: usageLimits.failure,
+                  onRefresh: usageLimits.refresh,
+                  onConfigure: usageLimits.configure,
+                }}
+              />
             )}
             {activeTab === 'connections' && (
               <ConnectionsView
                 runtime={runtime}
+                pendingCount={pendingCount}
                 models={models}
                 defaultModelId={codexSurfaceDefaultAiSelection.modelId}
                 defaultReasoningOptionId={codexSurfaceDefaultAiSelection.reasoningOptionId}

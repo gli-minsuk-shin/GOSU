@@ -15,7 +15,10 @@ import { delimiter, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import type { ModelCatalog, ModelInvocation, ProviderCodexModel } from '@gosu/contracts';
 import { extendedCodexContextWindow } from '@gosu/contracts';
 import { readCodexContextMetadata } from './codex-context-metadata';
-import { resolveInstalledCodexExecutable } from '@gosu/integrations/codex-runtime-discovery';
+import {
+  codexRuntimeEnvironment,
+  resolveInstalledCodexExecutable,
+} from '@gosu/integrations/codex-runtime-discovery';
 
 import {
   CodexCollaborationModeCatalogSchema,
@@ -836,7 +839,7 @@ export async function prepareCodexRuntimeStateHome(
   return directory;
 }
 
-export async function resolveCodexCommand() {
+export async function resolveCodexCommand(options: Readonly<{ bundledOnly?: boolean }> = {}) {
   const override = process.env.GOSU_CODEX_BIN?.trim();
   if (override) return { executable: override, prefixArgs: [] as string[], runAsNode: false };
 
@@ -846,6 +849,7 @@ export async function resolveCodexCommand() {
     prefixArgs: [join(dirname(packagePath), 'bin', 'codex.js')],
     runAsNode: true,
   };
+  if (options.bundledOnly) return bundled;
   const executable = await resolveInstalledCodexExecutable({
     fallbackExecutable: bundled.executable,
     fallbackArgs: bundled.prefixArgs,
@@ -957,6 +961,16 @@ export class CodexAppServer extends EventEmitter {
         error: error instanceof CodexRequestError ? error.code : 'codex_unavailable',
       };
     }
+  }
+
+  /**
+   * The account's remaining limits, as the Codex `/status` screen shows them. A metadata read: no
+   * turn is started and nothing is spent. `account/rateLimits/updated` notifications carry the same
+   * snapshot after each turn.
+   */
+  async rateLimits(): Promise<unknown> {
+    await this.start();
+    return this.request('account/rateLimits/read', undefined);
   }
 
   async listModels(): Promise<CodexModel[]> {
@@ -1280,19 +1294,23 @@ export class CodexAppServer extends EventEmitter {
     this.volatileStateHomes.clear();
   }
 
-  private async startInternal() {
-    const command = await resolveCodexCommand();
+  private async startInternal(bundledOnly = false): Promise<void> {
+    const command = await resolveCodexCommand({ bundledOnly });
     const isolatedCodexHome = this.options.isolatedCodexHome
       ? await prepareIsolatedCodexHome(this.options.isolatedCodexHome())
       : undefined;
     const volatileSqliteHome = await prepareCodexRuntimeStateHome(this.options.stateStorage);
     const child = spawn(command.executable, buildCodexAppServerArguments(command.prefixArgs), {
-      env: buildCodexChildEnvironment(
-        process.env,
-        command.runAsNode,
-        process.env.GOSU_CODEX_LOG,
-        isolatedCodexHome,
-        volatileSqliteHome,
+      // A package-manager runtime is a node script; it starts with its own directory on PATH.
+      env: codexRuntimeEnvironment(
+        command.executable,
+        buildCodexChildEnvironment(
+          process.env,
+          command.runAsNode,
+          process.env.GOSU_CODEX_LOG,
+          isolatedCodexHome,
+          volatileSqliteHome,
+        ),
       ),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -1321,6 +1339,16 @@ export class CodexAppServer extends EventEmitter {
     } catch (error) {
       const failure = error instanceof Error ? error : new Error('codex_initialize_failed');
       this.disconnect(child, failure, true);
+      // A newer installed runtime (often a prerelease from the ChatGPT app) is preferred for its
+      // model list, but one that cannot start must not take Codex down while the bundled runtime
+      // is there. An explicitly configured binary is never replaced.
+      if (!bundledOnly && !command.runAsNode && !process.env.GOSU_CODEX_BIN?.trim()) {
+        this.emitBoundaryEvent(
+          'diagnostic',
+          `Installed Codex runtime ${command.executable} could not start (${failure.message}); using the bundled runtime.`,
+        );
+        return this.startInternal(true);
+      }
       throw failure;
     }
   }

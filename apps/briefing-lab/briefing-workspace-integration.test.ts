@@ -13,7 +13,11 @@ import { briefingClientContext } from './briefing-client-context';
 import { SharedPaperSummaryLibrary } from './paper-summary-library';
 import { paperSummaryCandidate } from './src/paper-summary-contract';
 import { defaultLiveSettings, defaultAssistantPreferences } from '@gosu/briefing-core';
-import type { markOriginalMailRead, readOriginalMailStatus } from './briefing-mail-mark-read';
+import type {
+  markOriginalMailRead,
+  readOriginalMailStatus,
+  readOriginalMailSender,
+} from './briefing-mail-mark-read';
 const dirs: string[] = [];
 afterEach(async () => {
   for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
@@ -56,6 +60,12 @@ async function setup() {
       await guard();
       return { status: 'read', markedAt: '2026-09-10T01:00:00Z' };
     });
+  const readSender = vi
+    .fn<typeof readOriginalMailSender>()
+    .mockImplementation(async (_scope, _id, _url, _signal, guard) => {
+      await guard();
+      return 'Research Office <office@example.test>';
+    });
   const service = new LiveSourceService(
     mail,
     { cities: async () => [], weather: async () => [], papers: async () => [] },
@@ -68,6 +78,7 @@ async function setup() {
     openMail,
     markMail,
     checkMail,
+    readSender,
   );
   const p = {
     routineId: 'r',
@@ -122,6 +133,7 @@ async function setup() {
     openMail,
     markMail,
     checkMail,
+    readSender,
   };
 }
 it('reconnects the saved scope after native approval without asking for account configuration again', async () => {
@@ -369,6 +381,49 @@ async function mailOpenFixture(mode: 'always' | 'ask' | null = 'always') {
   return { ...f, item, receipt, receiptId, historyId: historyId! };
 }
 it.each(['live', 'history'] as const)(
+  'recovers sender metadata for an owned %s email without reanalysis or read-state writes',
+  async (source) => {
+    const f = await mailOpenFixture();
+    const target = {
+      routineId: 'r',
+      itemId: 'm',
+      ...(source === 'live' ? { receiptId: f.receiptId } : { historyId: f.historyId }),
+    };
+    expect((await f.invoke('/mail/read-sender', target)).status).not.toBe(200);
+    expect(f.readSender).not.toHaveBeenCalled();
+    await owner(() =>
+      f.store.save(
+        { ...f.p, preferences: { ...f.p.preferences, mailRead: true, mailAi: false } },
+        async () => undefined,
+      ),
+    );
+    vi.spyOn(f.mail, 'resolveMailbox').mockResolvedValue({
+      accountId: 'native-account',
+      path: ['Inbox'],
+    });
+    expect((await f.invoke('/mail/read-sender', target, 'b')).status).not.toBe(200);
+    expect((await f.invoke('/mail/read-sender', { ...target, itemId: 'foreign' })).status).not.toBe(
+      200,
+    );
+    expect(await f.invoke('/mail/read-sender', target)).toMatchObject({
+      status: 200,
+      data: { sender: 'Research Office <office@example.test>' },
+    });
+    expect(f.readSender).toHaveBeenCalledOnce();
+    expect(f.markMail).not.toHaveBeenCalled();
+    expect(f.openMail).not.toHaveBeenCalled();
+    expect(f.analyzer).not.toHaveBeenCalled();
+    const history = await new BriefingWorkspaceStore(f.dir, async () =>
+      Buffer.alloc(32, 3),
+    ).summaryHistory('r');
+    expect(history.find((h) => h.id === f.historyId)?.items[0]?.mailSender).toBe(
+      'Research Office <office@example.test>',
+    );
+    expect(history.find((h) => h.id === f.historyId)?.items[0]?.mailMarkedReadAt).toBeUndefined();
+  },
+);
+
+it.each(['live', 'history'] as const)(
   'opens only the exact owned %s mail source without repeated confirmation in always mode',
   async (source) => {
     const f = await mailOpenFixture();
@@ -425,6 +480,157 @@ it.each(['live', 'history'] as const)(
     expect(history.find((h) => h.id === f.historyId)?.items[0]?.summary).toBeTruthy();
   },
 );
+// 2026-09-22 user request: "daily 별로 briefing 에서 모두읽기 버튼 넣자. 하나씩 누르기 너무 귀찮다."
+async function markAllFixture() {
+  const f = await mailOpenFixture();
+  await owner(() =>
+    f.store.save(
+      { ...f.p, preferences: { ...f.p.preferences, mailRead: true, mailAi: false } },
+      async () => undefined,
+    ),
+  );
+  vi.spyOn(f.mail, 'resolveMailbox').mockResolvedValue({
+    accountId: 'native-account',
+    path: ['Inbox'],
+  });
+  const mail = (id: string, nativeId: string) => ({
+    ...f.item,
+    id,
+    title: `Synthetic ${id}`,
+    mailMessageUrl: `message://%3C${id}%40example.test%3E`,
+    mailNativeId: nativeId,
+  });
+  const summary = (id: string) => ({
+    id,
+    summary: 'Saved',
+    importance: 'high' as const,
+    importanceReason: '',
+    relevance: '',
+    action: '',
+    evidenceQuote: 'Synthetic',
+    equationIds: [],
+    figureIds: [],
+    memorySuggestion: null,
+  });
+  const historyId = (await f.store.saveBriefing(
+    'r',
+    { overview: 'Second', items: [summary('m2'), summary('m3')] },
+    [mail('m2', '43'), mail('m3', '44')],
+  ))!;
+  return { ...f, secondHistoryId: historyId };
+}
+it('marks every listed mail of a briefing read with one request, continuing past a mail that fails', async () => {
+  const f = await markAllFixture();
+  f.markMail.mockImplementation(async (_scope, id, _url, _signal, guard) => {
+    await guard();
+    if (id === 'm2') throw new Error('mail_mark_target_missing');
+    return { status: 'read', markedAt: '2026-09-10T00:00:00Z' };
+  });
+  const result = await f.invoke('/mail/mark-read-all', {
+    routineId: 'r',
+    items: [
+      { historyId: f.historyId, itemId: 'm' },
+      { historyId: f.secondHistoryId, itemId: 'm2' },
+      { historyId: f.secondHistoryId, itemId: 'm3' },
+    ],
+  });
+  expect(result.status).toBe(200);
+  expect(result.data.marked).toBe(2);
+  expect(result.data.results).toEqual([
+    { itemId: 'm', historyId: f.historyId, status: 'read', markedAt: '2026-09-10T00:00:00Z' },
+    {
+      itemId: 'm2',
+      historyId: f.secondHistoryId,
+      status: 'failed',
+      error: expect.stringContaining('메일'),
+    },
+    {
+      itemId: 'm3',
+      historyId: f.secondHistoryId,
+      status: 'read',
+      markedAt: '2026-09-10T00:00:00Z',
+    },
+  ]);
+  expect(f.markMail).toHaveBeenCalledTimes(3);
+  // One message at a time, through the same verified single-message writer.
+  expect(f.openMail).not.toHaveBeenCalled();
+  expect(f.analyzer).not.toHaveBeenCalled();
+  expect(f.consent).not.toHaveBeenCalled();
+  const saved = (await f.store.summaryHistory('r')).flatMap((h) => h.items);
+  expect(saved.find((i) => i.id === 'm')?.mailMarkedReadAt).toBe('2026-09-10T00:00:00Z');
+  expect(saved.find((i) => i.id === 'm2')?.mailMarkedReadAt).toBeUndefined();
+  expect(saved.find((i) => i.id === 'm3')?.mailMarkedReadAt).toBe('2026-09-10T00:00:00Z');
+  // A mail already marked from GOSU is not written to Mail again.
+  f.markMail.mockClear();
+  const again = await f.invoke('/mail/mark-read-all', {
+    routineId: 'r',
+    items: [
+      { historyId: f.historyId, itemId: 'm' },
+      { historyId: f.secondHistoryId, itemId: 'm3' },
+    ],
+  });
+  expect(again.data.marked).toBe(0);
+  expect(again.data.results.map((r: { status: string }) => r.status)).toEqual(['read', 'read']);
+  expect(f.markMail).not.toHaveBeenCalled();
+});
+it('asks once for the whole batch under the ask policy, and marks nothing when that is declined', async () => {
+  const f = await markAllFixture();
+  await owner(() =>
+    f.store.save(
+      {
+        ...f.p,
+        preferences: {
+          ...f.p.preferences,
+          mailRead: true,
+          mailAi: false,
+          confirmationPolicy: 'ask',
+        },
+      },
+      async () => undefined,
+    ),
+  );
+  const items = [
+    { historyId: f.secondHistoryId, itemId: 'm2' },
+    { historyId: f.secondHistoryId, itemId: 'm3' },
+  ];
+  f.consent.mockClear();
+  f.consent.mockRejectedValueOnce(new Error('assistant_confirmation_declined'));
+  expect((await f.invoke('/mail/mark-read-all', { routineId: 'r', items })).status).not.toBe(200);
+  expect(f.markMail).not.toHaveBeenCalled();
+  f.consent.mockClear();
+  const result = await f.invoke('/mail/mark-read-all', { routineId: 'r', items });
+  expect(result.data.marked).toBe(2);
+  expect(f.consent).toHaveBeenCalledOnce();
+  // One sentence for the whole batch, naming how many mails it covers.
+  expect(String((f.consent.mock.calls[0] as unknown[])[0])).toContain('2통');
+});
+it('refuses a batch from another client, an empty or oversized batch, and unknown fields', async () => {
+  const f = await markAllFixture();
+  const items = [{ historyId: f.secondHistoryId, itemId: 'm2' }];
+  expect((await f.invoke('/mail/mark-read-all', { routineId: 'r', items }, 'b')).status).not.toBe(
+    200,
+  );
+  expect((await f.invoke('/mail/mark-read-all', { routineId: 'r', items: [] })).status).not.toBe(
+    200,
+  );
+  expect(
+    (
+      await f.invoke('/mail/mark-read-all', {
+        routineId: 'r',
+        items: Array.from({ length: 101 }, (_, n) => ({ historyId: 'h', itemId: `i${n}` })),
+      })
+    ).status,
+  ).not.toBe(200);
+  expect(
+    (
+      await f.invoke('/mail/mark-read-all', {
+        routineId: 'r',
+        items: [{ ...items[0], url: 'message://x' }],
+      })
+    ).status,
+  ).not.toBe(200);
+  expect(f.markMail).not.toHaveBeenCalled();
+});
 it('marks mail from the second approved account, rejects removed accounts and requires provenance for multiple accounts', async () => {
   const f = await mailOpenFixture();
   const multi = {
@@ -950,6 +1156,21 @@ it('uses the default always-allow policy for feedback and supports switching bac
     decision: 'important',
   });
   expect(f.consent).not.toHaveBeenCalled();
+  const cleared = await f.invoke('/memory/feedback', {
+    routineId: 'r',
+    receiptId: results.find((result) => result.kind === 'email')!.receiptId,
+    itemId: 'mail-1',
+    decision: null,
+  });
+  expect(cleared.status).toBe(200);
+  expect(
+    (
+      await f.invoke('/memory/feedback/choices', {
+        routineId: 'r',
+        receiptId: results.find((result) => result.kind === 'email')!.receiptId,
+      })
+    ).data.choices,
+  ).toEqual({});
   await owner(() =>
     f.store.save(
       { ...f.p, preferences: { ...f.p.preferences, confirmationPolicy: 'ask' } },

@@ -1,5 +1,14 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { mailStillUnread } from './mail-read-state';
+import { MarkAllMailRead } from './mail-mark-all';
 import { sourceRequest } from './live-client';
+import { sortEmails } from './email-presentation';
+import {
+  BRIEFING_GUIDANCE_CHANGED,
+  guidanceSenderRules,
+  matchesGuidanceSender,
+} from './briefing-guidance';
+import { readBriefingGuidance } from './briefing-guidance-panel';
 import {
   briefingNotificationAnchor,
   type BriefingNotificationTarget,
@@ -21,11 +30,15 @@ import { isGosuEmbedded } from './desktop-bridge';
 import { openBriefingItem } from './briefing-item-navigation';
 import { refreshBriefingSummary } from './briefing-analysis-client';
 import { BriefingAgendaDays, briefingDate } from './briefing-agenda-days';
+import { upcomingTodos } from './briefing-todos';
+import { briefingLocalDay } from './briefing-generation-contract';
+import { BriefingQuickFirst } from './briefing-quick-first';
 import { SummaryHighlight, sortSummaryPriority } from './briefing-assistant-summary';
 import { BriefingSectionNavigation } from './briefing-section-navigation';
 import { briefingTargetId, useBriefingJump } from './briefing-jump';
+import { useBriefingNotificationJump } from './briefing-notification-jump';
 import { EmailDeliveryMeta } from './email-delivery-meta';
-import { BriefingBottomCollapse } from './briefing-disclosure-collapse';
+import { BriefingBottomCollapse, BriefingSectionRail } from './briefing-disclosure-collapse';
 import { BRIEFING_COLLAPSE_EVENT } from './briefing-collapse-all';
 import { paperLabels } from './paper-library-index';
 import { deduplicateVerifiedMail } from './mail-duplicates';
@@ -87,7 +100,18 @@ export function BriefingHistoryItem({
     }
   };
   const isPaper = i.kind ? i.kind === 'papers' : !i.readScope.startsWith('mail');
-  const body = (
+  // An email kept without a summary: the AI summary failed, and the run recorded that the mail
+  // arrived (subject, sender, received time) so it is not invisible until the next briefing.
+  const unsummarizedMail = !isPaper && !i.summary.trim();
+  const body = unsummarizedMail ? (
+    <>
+      <p role="status">
+        이 메일은 AI 요약에 실패해 제목·보낸 사람·받은 시각만 기록했습니다. 다음 브리핑에서 다시
+        요약합니다. 지금 확인하려면 위의 Apple Mail 아이콘으로 원본을 열거나, 아래 ‘다시 요약’을
+        눌러주세요.
+      </p>
+    </>
+  ) : (
     <>
       {isPaper && <h3>{i.title}</h3>}
       <BriefingMarkdown text={i.summary} keywords={isPaper ? (i.keywords ?? []) : []} />
@@ -146,6 +170,7 @@ export function BriefingHistoryItem({
     >
       {isPaper ? (
         <PaperBriefingDisclosure
+          sourceUrl={i.sourceUrl}
           chatAction={paperReference ? <PaperChatButton reference={paperReference} /> : undefined}
           title={i.title}
           titleBadge={isNew ? <span className="briefing-new-badge">New</span> : undefined}
@@ -165,14 +190,17 @@ export function BriefingHistoryItem({
         </PaperBriefingDisclosure>
       ) : (
         <EmailBriefingDisclosure
+          preparedActions={i.preparedActions}
           calendarText={`${i.action ?? ''}\n${i.summary}`}
           title={i.title}
           titleBadge={isNew ? <span className="briefing-new-badge">New</span> : undefined}
           summary={i.summary}
+          sender={i.mailSender}
           mailMessageUrl={i.mailMessageUrl}
           mailOpenTarget={mailOpenTarget}
           mailAccount={i.mailAccount}
           mailCopies={i.mailCopies}
+          bodyUnavailable={i.readScope === 'mail-metadata'}
           receivedAt={i.receivedAt}
           unread={i.mailUnread}
           markedReadAt={i.mailMarkedReadAt}
@@ -299,16 +327,49 @@ async function loadAllHistory(routineId: string, signal: AbortSignal) {
   }
   return { history: [...history.values()], feedback, feedbackWarning: [...warnings].join(' ') };
 }
+type GuidanceByRoutine = Readonly<Record<string, readonly { id: string; text: string }[]>>;
+/** Pinned mail shown at most, so a broad domain cannot push everything else out. */
+const MAX_PINNED_HIGHLIGHTS = 5;
+/**
+ * Briefings kept in the page at once. Every retained briefing is loaded, but rendering them all
+ * makes each re-render of this feed cost hundreds of milliseconds, which is felt as a freeze while
+ * scrolling. The rest arrive as the reader reaches the end, and a notification always reaches its
+ * own briefing (see `runsToShow`).
+ */
+export const BRIEFING_FEED_PAGE = 8;
+
+/**
+ * How many of the newest runs to render: at least one page, always enough to include the run a
+ * notification points at, and never fewer than the reader has already scrolled past.
+ */
+export function runsToShow(
+  runs: readonly { routineId: string; runId?: string | undefined; id: string }[],
+  shown: number,
+  target?: BriefingNotificationTarget | undefined,
+) {
+  const wanted = Math.max(BRIEFING_FEED_PAGE, shown);
+  if (!target) return Math.min(runs.length, wanted);
+  const index = runs.findIndex(
+    (run) => run.routineId === target.routineId && (run.runId ?? run.id) === target.runId,
+  );
+  return Math.min(runs.length, index < 0 ? wanted : Math.max(wanted, index + 1));
+}
 export function BriefingHistoryFeed({
   notificationTarget,
   history,
+  guidance,
   feedback,
   onFeedback,
   onRefresh,
   onDeleted,
+  unreadMailOnly = false,
 }: {
   notificationTarget?: BriefingNotificationTarget | undefined;
   history: BriefingHistory[];
+  /** Show only mail that is still unread by its saved state; papers and agenda are not affected. */
+  unreadMailOnly?: boolean | undefined;
+  /** Briefing guidance per routine; a listed mail address or domain pins that mail first. */
+  guidance?: GuidanceByRoutine | undefined;
   feedback?: HistoryFeedback;
   onFeedback?: SaveHistoryFeedback;
   onDeleted?: ((receipt: HistoryRemovalReceipt) => void) | undefined;
@@ -320,18 +381,26 @@ export function BriefingHistoryFeed({
   ) => Promise<void>;
 }) {
   const navigation = useBriefingJump();
-  useEffect(() => {
-    if (!notificationTarget) return;
-    const element = document.getElementById(
-      briefingNotificationAnchor(notificationTarget.routineId, notificationTarget.runId),
-    );
-    if (element && navigation.root.current?.contains(element)) {
-      element.scrollIntoView({ block: 'start', behavior: 'smooth' });
-      element.focus({ preventScroll: true });
-    }
-  }, [notificationTarget, history, navigation.root]);
+  useBriefingNotificationJump(navigation.root, notificationTarget, history);
   const unreadUpdates = useBriefingNewItems();
   const [sectionsOpen, setSectionsOpen] = useState(true);
+  const [shown, setShown] = useState(BRIEFING_FEED_PAGE);
+  // Grouping walks every item of every briefing; doing it again on an unrelated re-render is the
+  // largest avoidable cost in this view.
+  const runs = useMemo(() => groupBriefingHistory(history), [history]);
+  const visible = runsToShow(runs, shown, notificationTarget);
+  const more = runs.length - visible;
+  const sentinel = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const node = sentinel.current;
+    if (!node || more <= 0 || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting))
+        setShown((count) => Math.max(count, visible) + BRIEFING_FEED_PAGE);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [more, visible]);
   useEffect(() => {
     const pane = navigation.root.current?.closest('.briefing-main-scroll');
     const collapse = () => setSectionsOpen(false);
@@ -345,7 +414,7 @@ export function BriefingHistoryFeed({
           {navigation.notice}
         </p>
       )}
-      {groupBriefingHistory(history).map((h) => (
+      {runs.slice(0, visible).map((h) => (
         <article
           className="briefing-history-run"
           id={briefingNotificationAnchor(h.routineId, h.runId ?? h.id)}
@@ -402,7 +471,9 @@ export function BriefingHistoryFeed({
             onNavigate={navigation.jump}
             sections={(['email', 'papers'] as const).flatMap((kind) => {
               const count = h.items.filter(
-                (i) => (i.kind ?? (i.readScope.startsWith('mail') ? 'email' : 'papers')) === kind,
+                (i) =>
+                  (i.kind ?? (i.readScope.startsWith('mail') ? 'email' : 'papers')) === kind &&
+                  (kind !== 'email' || !unreadMailOnly || mailStillUnread(i) === true),
               ).length;
               return count || h.snapshot?.sources.some((s) => s.kind === kind)
                 ? [{ kind, count, id: JSON.stringify([h.id, 'section', kind]) }]
@@ -420,19 +491,47 @@ export function BriefingHistoryFeed({
               </div>
               <small>저장된 중요도 순 · 종류별 최대 3건</small>
             </header>
+            {h.snapshot?.quickBriefing && (
+              <BriefingQuickFirst value={h.snapshot.quickBriefing} timeZone={h.snapshot.timeZone} />
+            )}
             <div className="briefing-assistant-highlights">
-              {sortSummaryPriority(
-                (['email', 'papers'] as const).flatMap((kind) =>
-                  sortSummaryPriority(
-                    h.items.filter(
-                      (i) =>
-                        (i.kind ?? (i.readScope.startsWith('mail') ? 'email' : 'papers')) === kind,
-                    ),
-                  )
-                    .slice(0, 3)
-                    .map((item) => ({ ...item, kind })),
-                ),
-              ).map((item) => (
+              {(() => {
+                const rules = guidanceSenderRules(guidance?.[h.routineId] ?? []);
+                type Picked = (typeof h.items)[number] & {
+                  kind: 'email' | 'papers';
+                  pinned: boolean;
+                };
+                const picked = (['email', 'papers'] as const).flatMap((kind): Picked[] => {
+                  const scoped = h.items.filter(
+                    (i) =>
+                      (i.kind ?? (i.readScope.startsWith('mail') ? 'email' : 'papers')) === kind,
+                  );
+                  if (kind !== 'email')
+                    return sortSummaryPriority(scoped)
+                      .slice(0, 3)
+                      .map((item) => ({ ...item, kind, pinned: false }));
+                  // Mail from a sender listed in the briefing guidance is always shown, first.
+                  // With "안 읽은 메일만" on, a highlight must not point at a card that is hidden.
+                  const sorted = sortEmails(
+                    unreadMailOnly ? scoped.filter((i) => mailStillUnread(i) === true) : scoped,
+                    (i) => i,
+                  );
+                  const pinned = sorted
+                    .filter((i) => matchesGuidanceSender(i.mailSender, rules))
+                    .slice(0, MAX_PINNED_HIGHLIGHTS);
+                  const rest = sorted
+                    .filter((i) => !pinned.includes(i))
+                    .slice(0, Math.max(0, 3 - pinned.length));
+                  return [
+                    ...pinned.map((item) => ({ ...item, kind, pinned: true })),
+                    ...rest.map((item) => ({ ...item, kind, pinned: false })),
+                  ];
+                });
+                return [
+                  ...picked.filter((item) => item.pinned),
+                  ...sortSummaryPriority(picked.filter((item) => !item.pinned)),
+                ];
+              })().map((item) => (
                 <SummaryHighlight
                   key={`${item.kind}:${item.id}`}
                   target={{ kind: item.kind, id: JSON.stringify([h.id, 'item', item.id]) }}
@@ -446,10 +545,19 @@ export function BriefingHistoryFeed({
                       level={importance(item.importance)}
                       paper={item.kind !== 'email'}
                     />
+                    {item.pinned && (
+                      <small
+                        className="briefing-guidance-pinned"
+                        title="브리핑 지침에 적은 보낸 사람의 메일이라 맨 앞에 고정했습니다."
+                      >
+                        지침
+                      </small>
+                    )}
                   </span>
                   <strong>{item.title}</strong>
                   {item.kind === 'email' && (
                     <EmailDeliveryMeta
+                      sender={item.mailSender}
                       account={item.mailAccount}
                       receivedAt={item.receivedAt}
                       timeZone={h.snapshot?.timeZone}
@@ -458,7 +566,11 @@ export function BriefingHistoryFeed({
                   <small>
                     <BriefingMarkdown
                       inline
-                      text={item.kind === 'email' ? item.action || item.summary : item.summary}
+                      text={
+                        item.kind === 'email'
+                          ? item.action || item.summary || 'AI 요약 실패 · 원본 메일을 확인하세요'
+                          : item.summary
+                      }
                     />
                   </small>
                 </SummaryHighlight>
@@ -494,11 +606,45 @@ export function BriefingHistoryFeed({
                     </small>
                   </SummaryHighlight>
                 ))}
+              {upcomingTodos(
+                h.snapshot?.todos?.items ?? [],
+                briefingLocalDay(
+                  Date.parse(h.snapshot?.collectedAt ?? h.createdAt) + 86400000,
+                  h.snapshot?.timeZone ?? 'Asia/Seoul',
+                ),
+              )
+                .slice(0, 2)
+                .map((task) => (
+                  <SummaryHighlight
+                    key={`task:${task.id}`}
+                    target={{ kind: 'task', id: task.id }}
+                    title={task.title}
+                    {...(isGosuEmbedded()
+                      ? {
+                          onNavigate: () => openBriefingItem({ kind: 'task', id: task.id }),
+                          navigationHint: 'GOSU 할 일에서 열기 ↗',
+                        }
+                      : {})}
+                  >
+                    <span>할 일 · 기한순</span>
+                    <strong>{task.title}</strong>
+                    <small>
+                      {task.dueDate ? `${task.dueDate.slice(0, 10)} 기한` : '기한 없음'}
+                      {task.projectName ? ` · ${task.projectName}` : ''}
+                    </small>
+                  </SummaryHighlight>
+                ))}
             </div>
-            {!h.items.length && !h.answers.length && <p>이 회차에 저장된 AI 요약이 없습니다.</p>}
+            {!h.items.length && !h.answers.length && !h.snapshot?.quickBriefing && (
+              <p>이 회차에 저장된 AI 요약이 없습니다.</p>
+            )}
             {h.answers.length > 0 && (
               <details className="briefing-summary-narrative">
                 <summary>전체 요약 문장 보기</summary>
+                <BriefingSectionRail
+                  label="전체 요약 문장 접기"
+                  className="briefing-narrative-rail"
+                />
                 <div className="briefing-narrative-body">
                   {h.answers.map((answer, index) => (
                     <BriefingNarrative
@@ -589,11 +735,10 @@ export function BriefingHistoryFeed({
                 {h.snapshot.todoError && (
                   <p role="alert">할 일을 새로 확인하지 못했습니다. {h.snapshot.todoError}</p>
                 )}
-                {h.snapshot.todos && (
-                  <small>
-                    할 일은 기한이 지난 항목·오늘·내일·기한 없는 항목 중 최대 6개를 표시합니다.{' '}
-                    {h.snapshot.todos.limited ? '일부 할 일만 조회했습니다. ' : ''}전체 목록은 GOSU
-                    To-do list에서 확인하세요.
+                {/* Only an incomplete task read is worth a line; the standing explanation was removed. */}
+                {h.snapshot.todos?.limited && (
+                  <small role="note">
+                    일부 할 일만 조회했습니다. 전체 목록은 GOSU To-do list에서 확인하세요.
                   </small>
                 )}
                 <BriefingBottomCollapse label="일정 접기" />
@@ -601,21 +746,36 @@ export function BriefingHistoryFeed({
             </details>
           )}
           {(['email', 'papers'] as const).map((kind) => {
+            const sectionItems = h.items.filter(
+              (i) => (i.kind ?? (i.readScope.startsWith('mail') ? 'email' : 'papers')) === kind,
+            );
             const chronological = newestSummaryFirst(
-              h.items.filter(
-                (i) => (i.kind ?? (i.readScope.startsWith('mail') ? 'email' : 'papers')) === kind,
-              ),
+              sectionItems,
               (i) =>
                 i.provenance?.summarizedAt ??
                 i.addedAt ??
                 h.batches.find((b) => b.id === h.itemHistoryIds[i.id])?.createdAt,
             );
-            const items =
+            const sorted =
               kind === 'papers'
                 ? importanceFirst(chronological, (i) => i.importance)
-                : chronological;
+                : sortEmails(sectionItems, (i) => i);
+            // "안 읽은 메일만": a display filter over the saved read state. A mail whose state was
+            // never recorded is hidden too, and counted below so that nothing disappears silently.
+            const filtering = kind === 'email' && unreadMailOnly;
+            const items = filtering ? sorted.filter((i) => mailStillUnread(i) === true) : sorted;
+            const unknownHidden = filtering
+              ? sorted.filter((i) => mailStillUnread(i) === undefined).length
+              : 0;
             const source = h.snapshot?.sources.find((s) => s.kind === kind);
-            if (!items.length && !source) return null;
+            // The routine email read notice only restated the read range ("이미 요약한 메일은 제외하고 …")
+            // and is no longer written; runs saved before still carry it, so it is hidden here too.
+            // A first-connection notice stays: it explains why few messages appear.
+            const notice =
+              kind === 'email' && source?.notice?.startsWith('이미 요약한 메일은 제외하고')
+                ? undefined
+                : source?.notice;
+            if (!sorted.length && !source) return null;
             return (
               <details
                 className={`briefing-content-section ${kind} briefing-history-source`}
@@ -632,7 +792,12 @@ export function BriefingHistoryFeed({
                 <summary>
                   <div className="briefing-section-heading">
                     <h3>
-                      {kind === 'email' ? '이메일' : '연구 논문'} · {items.length}개 요약
+                      {kind === 'email' ? '이메일' : '연구 논문'} ·{' '}
+                      {sorted.length === 0 && source?.status === 'failed'
+                        ? '조회 미완료'
+                        : filtering
+                          ? `안 읽은 ${items.length} / ${sorted.length}개`
+                          : `${items.length}개 요약`}
                       {items.some((i) =>
                         unreadUpdates.isNew(h.id, i.addedAt, h.snapshot?.newItemsSince),
                       ) && (
@@ -646,9 +811,24 @@ export function BriefingHistoryFeed({
                         </span>
                       )}
                     </h3>
+                    {kind === 'email' && (
+                      <MarkAllMailRead
+                        routineId={h.routineId}
+                        mails={sorted
+                          .filter((i) => mailStillUnread(i) === true && h.itemHistoryIds[i.id])
+                          .map((i) => ({
+                            historyId: h.itemHistoryIds[i.id]!,
+                            itemId: i.id,
+                            url: i.mailMessageUrl,
+                          }))}
+                      />
+                    )}
                   </div>
                   <span className="briefing-source-toggle" aria-hidden="true" />
                 </summary>
+                <BriefingSectionRail
+                  label={`${kind === 'email' ? '이메일' : '연구 논문'} 섹션 접기`}
+                />
                 <div className="briefing-live-source-body">
                   {kind === 'papers' &&
                     items.length > 0 &&
@@ -658,19 +838,27 @@ export function BriefingHistoryFeed({
                         조회나 AI 재요약이 없습니다.
                       </p>
                     )}
-                  {source?.notice && (
+                  {notice && (
                     <p className="briefing-mail-collection-notice" role="note">
-                      {source.notice}
+                      {notice}
                     </p>
                   )}
                   {source?.status === 'failed' && (
                     <p className="briefing-alert">{source.error ?? '당시 조회에 실패했습니다.'}</p>
                   )}
-                  {!items.length && source?.status !== 'failed' && !source?.notice && (
+                  {!sorted.length && source?.status !== 'failed' && !notice && (
                     <p>
                       {source?.status === 'empty'
                         ? '당시 조회 결과가 없었습니다.'
                         : '조회 결과의 AI 요약이 아직 저장되지 않았습니다.'}
+                    </p>
+                  )}
+                  {filtering && sorted.length > 0 && !items.length && (
+                    <p className="briefing-muted">이 브리핑에는 안 읽은 메일이 없습니다.</p>
+                  )}
+                  {unknownHidden > 0 && (
+                    <p className="briefing-mail-collection-notice" role="note">
+                      {`읽음 상태를 모르는 메일 ${unknownHidden}통은 숨겼습니다. 읽음 상태를 기록하기 전에 저장된 브리핑입니다.`}
                     </p>
                   )}
                   {items.length > 0 && (
@@ -736,6 +924,13 @@ export function BriefingHistoryFeed({
           })}
         </article>
       ))}
+      {more > 0 && (
+        <div className="briefing-history-more" ref={sentinel}>
+          <button type="button" onClick={() => setShown(visible + BRIEFING_FEED_PAGE)}>
+            {`이전 브리핑 ${more}개 더 보기`}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -756,6 +951,8 @@ export function BriefingHistoryView({
 }) {
   const [history, setHistory] = useState<BriefingHistory[]>([]),
     [query, setQuery] = useState(''),
+    // Not kept between visits: a forgotten filter would silently show a fraction of a briefing.
+    [unreadMailOnly, setUnreadMailOnly] = useState(false),
     [error, setError] = useState(''),
     [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<HistoryFeedback>({});
@@ -784,6 +981,39 @@ export function BriefingHistoryView({
         window.removeEventListener?.(BRIEFING_HISTORY_CHANGED, changed);
     };
   }, []);
+  const [guidance, setGuidance] = useState<GuidanceByRoutine>({}),
+    [guidanceError, setGuidanceError] = useState('');
+  useEffect(() => {
+    const c = new AbortController();
+    setGuidanceError('');
+    for (const id of ids)
+      readBriefingGuidance(id)
+        .then((items) => {
+          if (!c.signal.aborted) setGuidance((current) => ({ ...current, [id]: items }));
+        })
+        .catch((reason: unknown) => {
+          if (!c.signal.aborted)
+            setGuidanceError(
+              `브리핑 지침을 읽지 못해 지침 메일 고정을 적용하지 못했습니다. ${reason instanceof Error ? reason.message : ''}`.trim(),
+            );
+        });
+    const changed = (event: Event) => {
+      const detail = (event as CustomEvent<{ routineId?: string; items?: unknown }>).detail;
+      if (detail?.routineId && Array.isArray(detail.items))
+        setGuidance((current) => ({
+          ...current,
+          [detail.routineId!]: detail.items as { id: string; text: string }[],
+        }));
+    };
+    if (typeof window !== 'undefined')
+      window.addEventListener?.(BRIEFING_GUIDANCE_CHANGED, changed);
+    return () => {
+      c.abort();
+      if (typeof window !== 'undefined')
+        window.removeEventListener?.(BRIEFING_GUIDANCE_CHANGED, changed);
+    };
+    // The scope string stands for the routine ids.
+  }, [scope]);
   useEffect(() => {
     const c = new AbortController();
     setLoading(true);
@@ -837,12 +1067,22 @@ export function BriefingHistoryView({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
+        {history.some((h) =>
+          h.items.some(
+            (i) => (i.kind ?? (i.readScope.startsWith('mail') ? 'email' : 'papers')) === 'email',
+          ),
+        ) && (
+          <button
+            type="button"
+            className="briefing-button briefing-unread-filter"
+            aria-pressed={unreadMailOnly}
+            title="브리핑이 메일을 읽어 온 때의 Apple Mail 읽음 상태 기준입니다. GOSU에서 읽음 처리한 메일은 빠집니다. Mail을 다시 조회하지 않습니다."
+            onClick={() => setUnreadMailOnly((on) => !on)}
+          >
+            안 읽은 메일만
+          </button>
+        )}
       </div>
-      <p className="briefing-muted">
-        최신 브리핑부터 아래로 스크롤해 읽으세요. 새 브리핑을 만들어도 이전 기록은 유지됩니다.
-        오늘·내일은 각 브리핑에 표시된 일정 날짜 기준입니다. 저장본 열람에는 원문 조회나 AI 호출이
-        없습니다.
-      </p>
       {loading && <p role="status">저장된 이력 확인 중…</p>}
       <BriefingTrash routineIds={ids} revision={revision} />
       {removed && (
@@ -883,8 +1123,15 @@ export function BriefingHistoryView({
       {!loading && !history.length && !error && (
         <p>아직 저장된 AI 요약이 없습니다. 실제 자료를 조회해 요약하면 자동으로 쌓입니다.</p>
       )}
+      {guidanceError && (
+        <p role="status" className="briefing-alert">
+          {guidanceError}
+        </p>
+      )}
       <BriefingHistoryFeed
         notificationTarget={notificationTarget}
+        guidance={guidance}
+        unreadMailOnly={unreadMailOnly}
         history={history.filter(
           (h) =>
             !excludeRunIds.includes(h.runId ?? h.id) &&

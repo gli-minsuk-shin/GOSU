@@ -1,6 +1,6 @@
 {
   "name": "@gosu/desktop",
-  "version": "0.58.49",
+  "version": "0.58.147",
   "private": true,
   "author": "GOSU contributors",
   "description": "Local-first macOS research workspace for GOSU",
@@ -34,7 +34,7 @@
     "lint": "eslint src electron.vite.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --exclude '.runtime/**' --maxWorkers=1 --passWithNoTests",
-    "test:agent-runtime": "vitest run test/model-reference-handoff.test.tsx test/critical-review.test.tsx test/project-research-plan-service.test.ts test/project-research-plan-tools.test.ts test/project-agent-tools.test.ts test/workspace-service.test.ts test/experiment-workspace-service.test.ts test/objective-editor.test.tsx test/project-chat-context.test.ts test/chat-file-drop.test.tsx test/project-chat-attachment-service.test.ts test/project-chat-attachment-ipc.test.ts test/project-chat-service.test.ts test/codex-context-metadata.test.ts test/codex-app-server.test.ts test/claude-code-project-chat-adapter.test.ts test/project-chat-prompt.test.ts test/provider-connections.test.tsx test/global-assistant-projects.test.ts test/project-agent-runtime.test.ts test/project-chat-view.test.tsx test/project-tool-activity.test.ts test/project-tool-activity-view.test.tsx test/project-chat-tool-activity-state.test.ts test/project-chat-notes-capability.test.ts test/project-chat-notes-optional.test.tsx test/workspace-notifications.test.ts test/personal-notifications.test.tsx test/notification-center.test.tsx test/briefing-context-export.test.tsx test/paper-summary-ipc.test.ts test/global-briefing-view.test.tsx test/briefing-todo-adapter.test.ts test/briefing-settings-integration.test.ts test/model-routing.test.tsx --maxWorkers=1"
+    "test:agent-runtime": "vitest run test/project-sidebar.test.tsx test/project-sidebar-order.test.tsx test/briefing-task-actions.test.ts test/native-usage-ledger.test.ts test/model-usage-service.test.ts test/usage-view.test.tsx test/approval-policy.test.tsx test/ssh-connection-service.test.ts test/experiment-run-log-service.test.ts test/model-reference-handoff.test.tsx test/critical-review.test.tsx test/project-research-plan-service.test.ts test/project-research-plan-tools.test.ts test/project-agent-tools.test.ts test/workspace-service.test.ts test/experiment-workspace-service.test.ts test/objective-editor.test.tsx test/project-chat-context.test.ts test/chat-file-drop.test.tsx test/project-chat-attachment-service.test.ts test/project-chat-attachment-ipc.test.ts test/project-chat-service.test.ts test/codex-context-metadata.test.ts test/codex-app-server.test.ts test/claude-code-project-chat-adapter.test.ts test/project-chat-prompt.test.ts test/provider-connections.test.tsx test/global-assistant-projects.test.ts test/project-agent-runtime.test.ts test/project-chat-view.test.tsx test/project-tool-activity.test.ts test/project-tool-activity-view.test.tsx test/project-chat-tool-activity-state.test.ts test/project-chat-notes-capability.test.ts test/project-chat-notes-optional.test.tsx test/workspace-notifications.test.ts test/personal-notifications.test.tsx test/notification-center.test.tsx test/briefing-context-export.test.tsx test/paper-summary-ipc.test.ts test/global-briefing-view.test.tsx test/briefing-todo-adapter.test.ts test/briefing-settings-integration.test.ts test/model-routing.test.tsx --maxWorkers=1"
   },
   "dependencies": {
     "@gosu/ui": "workspace:*",
@@ -108,7 +108,9 @@
       "extendInfo": {
         "NSAppleEventsUsageDescription": "GOSU에서 사용자가 선택한 Apple Mail 계정과 메일함을 조회하고 승인한 메일 작업을 수행합니다.",
         "NSCalendarsFullAccessUsageDescription": "GOSU에서 선택한 캘린더를 조회하고 사용자가 확인한 일정 변경을 수행합니다.",
-        "NSCalendarsUsageDescription": "GOSU에서 사용자가 선택한 캘린더와 승인한 일정 변경에 접근합니다."
+        "NSCalendarsUsageDescription": "GOSU에서 사용자가 선택한 캘린더와 승인한 일정 변경에 접근합니다.",
+        "NSRemindersFullAccessUsageDescription": "GOSU에서 사용자가 확인한 할 일을 선택한 Apple 미리 알림 목록에 추가하고 중복 여부를 확인합니다.",
+        "NSRemindersUsageDescription": "GOSU에서 사용자가 확인한 할 일을 선택한 Apple 미리 알림 목록에 추가합니다."
       },
       "category": "public.app-category.education",
       "icon": "build/icon.icns",

@@ -10,6 +10,29 @@ import {
 import type { CodexDynamicToolHandler } from '../../desktop/src/main/codex-app-server';
 import type { ModelLabQuestionRequest } from './model-lab-runtime-adapter';
 import { sparkvskLearnedWarmPath, tropicLambdaPathCompiler } from './sample-models';
+import { configureNativeUsageObserver } from '../../briefing-lab/native-usage-observer';
+import { modelLabBackendContext } from '../model-lab-backend-context';
+it('attributes Model Lab native calls to the owning project and actual resolved model', async () => {
+  const observer = vi.fn(async () => undefined);
+  configureNativeUsageObserver(observer);
+  try {
+    const transport = nativeTransport(async (emitter) => complete(emitter));
+    await modelLabBackendContext.run(
+      { projectId: '11111111-1111-4111-8111-111111111111', directory: '/unused-test' },
+      () => runNativeModelLabAgent(input(), { createTransport: () => transport }),
+    );
+    expect(observer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workloadKind: 'model_lab',
+        projectId: '11111111-1111-4111-8111-111111111111',
+        invocation: expect.objectContaining({ resolvedModelId: 'resolved-provider-model' }),
+        successful: true,
+      }),
+    );
+  } finally {
+    configureNativeUsageObserver(undefined);
+  }
+});
 it('streams scoped native occupancy and invalidates stale occupancy after compaction', async () => {
   const measured = vi.fn();
   const search = vi.fn(() => ({ messages: [{ text: 'Exact original decision' }] }));

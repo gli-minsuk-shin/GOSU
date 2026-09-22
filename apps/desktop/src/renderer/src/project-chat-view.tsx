@@ -1,4 +1,10 @@
 import { uiText, useUiText, uiLocale } from '@gosu/ui/language';
+import { holdScrollTarget, type ScrollTarget } from '@gosu/ui/scroll-settle';
+import {
+  chatSlashSuggestions,
+  parseChatSlashCommand,
+  type ChatSlashCommand,
+} from '@gosu/ui/chat-slash-commands';
 import { useChatFileDrop } from './chat-file-drop';
 import { ContextUsageMeter } from '../../../../briefing-lab/src/context-usage-meter';
 import { BriefingContextExport } from './briefing-context-export';
@@ -26,6 +32,7 @@ import {
   type ProjectAgentNode,
   type ProjectAgentRun,
   type ProjectChatAction,
+  type ProjectChatCompactionReceipt,
   type ProjectChatContextScope,
   type ProjectChatHarnessMode,
   type ProjectChatPersonality,
@@ -92,6 +99,56 @@ const PROJECT_CHAT_TODO_SKILL_SUGGESTIONS = Object.freeze([
     detail: 'Find one task and propose a Board column change',
   },
 ] as const);
+
+/** One line per context command, shown while the draft is a single word starting with "/". */
+export const PROJECT_CHAT_CONTEXT_COMMANDS: Readonly<
+  Record<ChatSlashCommand, Readonly<{ label: string; detail: string }>>
+> = Object.freeze({
+  '/new': { label: 'New chat', detail: 'Start an empty chat; this one stays in the list' },
+  '/compact': {
+    label: 'Compact context',
+    detail: 'Summarize earlier turns now; the transcript is kept',
+  },
+});
+
+/** What `/compact` did, as one sentence. English keys: the caller passes them through uiText. */
+export function projectChatCompactionStatus(receipt: ProjectChatCompactionReceipt | null): {
+  tone: 'info' | 'error';
+  text: string;
+  params?: Record<string, string | number>;
+} {
+  if (!receipt)
+    return { tone: 'error', text: '/compact did not run. The reason is shown at the top.' };
+  if (receipt.outcome === 'compacted')
+    return {
+      tone: 'info',
+      text: 'Summarized {count} earlier messages. The transcript is kept as it is.',
+      params: { count: receipt.summarizedMessages },
+    };
+  if (receipt.outcome === 'nothing_to_compact')
+    return {
+      tone: 'info',
+      text: 'There is nothing older to summarize yet. The latest 4 messages always stay word for word.',
+    };
+  if (receipt.outcome === 'cancelled')
+    return { tone: 'info', text: '/compact was stopped. Nothing was changed.' };
+  const reasons: Record<NonNullable<ProjectChatCompactionReceipt['reason']>, string> = {
+    engine_unavailable: '/compact is not available in this build of GOSU.',
+    context_window_unknown:
+      '/compact did not run: GOSU could not confirm this model’s context size. Check the model in Settings → Agent.',
+    provider_unsupported:
+      '/compact works with Codex and Claude Code models. This provider keeps its own context.',
+    context_changed:
+      '/compact was discarded: the agent settings changed while it ran. Nothing was saved. Run it again.',
+    summary_invalid:
+      '/compact failed: the model returned an empty or oversized summary. Nothing was saved.',
+    context_too_large:
+      '/compact failed: even the summary and the latest messages do not fit this model. Start a new chat with /new.',
+    model_failed:
+      '/compact failed: the summarizing model call did not finish. Check the model connection in Settings → Agent and try again.',
+  };
+  return { tone: 'error', text: reasons[receipt.reason ?? 'model_failed'] };
+}
 
 export function projectChatTodoSkillSuggestions(draft: string) {
   const normalized = draft.normalize('NFKC').trimStart().toLocaleLowerCase('en-US');
@@ -321,8 +378,16 @@ export function resolveInitialProjectChatScrollTop({
 export function shouldPersistProjectChatScrollPosition(
   initializedSessionKey: string | null,
   activeSessionKey: string,
+  holdingOpeningPosition = false,
 ) {
-  return initializedSessionKey === activeSessionKey;
+  return initializedSessionKey === activeSessionKey && !holdingOpeningPosition;
+}
+
+/** Where a chat opens: where the reader left it, or at the latest message the first time. */
+export function projectChatInitialScrollTarget(savedScrollTop: number | null): ScrollTarget {
+  return savedScrollTop === null || !Number.isFinite(savedScrollTop)
+    ? { kind: 'bottom' }
+    : { kind: 'offset', top: savedScrollTop };
 }
 
 export function shouldInitializeProjectChatScroll(loading: boolean, snapshotReady: boolean) {
@@ -515,6 +580,7 @@ export function ProjectChatView({
   branchingMessageId = null,
   onSelectSession = () => undefined,
   onCreateSession = () => undefined,
+  onCompactContext = async () => null,
   onRenameSession,
   sessionRailWidth = PROJECT_CHAT_SESSION_RAIL_DEFAULT_WIDTH,
   onSessionRailWidthChange = () => undefined,
@@ -587,6 +653,8 @@ export function ProjectChatView({
   branchingMessageId?: string | null;
   onSelectSession?: (sessionId: string) => void;
   onCreateSession?: () => void;
+  /** `/compact` for the selected session. Null when it could not be started at all. */
+  onCompactContext?: () => Promise<ProjectChatCompactionReceipt | null>;
   onRenameSession?: (
     session: NonNullable<ProjectChatSnapshot['session']>,
     title: string,
@@ -660,6 +728,7 @@ export function ProjectChatView({
   const attachmentPickerGenerationRef = useRef(0);
   const mountedRef = useRef(true);
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const openingScrollHoldRef = useRef<ReturnType<typeof holdScrollTarget> | null>(null);
   const latestMessageRef = useRef<HTMLElement>(null);
   const unreadAssistantMessageRef = useRef<HTMLElement>(null);
   const messageElementsRef = useRef(new Map<string, HTMLElement>());
@@ -677,6 +746,12 @@ export function ProjectChatView({
     setDraft(value);
     onDraftChange(value);
   };
+  /** The result line of `/new` and `/compact`; they add no message to the transcript. */
+  const [contextCommandStatus, setContextCommandStatus] = useState<ReturnType<
+    typeof projectChatCompactionStatus
+  > | null>(null);
+  const [compacting, setCompacting] = useState(false);
+  const compactingRef = useRef(false);
   const releaseAttachment = (attachment: ProjectChatAttachment) => {
     setAttachments((current) => {
       const next = current.filter((candidate) => candidate.id !== attachment.id);
@@ -909,11 +984,13 @@ export function ProjectChatView({
       observedLatestMessageIdRef.current = latestMessageId;
       observedLatestContentRevisionRef.current = latestContentRevision;
       wasInFlightRef.current = inFlight;
-      transcript.scrollTop = resolveInitialProjectChatScrollTop({
-        savedScrollTop: initialScrollTop,
-        scrollHeight: transcript.scrollHeight,
-        clientHeight: transcript.clientHeight,
-      });
+      // Applied now and again while math, fonts and tool panes are still growing the transcript;
+      // one assignment in this first commit used to land mid-conversation.
+      openingScrollHoldRef.current?.stop();
+      openingScrollHoldRef.current = holdScrollTarget(
+        transcript,
+        projectChatInitialScrollTarget(initialScrollTop),
+      );
       const nearBottom = isProjectChatNearBottom(
         transcript.scrollTop,
         transcript.scrollHeight,
@@ -1096,10 +1173,12 @@ export function ProjectChatView({
         shouldPersistProjectChatScrollPosition(
           initializedScrollSessionKeyRef.current,
           draftSessionKey,
+          openingScrollHoldRef.current?.active ?? false,
         )
       ) {
         onScrollTopChangeRef.current(transcript.scrollTop);
       }
+      openingScrollHoldRef.current?.stop();
     },
     [draftSessionKey],
   );
@@ -1152,9 +1231,47 @@ export function ProjectChatView({
   }, [project.id, snapshot?.profile?.version]);
 
   const paperReply = useRef<PaperSaveReplyHandler | null>(null);
+  /** Handled by GOSU: a command is never sent to a model, queued or stored as a message. */
+  const runContextCommand = (command: ChatSlashCommand) => {
+    if (command === '/new') {
+      if (creatingSession) return;
+      updateDraft('');
+      setRetryOfAttemptId(null);
+      setContextCommandStatus(null);
+      onCreateSession();
+      return;
+    }
+    if (compactingRef.current) return;
+    if (sessionBusy || inFlight) {
+      setContextCommandStatus({
+        tone: 'error',
+        text: '/compact did not run because an answer is in progress. Run it again when the answer is done.',
+      });
+      return;
+    }
+    compactingRef.current = true;
+    setCompacting(true);
+    updateDraft('');
+    setRetryOfAttemptId(null);
+    setContextCommandStatus({ tone: 'info', text: 'Compacting the conversation…' });
+    void onCompactContext()
+      .catch(() => null)
+      .then((receipt) => {
+        compactingRef.current = false;
+        setCompacting(false);
+        setContextCommandStatus(projectChatCompactionStatus(receipt));
+      });
+  };
   const submit = () => {
     const message = draft.trim();
-    if (!message || loading || selectionWarning) return;
+    if (!message || loading) return;
+    const contextCommand = parseChatSlashCommand(message);
+    if (contextCommand) {
+      runContextCommand(contextCommand);
+      return;
+    }
+    if (selectionWarning || compacting) return;
+    setContextCommandStatus(null);
     if (!attachments.length && paperReply.current?.(message)) {
       setDraft('');
       return;
@@ -1209,6 +1326,7 @@ export function ProjectChatView({
     });
   };
   const todoSkillSuggestions = projectChatTodoSkillSuggestions(draft);
+  const contextCommandSuggestions = chatSlashSuggestions(draft);
 
   const enableTrustedWorkspace = async (server: ProjectChatSshServer) => {
     if (
@@ -1825,7 +1943,8 @@ export function ProjectChatView({
                 {hermesSelected
                   ? uiText('Hermes ACP · project read tools')
                   : uiText(
-                      'Board / To-do + Objective read tools · {localNotesStatus} · {sshWorkspaceStatus} · {value3}',
+                      // Briefing reads follow the Briefing Lab settings; each read checks its own.
+                      'Board / To-do + Objective + Briefing calendar, mail, briefings and paper summaries · {localNotesStatus} · {sshWorkspaceStatus} · {value3}',
                       {
                         localNotesStatus: localNotesStatus,
                         sshWorkspaceStatus: sshWorkspaceStatus,
@@ -1875,11 +1994,17 @@ export function ProjectChatView({
                 shouldPersistProjectChatScrollPosition(
                   initializedScrollSessionKeyRef.current,
                   draftSessionKey,
+                  openingScrollHoldRef.current?.active ?? false,
                 )
               ) {
                 onScrollTopChangeRef.current(transcript.scrollTop);
               }
             }}
+            // The reader taking over ends the hold at once; their scrolling is never fought.
+            onWheel={() => openingScrollHoldRef.current?.stop()}
+            onTouchStart={() => openingScrollHoldRef.current?.stop()}
+            onPointerDown={() => openingScrollHoldRef.current?.stop()}
+            onKeyDown={() => openingScrollHoldRef.current?.stop()}
           >
             {activeAgentRun && <LiveAgentRunActivity run={activeAgentRun} />}
             {loading ? (
@@ -2450,31 +2575,71 @@ export function ProjectChatView({
               </button>
             </div>
           )}
-          {todoSkillSuggestions.length > 0 && (
+          {(todoSkillSuggestions.length > 0 || contextCommandSuggestions.length > 0) && (
             <section className="chat-skill-menu" aria-label={uiText('Project Chat skills')}>
-              <header>
-                <strong>{uiText('/todo')}</strong>
-                <span>{uiText('Board와 같은 Task를 읽고 변경 제안을 만듭니다')}</span>
-              </header>
-              <div>
-                {todoSkillSuggestions.map((suggestion) => (
-                  <button
-                    type="button"
-                    key={suggestion.command}
-                    onClick={() => {
-                      updateDraft(suggestion.command);
-                      setRetryOfAttemptId(null);
-                    }}
-                  >
-                    <code>{suggestion.command.trimEnd()}</code>
-                    <span>
-                      <b>{uiText(suggestion.label)}</b>
-                      <small>{uiText(suggestion.detail)}</small>
-                    </span>
-                  </button>
-                ))}
-              </div>
+              {contextCommandSuggestions.length > 0 && (
+                <>
+                  <header>
+                    <strong>{uiText('Context')}</strong>
+                    <span>{uiText('Keep the conversation short enough for the model')}</span>
+                  </header>
+                  <div>
+                    {contextCommandSuggestions.map((command) => (
+                      <button
+                        type="button"
+                        key={command}
+                        onClick={() => {
+                          updateDraft(command);
+                          setRetryOfAttemptId(null);
+                          modelReferenceInput.current?.focus();
+                        }}
+                      >
+                        <code>{command}</code>
+                        <span>
+                          <b>{uiText(PROJECT_CHAT_CONTEXT_COMMANDS[command].label)}</b>
+                          <small>{uiText(PROJECT_CHAT_CONTEXT_COMMANDS[command].detail)}</small>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+              {todoSkillSuggestions.length > 0 && (
+                <>
+                  <header>
+                    <strong>{uiText('/todo')}</strong>
+                    <span>{uiText('Board와 같은 Task를 읽고 변경 제안을 만듭니다')}</span>
+                  </header>
+                  <div>
+                    {todoSkillSuggestions.map((suggestion) => (
+                      <button
+                        type="button"
+                        key={suggestion.command}
+                        onClick={() => {
+                          updateDraft(suggestion.command);
+                          setRetryOfAttemptId(null);
+                        }}
+                      >
+                        <code>{suggestion.command.trimEnd()}</code>
+                        <span>
+                          <b>{uiText(suggestion.label)}</b>
+                          <small>{uiText(suggestion.detail)}</small>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
             </section>
+          )}
+          {contextCommandStatus && (
+            <p
+              role="status"
+              className="chat-context-command-status"
+              data-tone={contextCommandStatus.tone}
+            >
+              {uiText(contextCommandStatus.text, contextCommandStatus.params)}
+            </p>
           )}
           <div className="chat-composer">
             <div className="project-chat-context-meter">
@@ -2525,7 +2690,13 @@ export function ProjectChatView({
                   })
                 ) {
                   event.preventDefault();
-                  submit();
+                  // "/c" + Enter completes the command instead of sending "/c" to the model.
+                  const completion =
+                    todoSkillSuggestions.length === 0 && !parseChatSlashCommand(draft)
+                      ? contextCommandSuggestions[0]
+                      : undefined;
+                  if (completion) updateDraft(completion);
+                  else submit();
                 }
               }}
               placeholder={
@@ -2541,7 +2712,7 @@ export function ProjectChatView({
               aria-label={uiText('Message GOSU project copilot')}
             />
             <div className="chat-send-actions">
-              {inFlight && (
+              {(inFlight || compacting) && (
                 <button type="button" className="danger-button chat-stop" onClick={onCancel}>
                   {uiText('Stop')}
                 </button>
@@ -2550,7 +2721,13 @@ export function ProjectChatView({
                 type="button"
                 className="primary-button chat-send"
                 onClick={submit}
-                disabled={loading || draft.trim().length === 0 || selectionWarning !== null}
+                disabled={
+                  loading ||
+                  draft.trim().length === 0 ||
+                  // A command needs no model; a question needs a valid one and an idle context.
+                  (parseChatSlashCommand(draft) === null &&
+                    (selectionWarning !== null || compacting))
+                }
               >
                 {hermesSelected && sessionBusy
                   ? uiText('Stop & send')

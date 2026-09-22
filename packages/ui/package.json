@@ -6,6 +6,10 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./ai-activity": {
+      "types": "./dist/ai-activity.d.ts",
+      "import": "./dist/ai-activity.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
@@ -19,6 +23,14 @@
     "./language": {
       "types": "./dist/language.d.ts",
       "import": "./dist/language.js"
+    },
+    "./scroll-settle": {
+      "types": "./dist/scroll-settle.d.ts",
+      "import": "./dist/scroll-settle.js"
+    },
+    "./chat-slash-commands": {
+      "types": "./dist/chat-slash-commands.d.ts",
+      "import": "./dist/chat-slash-commands.js"
     }
   },
   "scripts": {

@@ -5,6 +5,31 @@ import { afterEach, it, expect } from 'vitest';
 import { BriefingMemoryStore } from './briefing-memory-store';
 import { createCipheriv, randomBytes } from 'node:crypto';
 const directories: string[] = [];
+it.each(['important', 'not-interested'] as const)(
+  'clears only the selected vote, including future ranking and restart state: %s',
+  async (decision) => {
+    const { store, dir, key } = await fixture();
+    const signal = new AbortController().signal;
+    await store.feedback('r', source, decision, signal, undefined, ['optimization']);
+    await store.feedback('other', source, 'important', signal);
+    await store.feedback('r', source, null, signal);
+    expect(await store.feedbackChoices('r', [source.id])).toEqual({});
+    const profile = await store.feedbackProfile('r');
+    expect(profile.total).toBe(0);
+    expect(profile.preferredKeywords).toEqual([]);
+    expect(profile.avoidedKeywords).toEqual([]);
+    const revision = profile.feedbackProfileRevision;
+    await store.feedback('r', source, null, signal);
+    expect((await store.feedbackProfile('r')).feedbackProfileRevision).toBe(revision);
+    const reopened = new BriefingMemoryStore(dir, key);
+    expect(await reopened.feedbackChoices('r', [source.id])).toEqual({});
+    expect(await reopened.feedbackChoices('other', [source.id])).toEqual({
+      [source.id]: 'important',
+    });
+    await reopened.feedback('r', source, decision, signal);
+    expect(await reopened.feedbackChoices('r', [source.id])).toEqual({ [source.id]: decision });
+  },
+);
 it('counts equivalent paper tag spellings once per vote without rewriting original feedback', async () => {
   const f = await fixture(),
     signal = new AbortController().signal;
@@ -266,4 +291,58 @@ it('rechecks private permission immediately before committing and preserves the 
     }),
   ).rejects.toThrow('scope_required');
   expect(await readFile(path, 'utf8')).toBe(before);
+});
+it('keeps up to 24 preferred and 24 avoided keywords', async () => {
+  const { store } = await fixture();
+  const signal = new AbortController().signal;
+  for (let i = 0; i < 30; i++) {
+    await store.feedback('r', { ...source, id: `up-${i}` }, 'important', signal, undefined, [
+      `liked topic ${i}`,
+    ]);
+    await store.feedback('r', { ...source, id: `down-${i}` }, 'not-interested', signal, undefined, [
+      `skipped topic ${i}`,
+    ]);
+  }
+  const profile = await store.feedbackProfile('r');
+  expect(profile.preferredKeywords).toHaveLength(24);
+  expect(profile.avoidedKeywords).toHaveLength(24);
+});
+it('learns the senders of rated emails from the saved briefings, by address and by institution domain', async () => {
+  const { store } = await fixture();
+  const signal = new AbortController().signal;
+  const mail = (id: string) => ({
+    ...source,
+    id,
+    kind: 'email' as const,
+    title: `Mail ${id}`,
+    readScope: 'mail-preview' as const,
+  });
+  await store.feedback('r', mail('a'), 'important', signal);
+  await store.feedback('r', mail('b'), 'important', signal);
+  await store.feedback('r', mail('c'), 'not-interested', signal);
+  await store.feedback('r', mail('d'), 'not-interested', signal);
+  await store.feedback('r', mail('old'), 'important', signal);
+  // Emails rated before this version stored no sender; the saved briefing still knows it.
+  const senders: Record<string, string> = {
+    a: '강상욱 <Kanggi1@yonsei.ac.kr>',
+    b: 'Office <research@yonsei.ac.kr>',
+    c: 'Ads <promo@conference.example>',
+    d: 'Friend <someone@gmail.com>',
+  };
+  const profile = await store.feedbackProfile('r', true, (itemId) => senders[itemId]);
+  expect(profile.preferredSenders).toEqual([
+    { term: 'kanggi1@yonsei.ac.kr', score: 1 },
+    { term: 'research@yonsei.ac.kr', score: 1 },
+  ]);
+  expect(profile.avoidedSenders).toEqual([
+    { term: 'promo@conference.example', score: -1 },
+    { term: 'someone@gmail.com', score: -1 },
+  ]);
+  // Two ratings add up for an institution; a personal webmail domain is not an institution.
+  expect(profile.preferredSenderDomains).toEqual([{ term: 'yonsei.ac.kr', score: 2 }]);
+  expect(profile.avoidedSenderDomains).toEqual([{ term: 'conference.example', score: -1 }]);
+  // Without a way to find senders the profile has none, and rated emails still count by kind.
+  const plain = await store.feedbackProfile('r');
+  expect(plain.preferredSenders).toEqual([]);
+  expect(plain.kindScores.email).toBe(1);
 });

@@ -6,8 +6,138 @@ import { MailOpenRequestSchema, type MailOpenTarget } from './mail-open-contract
 // Retain acknowledgments for the same displayed snapshot, not a blanket override for future reads.
 const listeners = new Set<(key: string, at: string) => void>();
 const confirmedSnapshots = new Map<string, string>();
+// Marks started elsewhere (the interest buttons) report here, so the status beside the title follows.
+type MarkEvent = { pending: boolean; error?: string; uncertain?: boolean };
+const markListeners = new Set<(key: string, event: MarkEvent) => void>();
+const marking = new Set<string>();
+const markedThisSession = new Set<string>();
 export function resetMailReadSession() {
   confirmedSnapshots.clear();
+  markedThisSession.clear();
+}
+const mailReadKey = (target: MailOpenTarget | undefined, url: string | undefined) =>
+  JSON.stringify([target?.routineId, target?.itemId, url]);
+function announceRead(key: string, at: string) {
+  markedThisSession.add(key);
+  for (const notify of listeners) notify(key, at);
+}
+/**
+ * Marks one displayed email read in Apple Mail through the same single-message route as the
+ * "읽음으로 변환" button (same message check and confirmation policy). Used when the user rates an
+ * unread email; a message already marked in this session is not written again.
+ */
+export async function markMailReadFor(target: MailOpenTarget | undefined, url: string | undefined) {
+  if (!safeAppleMailUrl(url) || !MailOpenRequestSchema.safeParse(target).success) return;
+  const key = mailReadKey(target, url);
+  if (marking.has(key) || markedThisSession.has(key)) return;
+  marking.add(key);
+  const report = (event: MarkEvent) => {
+    for (const notify of markListeners) notify(key, event);
+  };
+  report({ pending: true });
+  try {
+    const result = await sourceRequest<{
+      status: string;
+      markedAt: string;
+      historyWarning?: string;
+      error?: string;
+    }>('/mail/mark-read', target);
+    if (result.status === 'unconfirmed') {
+      report({
+        pending: false,
+        uncertain: true,
+        error: result.error ?? '읽음 상태를 다시 확인해주세요.',
+      });
+      return;
+    }
+    if (result.status !== 'read' || !Number.isFinite(Date.parse(result.markedAt)))
+      throw new Error('읽음 처리 결과를 확인하지 못했습니다. Apple Mail에서 상태를 확인해주세요.');
+    announceRead(key, result.markedAt);
+    report({ pending: false, ...(result.historyWarning ? { error: result.historyWarning } : {}) });
+  } catch (error) {
+    report({
+      pending: false,
+      error: error instanceof Error ? error.message : '읽음 처리 결과를 확인하지 못했습니다.',
+    });
+  } finally {
+    marking.delete(key);
+  }
+}
+export type MailBatchTarget = { historyId: string; itemId: string; url: string | undefined };
+/** Whether this session already marked the displayed mail read (by its button, a rating or a batch). */
+export const mailMarkedThisSession = (routineId: string, mail: MailBatchTarget) =>
+  markedThisSession.has(
+    mailReadKey({ routineId, historyId: mail.historyId, itemId: mail.itemId }, mail.url),
+  );
+/**
+ * "모두 읽음" of one saved briefing: one request for all of its unread mail. The server still marks
+ * one message at a time through the single-message writer and answers per mail, so every card
+ * follows its own result and a failure is shown on the mail it belongs to.
+ */
+export async function markAllMailRead(routineId: string, mails: readonly MailBatchTarget[]) {
+  const targets = mails
+    .map((mail) => ({
+      mail,
+      key: mailReadKey({ routineId, historyId: mail.historyId, itemId: mail.itemId }, mail.url),
+    }))
+    .filter(
+      ({ mail, key }) =>
+        safeAppleMailUrl(mail.url) && !marking.has(key) && !markedThisSession.has(key),
+    );
+  if (!targets.length) return { marked: 0, failures: [] as { itemId: string; error: string }[] };
+  const report = (key: string, event: MarkEvent) => {
+    for (const notify of markListeners) notify(key, event);
+  };
+  for (const { key } of targets) {
+    marking.add(key);
+    report(key, { pending: true });
+  }
+  try {
+    const response = await sourceRequest<{
+      marked: number;
+      results: {
+        historyId: string;
+        itemId: string;
+        status: string;
+        markedAt?: string;
+        error?: string;
+        historyWarning?: string;
+      }[];
+    }>('/mail/mark-read-all', {
+      routineId,
+      items: targets.map(({ mail }) => ({ historyId: mail.historyId, itemId: mail.itemId })),
+    });
+    const failures: { itemId: string; error: string }[] = [];
+    let marked = 0;
+    for (const { mail, key } of targets) {
+      const result = response.results.find(
+        (value) => value.historyId === mail.historyId && value.itemId === mail.itemId,
+      );
+      if (result?.status === 'read' && Number.isFinite(Date.parse(result.markedAt ?? ''))) {
+        marked += 1;
+        announceRead(key, result.markedAt!);
+        report(key, {
+          pending: false,
+          ...(result.historyWarning ? { error: result.historyWarning } : {}),
+        });
+        continue;
+      }
+      const error =
+        result?.error ??
+        (result?.status === 'unread'
+          ? 'Apple Mail에서 아직 읽지 않음으로 남아 있습니다.'
+          : '읽음 처리 결과를 확인하지 못했습니다. Apple Mail에서 상태를 확인해주세요.');
+      failures.push({ itemId: mail.itemId, error });
+      report(key, { pending: false, error, uncertain: result?.status === 'unconfirmed' });
+    }
+    return { marked, failures };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '읽음 처리 요청에 실패했습니다.';
+    for (const { key } of targets) report(key, { pending: false, error: message });
+    throw error;
+  } finally {
+    for (const { key } of targets) marking.delete(key);
+  }
 }
 function remember(key: string, at: string) {
   confirmedSnapshots.delete(key);
@@ -28,7 +158,7 @@ export function MailReadStatus({
   url?: string | undefined;
   markedReadAt?: string | undefined;
 }) {
-  const key = JSON.stringify([target?.routineId, target?.itemId, url]);
+  const key = mailReadKey(target, url);
   const observation = JSON.stringify([
     key,
     target && ('receiptId' in target ? target.receiptId : target.historyId),
@@ -65,9 +195,18 @@ export function MailReadStatus({
         setError('');
       }
     };
+    const follow = (value: string, event: MarkEvent) => {
+      if (value !== key) return;
+      setPending(event.pending);
+      if (event.pending) return;
+      if (event.uncertain) setUncertain(true);
+      setError(event.error ?? '');
+    };
     listeners.add(notify);
+    markListeners.add(follow);
     return () => {
       listeners.delete(notify);
+      markListeners.delete(follow);
       controller.current?.abort();
     };
   }, [key, observation]);
@@ -178,7 +317,7 @@ export function MailReadStatus({
                       '읽음 처리 결과를 확인하지 못했습니다. Apple Mail에서 상태를 확인해주세요.',
                     );
                   if (!cancel.signal.aborted) {
-                    for (const notify of listeners) notify(key, result.markedAt);
+                    announceRead(key, result.markedAt);
                     setError(result.historyWarning ?? '');
                   }
                 } catch (e) {

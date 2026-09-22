@@ -16,7 +16,8 @@ import { SshConnectionServiceError, type SshConnectionService } from './ssh-conn
 
 type ExperimentRunLogServiceOptions = Readonly<{
   experiments: ExperimentWorkspaceService;
-  ssh: Pick<SshConnectionService, 'listWorkspaceGrants' | 'runAgentWorkspaceFileOperation'>;
+  ssh: Pick<SshConnectionService, 'listWorkspaceGrants' | 'runAgentWorkspaceFileOperation'> &
+    Partial<Pick<SshConnectionService, 'canReuseApprovedScope'>>;
   now?: () => Date;
 }>;
 
@@ -67,9 +68,12 @@ export class ExperimentRunLogService {
     if (!workspace || workspace.grant.permissionMode !== 'workspace') {
       throw new ExperimentWorkspaceServiceError('experiment_run_log_unavailable');
     }
-    // Experiment view has no chat session approval scope. Requiring the explicit per-grant trusted
-    // switch prevents a hidden or auto-denied Allow-once prompt while preserving the existing audit.
-    if (!workspace.grant.trustedAccess) {
+    // No hidden chat approval prompt: require per-grant trust or the app's approved-scope policy.
+    // The SSH broker still audits and revalidates the exact binding immediately before transport.
+    if (
+      !workspace.grant.trustedAccess &&
+      !this.ssh.canReuseApprovedScope?.(workspace.grant, workspace.connection)
+    ) {
       throw new ExperimentWorkspaceServiceError('experiment_run_log_access_required');
     }
 

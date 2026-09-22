@@ -18,6 +18,44 @@ import {
 import type { ProjectRecord, WorkspaceTask } from '../src/shared/workspace-contracts';
 
 const NOW = '2026-08-18T00:00:00.000Z';
+it('keeps personal ownership in create, complete and archive actions and renders without projects', () => {
+  const task: WorkspaceTask = {
+    id: '11111111-1111-4111-8111-111111111111',
+    projectId: null,
+    title: 'Personal work',
+    status: 'planned',
+    version: 1,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  const item = joinWorkspaceGlobalBoardTasks([], [task])[0]!;
+  expect(workspaceGlobalTaskCompletionUpdate(item).projectId).toBeNull();
+  expect(workspaceGlobalTaskArchiveInput(item, true).projectId).toBeNull();
+  expect(
+    workspaceGlobalTaskCreateInput({
+      projectId: '',
+      title: 'New task',
+      status: 'planned',
+      description: '',
+      priority: '',
+      dueDate: '',
+      labels: '',
+    }).projectId,
+  ).toBeNull();
+  const html = renderToStaticMarkup(
+    <WorkspaceTasksView
+      projects={[]}
+      tasks={[task]}
+      busyAction={null}
+      onCreateTask={vi.fn()}
+      onUpdateTask={vi.fn()}
+      onSetTaskArchived={vi.fn()}
+    />,
+  );
+  expect(html).toContain('Personal work');
+  expect(html).toContain('개인 할 일');
+  expect(html).not.toContain('Create or restore an active project first');
+});
 
 const alpha: ProjectRecord = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -150,7 +188,47 @@ describe('workspace all-project Tasks view', () => {
     expect(html.match(/>Shared task title<\/h3>/gu)).toHaveLength(2);
   });
 
-  it('requires a real project and uses the selected project custom first stage in the composer', () => {
+  it('shows a task as its title and one line of facts, with nothing that repeats its column', () => {
+    const render = (initialViewMode: 'kanban' | 'todo') =>
+      renderToStaticMarkup(
+        <WorkspaceTasksView
+          projects={[alpha, beta]}
+          tasks={[
+            task(alpha, {
+              status: 'in_progress',
+              priority: 'urgent',
+              description: 'Acceptance criteria',
+              labels: ['baseline'],
+              dueDate: '2020-01-02',
+            }),
+            task(beta, { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', status: 'in_progress' }),
+          ]}
+          busyAction={null}
+          initialViewMode={initialViewMode}
+          {...callbacks()}
+        />,
+      );
+    for (const html of [render('kanban'), render('todo')]) {
+      // The toolbar is one header; the list has no second heading and a card no version footer.
+      expect(html.match(/<h2>/gu)).toHaveLength(1);
+      expect(html).not.toContain('WORKSPACE TASKS');
+      expect(html).not.toContain('todo-list-summary');
+      expect(html).not.toContain('task-version');
+      expect(html).not.toContain('Across active projects');
+      // Alpha calls this stage "Running"; Beta uses the shared name, which the column already says.
+      expect(html.match(/class="workspace-task-stage"/gu)).toHaveLength(1);
+      expect(html).toContain('>Running</span>');
+      expect(html).toMatch(/<time class="task-due overdue"[^>]*>\d+d late<\/time>/u);
+      expect(html).toContain('title="Acceptance criteria"');
+      expect(html).toMatch(
+        /<button[^>]*aria-label="Edit Shared task title in Alpha Project"[^>]*><svg class="task-icon"/u,
+      );
+    }
+    expect(render('todo')).toContain('class="todo-task-title"');
+    expect(render('kanban')).toContain('class="task-card-meta"');
+  });
+
+  it('allows personal tasks and preserves a selected project custom first stage in the composer', () => {
     const allProjectsHtml = renderToStaticMarkup(
       <WorkspaceTaskComposer
         projects={[alpha, beta]}
@@ -159,10 +237,12 @@ describe('workspace all-project Tasks view', () => {
         onCreate={vi.fn()}
       />,
     );
-    expect(allProjectsHtml).toContain('<option value="" selected="">Choose a project</option>');
-    expect(allProjectsHtml).toContain('<select required=""');
+    expect(allProjectsHtml).toContain(
+      '<option value="" selected="">프로젝트 없음 · 개인 할 일</option>',
+    );
+    expect(allProjectsHtml).not.toContain('<select required=""');
     expect(allProjectsHtml).toContain('disabled="">Add task</button>');
-    expect(allProjectsHtml).toContain('Global tasks never become unassigned');
+    expect(allProjectsHtml).toContain('프로젝트는 선택 사항');
 
     const selectedProjectHtml = renderToStaticMarkup(
       <WorkspaceTaskComposer

@@ -1028,6 +1028,125 @@ describe('ProjectAgentToolSession', () => {
       ),
     ).toContain('model_lab_reference_changed');
   });
+  it('reads calendar, mail, briefings and paper summaries only through the Briefing permissions', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const briefingReads = {
+      calendar: vi.fn(async () => ({ events: [{ id: 'e1', title: 'Lab meeting' }] })),
+      mail: vi.fn(async () => ({ messages: [{ id: 'm1', title: 'Review request' }] })),
+      briefings: vi.fn(async () => ({ briefings: [{ historyId: 'h1' }] })),
+      papers: vi.fn(async () => ({ papers: [{ paperId: 'p1' }] })),
+    };
+    const base = {
+      projectId: projectAlpha.id,
+      workspace,
+      vault: new FakeProjectVault(),
+      localNotesVault: null,
+    };
+    const names = (session: ProjectAgentToolSession) =>
+      (session.dynamicTools[0] as { tools: readonly { name: string }[] }).tools.map(
+        (tool) => tool.name,
+      );
+    expect(names(new ProjectAgentToolSession(base))).not.toContain('read_calendar');
+    const session = new ProjectAgentToolSession({ ...base, briefingReads });
+    expect(names(session)).toEqual(
+      expect.arrayContaining([
+        'read_calendar',
+        'search_email',
+        'read_briefings',
+        'read_paper_summaries',
+      ]),
+    );
+    const calendar = await invokeTool(session, toolCall('read_calendar', { from: '2026-09-20' }));
+    expect(calendar.success).toBe(true);
+    expect(JSON.stringify(calendar)).toContain('Lab meeting');
+    // The project's own name identifies the caller in any Briefing confirmation.
+    expect(briefingReads.calendar).toHaveBeenCalledWith(
+      { from: '2026-09-20' },
+      '프로젝트 채팅(Project Alpha)',
+      expect.anything(),
+    );
+    await invokeTool(session, toolCall('search_email', { query: 'review' }));
+    expect(briefingReads.mail).toHaveBeenCalledWith(
+      { query: 'review' },
+      '프로젝트 채팅(Project Alpha)',
+      expect.anything(),
+    );
+    await invokeTool(session, toolCall('read_briefings', {}));
+    await invokeTool(session, toolCall('read_paper_summaries', { query: 'lasso' }));
+    expect(briefingReads.briefings).toHaveBeenCalledOnce();
+    expect(briefingReads.papers).toHaveBeenCalledOnce();
+    // A Briefing permission that is off comes back as that exact code, not a generic failure.
+    briefingReads.mail.mockRejectedValueOnce(new Error('assistant_mail_permission_required'));
+    const denied = await invokeTool(session, toolCall('search_email', {}));
+    expect(denied.success).toBe(false);
+    expect(resultPayload(denied)).toEqual({ error: 'assistant_mail_permission_required' });
+    briefingReads.calendar.mockRejectedValueOnce(new Error('native_consent_denied'));
+    expect(resultPayload(await invokeTool(session, toolCall('read_calendar', {})))).toEqual({
+      error: 'native_consent_denied',
+    });
+    // Critical review keeps its own read-only allowlist.
+    const review = new ProjectAgentToolSession({
+      ...base,
+      briefingReads,
+      criticalReview: 'direction',
+    });
+    expect(names(review)).not.toContain('search_email');
+    expect(resultPayload(await invokeTool(review, toolCall('search_email', {})))).toEqual({
+      error: 'tool_not_allowed',
+    });
+  });
+
+  it('adds a chat-written model to this project only when offered, once per model, with the validation reason on failure', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const modelLabWrite = vi.fn(async (_projectId: string, input: { requestId: string }) => ({
+      requestId: input.requestId,
+      modelId: 'gcsa-beta-abcd-v3',
+      modelName: 'GCSA beta ABCD v3 axial',
+      status: 'added' as const,
+    }));
+    const base = {
+      projectId: projectAlpha.id,
+      attemptId: 'attempt-1',
+      workspace,
+      vault: new FakeProjectVault(),
+      localNotesVault: null,
+    };
+    const names = (session: ProjectAgentToolSession) =>
+      (session.dynamicTools[0] as { tools: readonly { name: string }[] }).tools.map(
+        (tool) => tool.name,
+      );
+    // Not offered unless the service passed a writer for this turn.
+    expect(names(new ProjectAgentToolSession(base))).not.toContain('add_model_to_model_lab');
+    const session = new ProjectAgentToolSession({ ...base, modelLabWrite });
+    expect(names(session)).toContain('add_model_to_model_lab');
+    const call = toolCall('add_model_to_model_lab', { pseudocode: 'MODEL gcsa' });
+    const first = await invokeTool(session, call);
+    expect(first.success).toBe(true);
+    expect(JSON.stringify(first)).toContain('\\"added\\":true');
+    expect(modelLabWrite).toHaveBeenCalledWith(projectAlpha.id, {
+      requestId: expect.stringMatching(/^[a-f0-9]{8}-/),
+      pseudocode: 'MODEL gcsa',
+    });
+    // A retry of the same model is the same request.
+    await invokeTool(session, call);
+    expect(modelLabWrite.mock.calls[1]![1].requestId).toBe(
+      modelLabWrite.mock.calls[0]![1].requestId,
+    );
+    // A parser error comes back with its reason so the model can fix the pseudocode.
+    modelLabWrite.mockRejectedValueOnce(
+      new Error('model_lab_pseudocode_invalid: Unknown BLOCK b2'),
+    );
+    const invalid = await invokeTool(
+      session,
+      toolCall('add_model_to_model_lab', { pseudocode: 'MODEL broken' }),
+    );
+    expect(invalid.success).toBe(false);
+    expect(JSON.stringify(invalid)).toContain('Unknown BLOCK b2');
+    // Critical review keeps its read-only tool list.
+    expect(
+      names(new ProjectAgentToolSession({ ...base, modelLabWrite, criticalReview: 'direction' })),
+    ).not.toContain('add_model_to_model_lab');
+  });
   it.each([
     'read_workspace',
     'list_local_notes',
@@ -1700,6 +1819,93 @@ describe('ProjectAgentToolSession', () => {
     expect(literature.search).toHaveBeenCalledOnce();
   });
 
+  it('hands the model linkable papers and the reason a provider was dropped', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const literature = new FakeProjectLiterature();
+    const papersOfSearch = vi.fn(async () => ({
+      papers: [
+        {
+          title: 'TabPFN: A Transformer That Solves Small Tabular Classification Problems',
+          authors: ['Noah Hollmann'],
+          year: 2023,
+          tier: 'core' as const,
+          url: 'https://arxiv.org/abs/2207.01848',
+        },
+        { title: 'No link', authors: [], year: null, tier: 'broad' as const, url: null },
+      ],
+      omittedCount: 3,
+    }));
+    Object.assign(literature, { papersOfSearch });
+    const base = await literature.search({ projectId: projectAlpha.id, query: 'seed' });
+    literature.search.mockClear();
+    literature.search.mockResolvedValueOnce({
+      ...base,
+      providerFailures: [{ provider: 'semantic-scholar', cause: 'rate_limited', attempts: 3 }],
+    });
+    const { session } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      new FakeProjectVault(),
+      new FakeProjectSsh(),
+      literature,
+    );
+
+    const result = await invokeTool(
+      session,
+      toolCall('search_literature', { query: 'tabular foundation models' }),
+    );
+    const payload = resultPayload(result) as Record<string, unknown>;
+
+    expect(result.success).toBe(true);
+    expect(papersOfSearch).toHaveBeenCalledExactlyOnceWith({
+      projectId: projectAlpha.id,
+      runId: LITERATURE_RUN_ID,
+      limit: 12,
+    });
+    expect(payload.papers).toEqual([
+      {
+        title: 'TabPFN: A Transformer That Solves Small Tabular Classification Problems',
+        authors: ['Noah Hollmann'],
+        year: 2023,
+        tier: 'core',
+        url: 'https://arxiv.org/abs/2207.01848',
+      },
+      { title: 'No link', authors: [], year: null, tier: 'broad', url: null },
+    ]);
+    expect(payload.omittedPaperCount).toBe(3);
+    expect(payload.providerFailures).toEqual([
+      { provider: 'semantic-scholar', cause: 'rate_limited', attempts: 3 },
+    ]);
+  });
+
+  it('still reports the search when the paper list cannot be read', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const literature = new FakeProjectLiterature();
+    Object.assign(literature, {
+      papersOfSearch: vi.fn(async () => {
+        throw new Error('literature_unavailable');
+      }),
+    });
+    const { session } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      new FakeProjectVault(),
+      new FakeProjectSsh(),
+      literature,
+    );
+
+    const result = await invokeTool(
+      session,
+      toolCall('search_literature', { query: 'tabular foundation models' }),
+    );
+    const payload = resultPayload(result) as Record<string, unknown>;
+
+    expect(result.success).toBe(true);
+    expect(payload.persisted).toBe(true);
+    expect(payload.papers).toBeUndefined();
+    expect(payload.papersUnavailable).toBe(true);
+  });
+
   it('bounds conflict disclosure after a successful maximum-size Literature search', async () => {
     const { workspace, projectAlpha } = await workspaceFixture();
     const literature = new FakeProjectLiterature();
@@ -1812,6 +2018,67 @@ describe('ProjectAgentToolSession', () => {
     await expect(pending).resolves.toMatchObject({ success: false });
     expect(resultPayload(await pending)).toEqual({ error: 'literature_search_cancelled' });
     expect(observedSignal?.aborted).toBe(true);
+  });
+
+  it('hands the model the note the user wrote for a server, and nothing for servers without one', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const sshAgentNotes = {
+      get: vi.fn(async () => ({
+        [SSH_CONNECTION_ID]: '실험은 minsuk 이름으로 실행하고 작업 이름 앞에 minsuk을 붙여라.',
+        '00000000-0000-4000-8000-000000000000': 'a server without a grant in this project',
+      })),
+    };
+    const session = new ProjectAgentToolSession({
+      projectId: projectAlpha.id,
+      sessionId: CHAT_SESSION_ID,
+      attemptId: CHAT_ATTEMPT_ID,
+      workspace,
+      vault: new FakeProjectVault(),
+      localNotesVault: null,
+      ssh: new FakeProjectSsh(),
+      sshAgentNotes,
+      researchNoteReceipts: new FakeProjectAgentReceiptStorage(),
+    });
+
+    const listed = await invokeTool(session, toolCall('list_ssh_workspaces', {}));
+    const payload = resultPayload(listed) as { workspaces: Record<string, unknown>[] };
+
+    expect(payload.workspaces).toEqual([
+      {
+        grantId: SSH_GRANT_ID,
+        connectionLabel: 'Training GPU',
+        permissionMode: 'workspace',
+        trustedAccess: false,
+        userNote: '실험은 minsuk 이름으로 실행하고 작업 이름 앞에 minsuk을 붙여라.',
+      },
+    ]);
+    expect(listed.contentItems[0]!.text).not.toContain('a server without a grant');
+  });
+
+  it('still lists the workspaces when the notes cannot be read, and says so', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const session = new ProjectAgentToolSession({
+      projectId: projectAlpha.id,
+      sessionId: CHAT_SESSION_ID,
+      attemptId: CHAT_ATTEMPT_ID,
+      workspace,
+      vault: new FakeProjectVault(),
+      localNotesVault: null,
+      ssh: new FakeProjectSsh(),
+      sshAgentNotes: {
+        get: async () => {
+          throw new Error('ssh_agent_notes_unreadable');
+        },
+      },
+      researchNoteReceipts: new FakeProjectAgentReceiptStorage(),
+    });
+
+    const listed = await invokeTool(session, toolCall('list_ssh_workspaces', {}));
+    const payload = resultPayload(listed) as Record<string, unknown>;
+
+    expect(listed.success).toBe(true);
+    expect(payload.setupState).toBe('ready');
+    expect(payload.userNotesUnavailable).toBe(true);
   });
 
   it('lists only opaque SSH IDs and labels, never aliases or resolved connection data', async () => {

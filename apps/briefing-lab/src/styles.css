@@ -1970,6 +1970,21 @@ input[type='checkbox'] {
   font-size: 12px;
   font-weight: 600;
 }
+/* The hour under the cursor: a dashed guide and its values, drawn above the plot. */
+.weather-hit-layer {
+  cursor: crosshair;
+}
+
+.weather-crosshair rect {
+  fill: #ffffff;
+  stroke: #cfd9c6;
+}
+
+.weather-crosshair text {
+  fill: #2f3d2c;
+  font-weight: 700;
+}
+
 .weather-chart-heading {
   display: flex;
   align-items: baseline;
@@ -2031,14 +2046,10 @@ input[type='checkbox'] {
 .weather-rain-band {
   fill: #f3f8fc;
 }
-.weather-chart .weather-probability-label {
+.weather-chart .weather-probability-axis text {
   fill: #326a94;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
-}
-.weather-chart .weather-probability-label.is-zero {
-  fill: #698396;
-  font-weight: 500;
 }
 .weather-chart text {
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
@@ -2622,6 +2633,9 @@ input[type='checkbox'] {
 }
 .briefing-generation-controls {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  min-width: 0;
   justify-items: end;
   gap: 5px;
   max-width: min(480px, 100%);
@@ -2636,6 +2650,18 @@ input[type='checkbox'] {
 .briefing-generation-buttons label {
   font-size: 0.82em;
   color: #60704f;
+}
+.briefing-routine-time-toggle {
+  gap: 5px;
+  white-space: nowrap;
+}
+.briefing-routine-time-toggle input {
+  accent-color: #53790b;
+}
+.briefing-generation-next {
+  color: #60704f;
+  font-size: 0.78em;
+  white-space: nowrap;
 }
 .briefing-generation-buttons select {
   padding: 6px 9px;
@@ -2694,7 +2720,7 @@ input[type='checkbox'] {
   line-height: 34px;
 }
 .briefing-generation-controls:has(.briefing-generation-progress) .briefing-generation-buttons {
-  justify-self: start;
+  justify-self: end;
 }
 .briefing-generation-progress > summary {
   display: flex;
@@ -2717,6 +2743,183 @@ input[type='checkbox'] {
   color: #63705b;
   font-variant-numeric: tabular-nums;
 }
+/* Beside the page title: one compact line; the opened detail floats instead of growing the header. */
+.briefing-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  min-width: 0;
+}
+.briefing-title-row {
+  /* The button row is 34px tall: the title row matches it, so both share one centre line. */
+  min-height: 34px;
+}
+.briefing-title-progress {
+  /* Progress and warnings stay on the title's line and shorten their text instead of stacking. */
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  /* A zero basis lets the status boxes shrink on the title's line before the line would wrap. */
+  flex: 1 1 0;
+  /* Never wider than the title column, so it cannot run into the buttons beside it. */
+  min-width: min(160px, 100%);
+}
+.briefing-title-progress > * {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+/* A collapsed warning opens for its full text, so it gives way before the running progress, but
+   keeps room for its mark and chevron. */
+.briefing-title-progress > .briefing-generation-alert {
+  flex-shrink: 3;
+  min-width: 62px;
+}
+.briefing-title-progress .briefing-generation-alert > summary {
+  overflow: hidden;
+}
+/* Even when its text is cut away, the warning stays recognisable. */
+.briefing-title-progress .briefing-generation-alert > summary::before {
+  content: '!';
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #c0622a;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+.briefing-title-progress:empty {
+  display: none;
+}
+.briefing-main-header:has(
+  .briefing-title-progress .briefing-generation-progress,
+  .briefing-title-progress .briefing-generation-alert
+) {
+  position: relative;
+  z-index: 5;
+  align-items: center;
+}
+/* A collapsed warning beside the title looks like the progress box; its text opens as a panel. */
+.briefing-title-progress .briefing-generation-alert {
+  position: relative;
+  max-width: 340px;
+  padding: 3px 9px;
+  border: 1px solid #ecd3c0;
+  border-radius: 8px;
+  background: #fdf7f1;
+  font-size: 12px;
+}
+.briefing-title-progress .briefing-generation-alert > summary {
+  min-height: 20px;
+}
+.briefing-title-progress .briefing-generation-alert > .briefing-generation-alert-detail {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  box-sizing: border-box;
+  width: min(420px, calc(100vw - 48px));
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #ecd3c0;
+  border-radius: 8px;
+  background: #fffaf6;
+  box-shadow: 0 8px 24px rgb(60 40 20 / 14%);
+}
+.briefing-main-header:has(.briefing-title-progress .briefing-generation-progress) h1 {
+  line-height: 1.4;
+}
+.briefing-title-progress .briefing-generation-progress {
+  position: relative;
+  max-width: 360px;
+  padding: 3px 9px;
+}
+.briefing-title-progress .briefing-generation-progress > summary {
+  gap: 8px;
+  white-space: nowrap;
+  /* Narrow title lines shorten the text instead of letting it run under the buttons. */
+  overflow: hidden;
+}
+.briefing-title-progress .briefing-generation-progress > summary > :is(strong, span) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The stage name gives way first, then the elapsed time; the saved count stays the longest. */
+.briefing-title-progress .briefing-generation-progress > summary > strong {
+  flex-shrink: 10;
+}
+.briefing-title-progress .briefing-generation-progress > summary > span:last-of-type {
+  flex-shrink: 6;
+}
+.briefing-title-progress .briefing-generation-progress > summary > span:not(:last-of-type) {
+  flex-shrink: 0;
+}
+.briefing-title-progress .briefing-generation-progress > summary > .briefing-progress-chevron {
+  flex: 0 0 auto;
+}
+.briefing-title-progress .briefing-progress-detail {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  box-sizing: border-box;
+  width: min(420px, calc(100vw - 48px));
+  margin-top: 0;
+  padding: 10px 12px;
+  border: 1px solid #d8e1ce;
+  border-radius: 8px;
+  background: #fbfcf8;
+  box-shadow: 0 8px 24px rgb(40 60 20 / 14%);
+}
+/* Run warnings and a paused schedule: one line until opened. */
+.briefing-generation-alert {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 420px;
+  font-size: 0.72em;
+  color: #8a3d12;
+  text-align: left;
+}
+.briefing-generation-alert > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  cursor: pointer;
+  list-style: none;
+  white-space: nowrap;
+}
+.briefing-generation-alert > summary::-webkit-details-marker {
+  display: none;
+}
+.briefing-generation-alert > summary > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.briefing-generation-alert > summary > .briefing-progress-chevron {
+  margin-left: auto;
+}
+.briefing-generation-alert[open] > summary > .briefing-progress-chevron {
+  transform: rotate(180deg);
+}
+.briefing-generation-alert > .briefing-generation-alert-detail {
+  margin: 4px 0 0;
+  max-height: 40vh;
+  overflow: auto;
+  color: #5f4a3a;
+  line-height: 1.5;
+  /* One warning per line, as the run recorded them; long identifiers wrap instead of overflowing. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .briefing-progress-chevron {
   width: 16px;
   height: 16px;
@@ -2736,6 +2939,31 @@ input[type='checkbox'] {
   padding-top: 8px;
   border-top: 1px solid #e2e8dc;
 }
+.briefing-progress-kinds {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: #56634d;
+}
+.briefing-progress-kinds li::before {
+  content: '○ ';
+  color: #9aa88f;
+}
+.briefing-progress-kinds li[data-state='running']::before {
+  content: '● ';
+  color: #53790b;
+}
+.briefing-progress-kinds li:is([data-state='done'], [data-state='saved'])::before {
+  content: '✓ ';
+  color: #53790b;
+}
+.briefing-progress-kinds li[data-state='failed']::before {
+  content: '! ';
+  color: #9a4d00;
+}
 .briefing-generation-progress progress {
   width: 100%;
   height: 6px;
@@ -2746,6 +2974,19 @@ input[type='checkbox'] {
   margin: 0;
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+.briefing-body-unavailable-badge {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: #fff1e0;
+  color: #9a4d00;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.5;
 }
 .briefing-new-badge {
   display: inline-flex;
@@ -2759,6 +3000,77 @@ input[type='checkbox'] {
   font-size: 10px;
   font-weight: 650;
   line-height: 1.5;
+}
+.assistant-web-image,
+.assistant-web-link {
+  overflow-wrap: anywhere;
+}
+.assistant-web-image {
+  display: block;
+  margin: 12px 0;
+}
+.assistant-web-image img,
+.assistant-web-link iframe {
+  display: block;
+  width: 100%;
+  max-width: 560px;
+  border: 1px solid #d6e0cc;
+  border-radius: 10px;
+  margin: 8px 0;
+}
+.assistant-web-image img {
+  max-height: 360px;
+  object-fit: contain;
+}
+.assistant-web-link iframe {
+  height: 280px;
+}
+.assistant-web-image small,
+.assistant-web-link small {
+  display: block;
+  color: #6d7964;
+  font-size: 11px;
+}
+.assistant-web-link > button {
+  margin-left: 8px;
+}
+.assistant-web-link > button,
+.assistant-web-image > button {
+  border: 1px solid #cbd9bd;
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: #f4f8ee;
+  color: #496b29;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.briefing-paper-source-link {
+  display: inline-flex;
+  vertical-align: middle;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-left: 6px;
+  border-radius: 6px;
+  background: #eef4e8;
+  color: #53752c;
+}
+.briefing-paper-source-link svg {
+  width: 18px;
+  height: 18px;
+}
+.briefing-paper-source-link:hover {
+  background: #dfeccf;
+}
+.briefing-paper-source-link:focus-visible {
+  outline: 2px solid #53752c;
+  outline-offset: 2px;
+}
+.briefing-paper-source-link.is-unavailable {
+  opacity: 0.4;
+  background: transparent;
 }
 .briefing-paper-chat-button {
   display: inline-flex;

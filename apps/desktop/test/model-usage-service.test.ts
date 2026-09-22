@@ -45,6 +45,214 @@ function workspaceFixture() {
     }),
   };
 }
+it('records input/output when optional cache counters are absent instead of dropping the whole native report', () => {
+  const storage = storageFixture();
+  const service = new ModelUsageService(storage, workspaceFixture());
+  service.bindThread('thread', {
+    workloadKind: 'project_chat',
+    projectId: '22222222-2222-4222-8222-222222222222',
+  });
+  service.recordInvocation({ threadId: 'thread', turnId: 'turn', invocation });
+  service.recordCodexNotification({
+    method: 'thread/tokenUsage/updated',
+    params: {
+      threadId: 'thread',
+      turnId: 'turn',
+      tokenUsage: {
+        total: { inputTokens: 100, outputTokens: 20, totalTokens: 120, cachedInputTokens: 80 },
+      },
+    },
+  });
+  expect(storage.recordCodexModelUsageTotal).toHaveBeenCalledWith(
+    expect.objectContaining({
+      totals: {
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        cachedReadTokens: 80,
+        cachedWriteTokens: null,
+        reasoningOutputTokens: null,
+      },
+    }),
+  );
+});
+it('combines assistant usage with project/model breakdowns without creating a phantom project or double counting', async () => {
+  const storage = storageFixture({
+    listStoredModelUsage: () => [
+      storedUsageRow({ resolvedModelId: 'model-A', workloadKind: 'project_chat' }),
+      storedUsageRow({
+        invocationId: 'second',
+        resolvedModelId: 'model-B',
+        workloadKind: 'project_chat',
+        inputTokens: 200,
+        totalTokens: 220,
+      }),
+    ],
+  });
+  const assistant = storedUsageRow({
+    invocationId: 'assistant',
+    projectId: '00000000-0000-4000-8000-000000000000',
+    workloadKind: 'briefing_assistant',
+    resolvedModelId: 'model-A',
+  });
+  const service = new ModelUsageService(storage, workspaceFixture(), async () => [assistant]);
+  const query = { period: 'day' as const, anchorDate: '2026-08-20', timeZone: 'UTC' };
+  const result = await service.query(query);
+  expect(result.totals.tokens.totalTokens).toBe(460);
+  expect(result.byProject).toHaveLength(1);
+  expect(result.byProjectModel).toHaveLength(2);
+  expect(
+    result.byWorkload.find((r) => r.workloadKind === 'briefing_assistant')?.tokens.totalTokens,
+  ).toBe(120);
+  const selected = await service.query({ ...query, workloadKind: 'briefing_assistant' });
+  expect(selected.byProject).toEqual([]);
+  expect(selected.byModel).toHaveLength(1);
+  expect(selected.totals.tokens.totalTokens).toBe(120);
+});
+it('breaks every feature down by model, assistant usage included, so a feature can be priced', async () => {
+  // A feature has no price of its own: the Usage screen sums the cost of the models that ran it.
+  const storage = storageFixture({
+    listStoredModelUsage: () => [
+      storedUsageRow({ resolvedModelId: 'model-A', workloadKind: 'project_chat' }),
+      storedUsageRow({
+        invocationId: 'second',
+        resolvedModelId: 'model-B',
+        workloadKind: 'project_chat',
+        inputTokens: 200,
+        totalTokens: 220,
+      }),
+      storedUsageRow({
+        invocationId: 'third',
+        resolvedModelId: 'model-A',
+        workloadKind: 'literature_organize',
+      }),
+    ],
+  });
+  // The AI assistant and the briefing summaries belong to no project; their cost must not vanish.
+  const assistant = storedUsageRow({
+    invocationId: 'assistant',
+    projectId: '00000000-0000-4000-8000-000000000000',
+    workloadKind: 'briefing_assistant',
+    resolvedModelId: 'model-A',
+  });
+  const service = new ModelUsageService(storage, workspaceFixture(), async () => [assistant]);
+  const query = { period: 'day' as const, anchorDate: '2026-08-20', timeZone: 'UTC' };
+  const result = await service.query(query);
+  const parts = result.byWorkloadModel!;
+  expect(parts.map((p) => [p.workloadKind, p.resolvedModelId, p.tokens.totalTokens])).toEqual([
+    ['project_chat', 'model-B', 220],
+    ['project_chat', 'model-A', 120],
+    ['literature_organize', 'model-A', 120],
+    ['briefing_assistant', 'model-A', 120],
+  ]);
+  expect(result.byProjectModel!.some((p) => p.projectId.startsWith('00000000'))).toBe(false);
+  // The parts add up to both marginals and to the total, in tokens and in turns.
+  const sum = (rows: readonly { tokens: { totalTokens: number } }[]) =>
+    rows.reduce((total, row) => total + row.tokens.totalTokens, 0);
+  for (const model of result.byModel)
+    expect(sum(parts.filter((p) => p.resolvedModelId === model.resolvedModelId))).toBe(
+      model.tokens.totalTokens,
+    );
+  for (const workload of result.byWorkload)
+    expect(sum(parts.filter((p) => p.workloadKind === workload.workloadKind))).toBe(
+      workload.tokens.totalTokens,
+    );
+  expect(parts.reduce((turns, p) => turns + p.turnCount, 0)).toBe(result.totals.turnCount);
+  // Every filter narrows the parts like the rest of the report.
+  const feature = await service.query({ ...query, workloadKind: 'project_chat' });
+  expect(feature.byWorkloadModel!.map((p) => p.resolvedModelId).sort()).toEqual([
+    'model-A',
+    'model-B',
+  ]);
+  const model = await service.query({
+    ...query,
+    modelId: 'model-B',
+    connectionKey: 'codex:chatgpt',
+  });
+  expect(model.byWorkloadModel).toHaveLength(1);
+  const project = await service.query({
+    ...query,
+    projectId: '22222222-2222-4222-8222-222222222222',
+  });
+  expect(project.byWorkloadModel!.some((p) => p.workloadKind === 'briefing_assistant')).toBe(false);
+});
+
+// 2026-09-22 user request: tabs for Briefing and paper summaries at the bottom of the Usage screen.
+it('lists briefing and paper summary usage by local day and model, and nothing else there', async () => {
+  const global = '00000000-0000-4000-8000-000000000000';
+  const native = [
+    storedUsageRow({
+      invocationId: 'b1',
+      projectId: global,
+      workloadKind: 'briefing_summary',
+      resolvedModelId: 'model-A',
+      startedAt: '2026-08-18T16:00:00.000Z', // 19 August in Seoul
+    }),
+    storedUsageRow({
+      invocationId: 'b2',
+      projectId: global,
+      workloadKind: 'briefing_summary',
+      resolvedModelId: 'model-A',
+      startedAt: '2026-08-19T01:00:00.000Z',
+    }),
+    storedUsageRow({
+      invocationId: 'b3',
+      projectId: global,
+      workloadKind: 'briefing_summary',
+      resolvedModelId: 'model-B',
+      startedAt: '2026-08-19T02:00:00.000Z',
+    }),
+    storedUsageRow({
+      invocationId: 'p1',
+      projectId: global,
+      workloadKind: 'paper_summary',
+      resolvedModelId: 'model-A',
+      startedAt: '2026-08-20T03:00:00.000Z',
+    }),
+    storedUsageRow({
+      invocationId: 'a1',
+      projectId: global,
+      workloadKind: 'briefing_assistant',
+      resolvedModelId: 'model-A',
+      startedAt: '2026-08-20T03:00:00.000Z',
+    }),
+  ];
+  const service = new ModelUsageService(
+    storageFixture({ listStoredModelUsage: () => [] }),
+    workspaceFixture(),
+    async () => native,
+  );
+  const query = { period: 'week' as const, anchorDate: '2026-08-20', timeZone: 'Asia/Seoul' };
+  const result = await service.query(query);
+  expect(
+    result.byDayWorkloadModel!.map((row) => [
+      row.bucketKey,
+      row.workloadKind,
+      row.resolvedModelId,
+      row.turnCount,
+      row.tokens.totalTokens,
+    ]),
+  ).toEqual([
+    // Newest day first; the assistant is not a detail tab and is left out.
+    ['2026-08-20', 'paper_summary', 'model-A', 1, 120],
+    ['2026-08-19', 'briefing_summary', 'model-A', 2, 240],
+    ['2026-08-19', 'briefing_summary', 'model-B', 1, 120],
+  ]);
+  // The days of a feature add up to that feature's total in the same report.
+  for (const kind of ['briefing_summary', 'paper_summary'] as const)
+    expect(
+      result
+        .byDayWorkloadModel!.filter((row) => row.workloadKind === kind)
+        .reduce((sum, row) => sum + row.tokens.totalTokens, 0),
+    ).toBe(result.byWorkload.find((row) => row.workloadKind === kind)!.tokens.totalTokens);
+  // Filters narrow it like the rest of the report.
+  const filtered = await service.query({
+    ...query,
+    modelId: 'model-B',
+    connectionKey: 'codex:chatgpt',
+  });
+  expect(filtered.byDayWorkloadModel!.map((row) => row.resolvedModelId)).toEqual(['model-B']);
+});
 
 function storedUsageRow(overrides: Partial<StoredModelUsageRow> = {}): StoredModelUsageRow {
   return {
@@ -406,6 +614,69 @@ describe('ModelUsageService', () => {
         }),
       ],
     });
+  });
+
+  it('shows one row for the Codex account when older turns were recorded before the login was read', async () => {
+    // Turns recorded before GOSU read the Codex login say only "Codex"; the same account was
+    // later labelled "ChatGPT", and the user saw two rows for one login.
+    const early = storedUsageRow({
+      connectionKey: 'codex:unknown',
+      connectionLabel: 'Codex',
+      inputTokens: 400,
+      outputTokens: 100,
+      totalTokens: 500,
+    });
+    const later = storedUsageRow({
+      invocationId: '77777777-7777-4777-8777-777777777777',
+      threadId: 'thread-2',
+      turnId: 'turn-2',
+      inputTokens: 200,
+      outputTokens: 50,
+      totalTokens: 250,
+    });
+    const query = { period: 'day', anchorDate: '2026-08-20', timeZone: 'UTC' } as const;
+
+    const merged = await new ModelUsageService(
+      storageFixture({ listStoredModelUsage: () => [early, later] }),
+      workspaceFixture(),
+    ).query(query);
+
+    expect(merged.byConnection).toEqual([
+      expect.objectContaining({
+        connectionKey: 'codex:chatgpt',
+        connectionLabel: 'ChatGPT',
+        tokens: expect.objectContaining({ totalTokens: 750 }),
+      }),
+    ]);
+    // Drilling into the merged row keeps both turns, so the row and its detail agree.
+    const drilled = await new ModelUsageService(
+      storageFixture({ listStoredModelUsage: () => [early, later] }),
+      workspaceFixture(),
+    ).query({ ...query, connectionKey: 'codex:chatgpt' });
+    expect(drilled.byConnection.map((row) => row.tokens.totalTokens)).toEqual([750]);
+
+    // Two labelled Codex logins in the range: the unlabelled turns belong to neither for sure,
+    // so they keep their own row instead of being guessed into one.
+    const apiKey = storedUsageRow({
+      invocationId: '88888888-8888-4888-8888-888888888888',
+      threadId: 'thread-3',
+      turnId: 'turn-3',
+      connectionKey: 'codex:api-key',
+      connectionLabel: 'OpenAI API',
+      upstreamProviderId: 'openai',
+      inputTokens: 40,
+      outputTokens: 5,
+      totalTokens: 45,
+    });
+    const ambiguous = await new ModelUsageService(
+      storageFixture({ listStoredModelUsage: () => [early, later, apiKey] }),
+      workspaceFixture(),
+    ).query(query);
+    expect(ambiguous.byConnection.map((row) => row.connectionLabel).sort()).toEqual([
+      'ChatGPT',
+      'Codex',
+      'OpenAI API',
+    ]);
   });
 
   it('keeps resolved model token totals separate even on the same connection', async () => {

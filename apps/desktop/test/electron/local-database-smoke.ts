@@ -158,6 +158,32 @@ async function verifyWorkspaceTrashPurge(rootUserData: string, fixedTimestamp: s
       pendingSummary: () => database.pendingWorkspaceSummary(),
     });
     const activeProject = await workspace.createProject({ name: 'Active purge fixture' });
+    const beforePersonal = database.pendingWorkspaceChanges().length;
+    const personalTask = await workspace.createTask({
+      projectId: null,
+      title: 'Synthetic personal task',
+    });
+    invariant(
+      database
+        .loadWorkspaceState()
+        ?.tasks.some((t) => t.id === personalTask.id && t.projectId === null),
+      'personal_task_not_persisted',
+    );
+    invariant(
+      database.pendingWorkspaceChanges().length === beforePersonal,
+      'personal_task_leaked_to_project_sync',
+    );
+    const completedPersonal = await workspace.updateTask({
+      projectId: null,
+      taskId: personalTask.id,
+      expectedVersion: personalTask.version,
+      status: 'done',
+    });
+    invariant(completedPersonal.status === 'done', 'personal_task_update_failed');
+    invariant(
+      database.pendingWorkspaceChanges().length === beforePersonal,
+      'personal_task_update_leaked_to_project_sync',
+    );
     const purgedProject = await workspace.createProject({ name: 'Trashed purge fixture' });
     const purgedManuscriptId = randomUUID();
     const purgedBindingId = randomUUID();

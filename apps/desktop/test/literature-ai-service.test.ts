@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   LiteratureAiService,
-  LiteratureAiServiceError,
+  type LiteratureAiServiceError,
   type LiteratureAiStorage,
 } from '../src/main/literature-ai-service';
 import type {
@@ -101,10 +101,15 @@ class FakeCodex extends EventEmitter {
   early = false;
   autoComplete = true;
   reroutedModelId: string | null = null;
+  turnStatus = 'completed';
+  failStart = false;
+  readonly instructions: Array<string | undefined> = [];
   private threadCount = 0;
   private turnCount = 0;
 
-  async startThread() {
+  async startThread(input?: { developerInstructions?: string }) {
+    if (this.failStart) throw new Error('codex_not_connected');
+    this.instructions.push(input?.developerInstructions);
     this.threadCount += 1;
     return { threadId: `literature-thread-${this.threadCount}` };
   }
@@ -145,7 +150,7 @@ class FakeCodex extends EventEmitter {
       });
       this.emit('notification', {
         method: 'turn/completed',
-        params: { threadId: input.threadId, turn: { id: turnId, status: 'completed' } },
+        params: { threadId: input.threadId, turn: { id: turnId, status: this.turnStatus } },
       });
     };
     if (this.autoComplete) {
@@ -376,5 +381,188 @@ describe('LiteratureAiService', () => {
       { threadId: 'literature-thread-1', turnId: 'literature-turn-1' },
     ]);
     expect(storage.applied).toBeUndefined();
+  });
+  describe('concrete failure reasons', () => {
+    function fixture(configure: (codex: FakeCodex) => void) {
+      const projectId = randomUUID();
+      const item = record(projectId);
+      const storage = new MemoryStorage([item]);
+      const codex = new FakeCodex();
+      codex.response = responseFor(item);
+      configure(codex);
+      const service = new LiteratureAiService({
+        storage,
+        codex,
+        prepareDirectory: async () => '/tmp/gosu-literature-fixture',
+        timeoutMs: 5_000,
+      });
+      return { projectId, item, storage, codex, service };
+    }
+
+    it('says the model ran out of time instead of calling AI unavailable', async () => {
+      vi.useFakeTimers();
+      try {
+        const { projectId, item, storage, codex, service } = fixture((fake) => {
+          fake.autoComplete = false;
+        });
+        const turn = service.organize({ projectId, recordIds: [item.id] });
+        const outcome = expect(turn).rejects.toMatchObject({ code: 'literature_ai_timeout' });
+        await vi.advanceTimersByTimeAsync(5_001);
+        await outcome;
+        expect(codex.interrupted).toHaveLength(1);
+        expect(codex.released).toEqual(['literature-thread-1']);
+        expect(storage.applied).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('reports a turn the provider ended without completing as a model failure', async () => {
+      const { projectId, item, storage, service } = fixture((fake) => {
+        fake.turnStatus = 'failed';
+      });
+
+      await expect(service.organize({ projectId, recordIds: [item.id] })).rejects.toMatchObject({
+        code: 'literature_ai_turn_failed',
+      });
+      expect(storage.applied).toBeUndefined();
+    });
+
+    it('reports a provider that cannot start a thread', async () => {
+      const { projectId, item, service } = fixture((fake) => {
+        fake.failStart = true;
+      });
+
+      await expect(service.organize({ projectId, recordIds: [item.id] })).rejects.toMatchObject({
+        code: 'literature_ai_start_failed',
+      });
+    });
+  });
+
+  describe('search planning', () => {
+    function planner(response: unknown) {
+      const projectId = randomUUID();
+      const codex = new FakeCodex();
+      codex.response = response;
+      const bindThread = vi.fn();
+      const releaseThread = vi.fn();
+      const service = new LiteratureAiService({
+        storage: new MemoryStorage([]),
+        codex,
+        usage: { bindThread, releaseThread },
+        prepareDirectory: async () => '/tmp/gosu-literature-fixture',
+        timeoutMs: 5_000,
+      });
+      return { projectId, codex, service, bindThread, releaseThread };
+    }
+    const question =
+      'TabPFN 클래스 확장과 관련된 논문 찾아줘. 라벨 임베딩 확장, Graphical Lasso를 중심으로 정리해줘.';
+
+    it('turns a Korean request into bounded English keyword queries with provenance tags', async () => {
+      const { projectId, codex, service, bindThread, releaseThread } = planner({
+        queries: [
+          {
+            query: '  TabPFN many-class classification  ',
+            topics: ['tabular foundation models'],
+            keywords: ['TabPFN', 'class expansion'],
+          },
+          {
+            query: 'graphical lasso high-dimensional covariance estimation',
+            topics: ['covariance estimation'],
+            keywords: ['graphical lasso'],
+          },
+        ],
+      });
+
+      const plan = await service.planSearch({
+        projectId,
+        question,
+        requestedModelId: 'fixture-model',
+        reasoningOptionId: 'low',
+      });
+
+      expect(plan.queries).toEqual([
+        {
+          query: 'TabPFN many-class classification',
+          topics: ['tabular foundation models'],
+          keywords: ['TabPFN', 'class expansion'],
+        },
+        {
+          query: 'graphical lasso high-dimensional covariance estimation',
+          topics: ['covariance estimation'],
+          keywords: ['graphical lasso'],
+        },
+      ]);
+      expect(plan.invocation.requestedModelId).toBe('fixture-model');
+      expect(codex.prompts[0]).toContain(question);
+      expect(codex.instructions[0]).toContain('untrusted');
+      expect(codex.settings[0]).toEqual({
+        requestedModelId: 'fixture-model',
+        reasoningOptionId: 'low',
+      });
+      expect(bindThread).toHaveBeenCalledWith('literature-thread-1', {
+        workloadKind: 'literature_organize',
+        projectId,
+      });
+      expect(releaseThread).toHaveBeenCalledWith('literature-thread-1');
+      expect(codex.released).toEqual(['literature-thread-1']);
+    });
+
+    it('rejects a plan that is still not provider-ready', async () => {
+      for (const queries of [
+        [{ query: '라벨 임베딩 확장', topics: [], keywords: [] }],
+        [{ query: 'find papers', topics: [], keywords: [] }],
+        [],
+        Array.from({ length: 4 }, (_, index) => ({
+          query: `tabular model ${index}`,
+          topics: [],
+          keywords: [],
+        })),
+      ]) {
+        const { projectId, service } = planner({ queries });
+        await expect(service.planSearch({ projectId, question })).rejects.toMatchObject({
+          code: 'literature_ai_invalid_response',
+        });
+      }
+    });
+
+    it('drops duplicate queries and keeps the first three words-only differences apart', async () => {
+      const { projectId, service } = planner({
+        queries: [
+          { query: 'TabPFN class expansion', topics: [], keywords: [] },
+          { query: 'tabpfn  class expansion', topics: [], keywords: [] },
+          { query: 'label embedding expansion', topics: [], keywords: [] },
+        ],
+      });
+
+      const plan = await service.planSearch({ projectId, question });
+
+      expect(plan.queries.map(({ query }) => query)).toEqual([
+        'TabPFN class expansion',
+        'label embedding expansion',
+      ]);
+    });
+
+    it('does not plan while another literature AI turn runs for the project', async () => {
+      const projectId = randomUUID();
+      const item = record(projectId);
+      const codex = new FakeCodex();
+      codex.autoComplete = false;
+      const service = new LiteratureAiService({
+        storage: new MemoryStorage([item]),
+        codex,
+        prepareDirectory: async () => '/tmp/gosu-literature-fixture',
+        timeoutMs: 5_000,
+      });
+      const running = service.organize({ projectId, recordIds: [item.id] });
+      await vi.waitFor(() => expect(codex.prompts).toHaveLength(1));
+
+      await expect(service.planSearch({ projectId, question })).rejects.toMatchObject({
+        code: 'literature_ai_busy',
+      });
+
+      await service.cancel({ projectId });
+      await expect(running).rejects.toMatchObject({ code: 'literature_ai_interrupted' });
+    });
   });
 });

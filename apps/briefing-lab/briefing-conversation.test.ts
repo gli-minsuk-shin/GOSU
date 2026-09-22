@@ -131,3 +131,91 @@ it('restores encrypted conversations on a new store instance, preserving order, 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+it('/new starts an empty model context but keeps every record for the screen and for search', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'gosu-conversation-new-'));
+  const owner = <T>(fn: () => T) => briefingClientContext.run('a'.repeat(64), fn);
+  const make = () => new BriefingWorkspaceStore(dir, async () => Buffer.alloc(32, 7));
+  try {
+    const store = make();
+    const profile = await owner(() =>
+      store.save(
+        {
+          routineId: 'r',
+          name: 'fixture',
+          timeZone: 'Asia/Seoul',
+          live: defaultLiveSettings(),
+          interest: { keywords: [], excluded: [] },
+          preferences: defaultAssistantPreferences(),
+        },
+        async () => undefined,
+      ),
+    );
+    // Nothing to set aside yet: the command reports that instead of drawing an empty divider.
+    expect(await owner(() => store.startNewConversationContext(profile))).toEqual({
+      started: false,
+      contextStartedAt: '',
+      setAside: 0,
+    });
+    const before = [
+      { role: 'user' as const, text: 'old question', createdAt: '2026-09-13T00:00:00Z' },
+      { role: 'assistant' as const, text: 'old answer', createdAt: '2026-09-13T00:00:01Z' },
+    ];
+    for (const message of before) await owner(() => store.appendConversation(profile, message));
+    await owner(() =>
+      store.saveConversationCheckpoint(profile, {
+        through: 2,
+        digest: conversationDigest(before),
+        summary: 'summary of the old context',
+        createdAt: '2026-09-13T00:00:02Z',
+      }),
+    );
+    const started = await owner(() => store.startNewConversationContext(profile));
+    expect(started).toMatchObject({ started: true, setAside: 2 });
+    expect(Number.isFinite(Date.parse(started.contextStartedAt))).toBe(true);
+    // A second /new on an already empty context changes nothing and keeps the first divider.
+    expect(await owner(() => store.startNewConversationContext(profile))).toEqual({
+      started: false,
+      contextStartedAt: started.contextStartedAt,
+      setAside: 0,
+    });
+    const restarted = make();
+    expect(await owner(() => restarted.conversation(profile))).toEqual([]);
+    // The old summary described the context that ended; it must not come back under the new one.
+    expect(await owner(() => restarted.conversationCheckpoint(profile))).toBeUndefined();
+    expect((await owner(() => restarted.conversationDisplay(profile))).messages).toEqual(before);
+    const after = [
+      { role: 'user' as const, text: 'new question', createdAt: new Date().toISOString() },
+      { role: 'assistant' as const, text: 'new answer', createdAt: new Date().toISOString() },
+    ];
+    for (const message of after) await owner(() => restarted.appendConversation(profile, message));
+    expect(await owner(() => restarted.conversation(profile))).toEqual(after);
+    expect(await owner(() => restarted.conversationDisplay(profile))).toEqual({
+      messages: [...before, ...after],
+      otherScopeMessages: 0,
+      contextStartedAt: started.contextStartedAt,
+    });
+    // Checkpoints count from the start of the current context, exactly like the model's list.
+    const checkpoint = {
+      through: 2,
+      digest: conversationDigest(after),
+      summary: 'summary of the new context',
+      createdAt: new Date().toISOString(),
+    };
+    await owner(() => restarted.saveConversationCheckpoint(profile, checkpoint));
+    expect(await owner(() => make().conversationCheckpoint(profile))).toEqual(checkpoint);
+    await expect(
+      owner(() =>
+        restarted.saveConversationCheckpoint(profile, {
+          ...checkpoint,
+          digest: conversationDigest(before),
+        }),
+      ),
+    ).rejects.toThrow('assistant_compaction_stale');
+    await expect(restarted.startNewConversationContext(profile)).rejects.toThrow(
+      'assistant_settings_changed',
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

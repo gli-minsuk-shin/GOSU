@@ -4,6 +4,7 @@ import {
   canonicalMailSource,
   deduplicateVerifiedMail,
   sameVerifiedMail,
+  sameDeliveredMail,
   pendingMailRechecks,
 } from './mail-duplicates';
 import { summarySourceDigest } from '../briefing-summary-cache';
@@ -79,6 +80,31 @@ it('never merges on title alone, across differing previews, or within one accoun
     }),
   ).toBe(false);
   expect(deduplicateVerifiedMail([mail('a'), mail('a')])).toHaveLength(2);
+});
+it('shows one row for the same Message-ID delivered to two accounts even without a source proof', () => {
+  const copy = (account: string) => ({
+    ...mail(account),
+    mailContentProof: undefined,
+    mailMessageUrl: 'message://%3Csame%40example.test%3E',
+  });
+  const result = deduplicateVerifiedMail([copy('a'), copy('b')]);
+  expect(result).toHaveLength(1);
+  expect(result[0]!.mailCopies?.map((c) => c.account.id)).toEqual(['a', 'b']);
+  // A proof on only one side does not block the match; differing verified sources do.
+  expect(sameDeliveredMail(copy('a'), { ...copy('b'), mailContentProof: proof })).toBe(true);
+  expect(
+    sameDeliveredMail(
+      { ...copy('a'), mailContentProof: proof },
+      { ...copy('b'), mailContentProof: { ...proof, digest: 'c'.repeat(64) } },
+    ),
+  ).toBe(false);
+  // Not merged: different Message-ID, different subject, missing link, or the same account.
+  expect(
+    sameDeliveredMail(copy('a'), { ...copy('b'), mailMessageUrl: 'message://%3Cother%40x%3E' }),
+  ).toBe(false);
+  expect(sameDeliveredMail(copy('a'), { ...copy('b'), title: 'Other' })).toBe(false);
+  expect(sameDeliveredMail(copy('a'), { ...copy('b'), mailMessageUrl: undefined })).toBe(false);
+  expect(deduplicateVerifiedMail([copy('a'), copy('a')])).toHaveLength(2);
 });
 it('rechecks legacy cross-account Message-ID candidates once, not every summary or every mailbox', () => {
   const legacy = ['a', 'b'].map((id) => ({

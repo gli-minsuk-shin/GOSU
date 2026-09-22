@@ -1,5 +1,6 @@
 import {
   DEFAULT_WORKSPACE_BOARD_SETTINGS,
+  PERSONAL_TASK_GROUP,
   WORKSPACE_TASK_STATUSES,
   resolveWorkspaceBoardSettings,
   type ProjectRecord,
@@ -95,7 +96,8 @@ export function joinWorkspaceGlobalBoardTasks(
 
   return tasks
     .flatMap((task) => {
-      const project = activeProjects.get(task.projectId);
+      const project =
+        task.projectId === null ? PERSONAL_TASK_GROUP : activeProjects.get(task.projectId);
       return project
         ? [
             {

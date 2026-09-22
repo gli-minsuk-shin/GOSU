@@ -1113,6 +1113,44 @@ export const ProjectChatSessionInputSchema = z
   .object({ projectId: uuidSchema, sessionId: uuidSchema.optional() })
   .strict();
 
+/** `/compact`: the model is the one a turn in this session would use (Settings → Agent). */
+export const CompactProjectChatSessionInputSchema = z
+  .object({
+    projectId: uuidSchema,
+    sessionId: uuidSchema,
+    requestedModelId: z.string().trim().min(1).max(256).nullable(),
+  })
+  .strict();
+export type CompactProjectChatSessionInput = z.infer<typeof CompactProjectChatSessionInputSchema>;
+
+export const PROJECT_CHAT_COMPACTION_REASONS = [
+  /** This build has no summarizer or checkpoint store wired. */
+  'engine_unavailable',
+  /** The model's context size is a guess, so a plan made from it would not be trustworthy. */
+  'context_window_unknown',
+  /** Only Codex and Claude Code turns use GOSU's summary; other providers keep their own context. */
+  'provider_unsupported',
+  /** The agent settings changed while the summary was being written; nothing was saved. */
+  'context_changed',
+  /** The summarizer returned an empty or oversized summary; nothing was saved. */
+  'summary_invalid',
+  /** Even the summary plus the latest messages does not fit the model's window. */
+  'context_too_large',
+  /** The summarizing model call failed (connection, sign-in, time limit). */
+  'model_failed',
+] as const;
+
+/** What `/compact` did. Expected failures are outcomes with a bounded reason, never provider text. */
+export const ProjectChatCompactionReceiptSchema = z
+  .object({
+    outcome: z.enum(['compacted', 'nothing_to_compact', 'unavailable', 'failed', 'cancelled']),
+    summarizedMessages: z.number().int().nonnegative().max(5000),
+    reason: z.enum(PROJECT_CHAT_COMPACTION_REASONS).optional(),
+    contextUsage: ContextUsageSchema.optional(),
+  })
+  .strict();
+export type ProjectChatCompactionReceipt = z.infer<typeof ProjectChatCompactionReceiptSchema>;
+
 export const UpdateProjectChatQueuedTurnInputSchema = z
   .object({
     projectId: uuidSchema,

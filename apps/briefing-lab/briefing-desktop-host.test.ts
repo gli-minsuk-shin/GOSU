@@ -24,11 +24,27 @@ it('owns a single loopback host, serves only bounded static paths and never adop
       calendarLimited: false,
     })),
     startScheduling: vi.fn(),
+    hostReads: {
+      status: vi.fn(async () => ({
+        calendar: true,
+        mail: false,
+        briefings: true,
+        papers: true,
+        routineName: 'Personal',
+        asksEachTime: false,
+      })),
+      calendar: vi.fn(async () => ({ events: [] })),
+      mail: vi.fn(async () => ({ messages: [] })),
+      briefings: vi.fn(async () => ({ briefings: [] })),
+      papers: vi.fn(async () => ({ papers: [] })),
+    },
     close: vi.fn(),
   };
   const factory = vi.fn(() => service);
   const consent = vi.fn(async () => undefined);
   const projectBridge = vi.fn(async () => ({ projects: [] }));
+  const reuseApprovedScopes = () => true;
+  const taskActions = { options: vi.fn(), create: vi.fn() };
   const host = new BriefingDesktopHost(
     dir,
     0,
@@ -38,6 +54,8 @@ it('owns a single loopback host, serves only bounded static paths and never adop
     consent,
     projectBridge,
     undefined,
+    reuseApprovedScopes,
+    taskActions,
   );
   hosts.push(host);
   const [a, b] = await Promise.all([host.open(), host.open()]);
@@ -50,6 +68,8 @@ it('owns a single loopback host, serves only bounded static paths and never adop
     consent,
     projectBridge,
     undefined,
+    reuseApprovedScopes,
+    taskActions,
   );
   expect(service.startScheduling).toHaveBeenCalledOnce();
   expect((await host.notifications()).calendarState).toBe('disabled');

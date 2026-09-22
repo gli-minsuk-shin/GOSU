@@ -43,6 +43,12 @@ export type ModelModule = Readonly<{
   activation: string | null;
   formula: string;
   explanation: string;
+  presentation?: Readonly<{
+    purpose: string;
+    keyEquation: string;
+    shapeNotes: string;
+    uncertainties: readonly string[];
+  }>;
   parameterCount: number;
   codeReference: string;
   repeat?: ModelModuleRepeat;

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { normalizedMailSender } from './src/email-presentation';
 import { homedir } from 'node:os';
 import { safeAppleMailUrl } from './src/apple-mail-url';
 import { MailNativeIdSchema } from './src/mail-open-contract';
@@ -13,7 +14,7 @@ const MailboxSchema = z
   })
   .strict();
 const RequestSchema = MailboxSchema.extend({
-  action: z.enum(['locate', 'mark-read', 'read-status']),
+  action: z.enum(['locate', 'mark-read', 'read-status', 'read-sender']),
   messageId: z.string().min(1).max(998),
   nativeId: MailNativeIdSchema.optional(),
   itemId: z
@@ -24,7 +25,7 @@ const RequestSchema = MailboxSchema.extend({
 export const APPLE_MAIL_MARK_READ = String.raw`
 function run(argv) {
   var q=JSON.parse(argv[0]), mail=Application('Mail');
-  if(q.action!=='locate'&&q.action!=='mark-read'&&q.action!=='read-status')throw Error('mail_mark_invalid');
+  if(q.action!=='locate'&&q.action!=='mark-read'&&q.action!=='read-status'&&q.action!=='read-sender')throw Error('mail_mark_invalid');
   var accounts=mail.accounts().filter(function(a){return a.id()===q.accountId;});
   if(accounts.length!==1)throw Error('mail_mark_target_missing');
   var boxes=accounts[0].mailboxes(), box;
@@ -47,7 +48,9 @@ function run(argv) {
   }
   if(!/^\d+$/.test(q.nativeId||''))throw Error('mail_mark_invalid');
   function resolve(){var m=box.messages.byId(Number(q.nativeId));if(!m.exists()||String(m.id())!==q.nativeId||normalized(m.messageId())!==q.messageId)throw Error('mail_mark_target_missing');return m;}
-  var m=resolve(), initial=m.readStatus();
+  var m=resolve();
+  if(q.action==='read-sender')return JSON.stringify({sender:String(m.sender()||''),id:q.nativeId});
+  var initial=m.readStatus();
   if(q.action==='read-status'){
     if(typeof initial!=='boolean')throw Error('mail_mark_unconfirmed');
     return JSON.stringify({status:initial?'read':'unread',id:q.nativeId});
@@ -180,6 +183,38 @@ async function resolveTarget(
 }
 const stateSchema = (id: string) =>
   z.object({ status: z.enum(['read', 'unread']), id: z.literal(id) }).strict();
+
+/** Recover only a verified message's From header. Never reads its body or changes read status. */
+export async function readOriginalMailSender(
+  mailbox: z.infer<typeof MailboxSchema>,
+  itemId: string,
+  url: string,
+  signal: AbortSignal,
+  beforeRead: () => Promise<void>,
+  run = runMailMarkRead,
+  nativeIdHint?: string,
+) {
+  const { scope, messageId, nativeId } = await resolveTarget(
+    mailbox,
+    itemId,
+    url,
+    signal,
+    beforeRead,
+    run,
+    nativeIdHint,
+  );
+  await beforeRead();
+  if (signal.aborted) throw new Error('source_cancelled');
+  const result = z
+    .object({ id: z.literal(nativeId), sender: z.string().max(1000) })
+    .strict()
+    .parse(await run({ ...scope, action: 'read-sender', messageId, nativeId }, signal));
+  const sender = normalizedMailSender(result.sender);
+  if (!sender) throw new Error('mail_sender_unavailable');
+  await beforeRead();
+  if (signal.aborted) throw new Error('source_cancelled');
+  return sender;
+}
 
 /** Only explicit user mark requests reach the one setter; reconciliation never repeats it. */
 export async function markOriginalMailRead(

@@ -2486,6 +2486,95 @@ describe('LectureStudioService', () => {
     await expect(disconnectedTurn).rejects.toMatchObject({ code: 'lecture_codex_unavailable' });
   });
 
+  it('generates on a routed Claude Code model with a long CLI limit and maps its sign-in failure', async () => {
+    const claudeThread = (target: ReturnType<typeof fixture>) => {
+      target.codex.startThread = async (input: Record<string, unknown>) => {
+        target.codex.startInput = input;
+        return { threadId: 'claude-code:thread:lecture' };
+      };
+    };
+    const create = (target: ReturnType<typeof fixture>, title: string) =>
+      target.service.create({
+        title,
+        kind: 'lecture',
+        durationMinutes: null,
+        outputProjectId: target.projectA,
+        sourceProjectIds: [target.projectA],
+        sourceSelection: {
+          literature: [{ projectId: target.projectA, recordId: target.paperA.id }],
+          experiments: [],
+        },
+      });
+
+    const routed = fixture();
+    routed.codex.response = latexResponse(['P1'], 1, 'Claude-routed lecture.');
+    claudeThread(routed);
+    const routedStudio = await create(routed, 'Claude lecture');
+    await routed.service.generate({
+      studioId: routedStudio.id,
+      expectedVersion: routedStudio.version,
+      requestedModelId: 'claude-code:opus-5',
+      reasoningOptionId: 'high',
+    });
+    expect(routed.codex.startInput).toMatchObject({
+      modelId: 'claude-code:opus-5',
+      turnTimeoutMs: expect.any(Number),
+    });
+    expect(routed.codex.lastThreadId).toBe('claude-code:thread:lecture');
+
+    const codexOnly = fixture();
+    codexOnly.codex.response = latexResponse(['P1'], 1, 'Codex lecture.');
+    const codexStudio = await create(codexOnly, 'Codex lecture');
+    await codexOnly.service.generate({
+      studioId: codexStudio.id,
+      expectedVersion: codexStudio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    expect(codexOnly.codex.startInput).not.toHaveProperty('turnTimeoutMs');
+
+    const expired = fixture();
+    claudeThread(expired);
+    expired.codex.terminalStatus = 'failed';
+    expired.codex.terminalError = { message: 'claude_code_auth_required' };
+    const expiredStudio = await create(expired, 'Expired Claude sign-in');
+    await expect(
+      expired.service.generate({
+        studioId: expiredStudio.id,
+        expectedVersion: expiredStudio.version,
+        requestedModelId: 'claude-code:opus-5',
+        reasoningOptionId: 'high',
+      }),
+    ).rejects.toMatchObject({ code: 'lecture_auth_required' });
+  });
+
+  it('keeps a Codex lecture turn running when only the Claude Code provider disconnects', async () => {
+    const target = fixture();
+    target.codex.response = latexResponse(['P1'], 1, 'Codex lecture survives.');
+    target.codex.deferCompletion = true;
+    const studio = await target.service.create({
+      title: 'Codex survives Claude disconnect',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: target.projectA,
+      sourceProjectIds: [target.projectA],
+      sourceSelection: {
+        literature: [{ projectId: target.projectA, recordId: target.paperA.id }],
+        experiments: [],
+      },
+    });
+    const generation = target.service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    await vi.waitFor(() => expect(target.codex.lastTurnId).not.toBeNull());
+    target.codex.emit('disconnected', { providerId: 'claude-code' });
+    target.codex.completeDeferred();
+    await expect(generation).resolves.toBeDefined();
+  });
+
   it('preserves a native-image model rejection across terminal and disconnect orderings', async () => {
     const terminal = fixture();
     terminal.codex.terminalStatus = 'failed';

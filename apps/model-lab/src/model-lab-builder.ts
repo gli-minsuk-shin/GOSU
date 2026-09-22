@@ -46,6 +46,7 @@ export type ModelBuildProgress = Readonly<{
 }>;
 
 export type ModelBuildOptions = Readonly<{
+  signal?: AbortSignal;
   onProgress?: (progress: ModelBuildProgress) => void;
 }>;
 
@@ -369,7 +370,7 @@ export async function prepareModelBuildArtifact(file: File): Promise<PreparedMod
 }
 
 /**
- * Model Copilot attachments share the bounded artifact transport used by the builder, but JSON is
+ * Model Assistant attachments share the bounded artifact transport used by the builder, but JSON is
  * treated as conversation evidence instead of a ModelIR import. Keeping this entry point separate
  * prevents the chat composer from ever creating or mutating a model session.
  */
@@ -447,6 +448,10 @@ export function createModelBuilder(fetchImpl: FetchLike = modelLabFetch) {
       selection?: ModelLabModelSelection,
       options?: ModelBuildOptions,
     ): Promise<ModelBuildResult> {
+      const checkCancellation = () => {
+        if (options?.signal?.aborted) throw Error('model_copilot_aborted');
+      };
+      checkCancellation();
       const response = await fetchImpl(MODEL_BUILDER_ENDPOINT, {
         method: 'POST',
         headers: {
@@ -454,49 +459,59 @@ export function createModelBuilder(fetchImpl: FetchLike = modelLabFetch) {
           Accept: 'application/x-ndjson, application/json',
         },
         body: JSON.stringify({ artifacts, selection }),
+        ...(options?.signal ? { signal: options.signal } : {}),
       });
+      checkCancellation();
       const contentType = response.headers?.get?.('content-type') ?? '';
       if (contentType.includes('application/x-ndjson') && response.body) {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
         let result: ModelBuildResult | null = null;
-        for (;;) {
-          const chunk = await reader.read();
-          buffer += decoder.decode(chunk.value, { stream: !chunk.done });
+        try {
           for (;;) {
-            const newline = buffer.indexOf('\n');
-            if (newline < 0) break;
-            const line = buffer.slice(0, newline);
-            buffer = buffer.slice(newline + 1);
-            if (!line.trim()) continue;
-            const event = JSON.parse(line) as unknown;
-            if (!event || typeof event !== 'object' || Array.isArray(event)) continue;
-            const record = event as Record<string, unknown>;
-            if (record.type === 'progress' && isModelBuildProgress(record.progress)) {
-              options?.onProgress?.(record.progress);
-            } else if (record.type === 'result') {
-              result = validatedModelBuildResult(
-                record.result,
-                artifacts.map((artifact) => artifact.name),
-              );
-            } else if (record.type === 'error') {
-              const stage = typeof record.stage === 'string' ? record.stage : 'unknown stage';
-              const detail =
-                typeof record.detail === 'string' ? record.detail : 'Model build failed.';
-              options?.onProgress?.({
-                phase: 'failed',
-                message: `Failed during ${stage}: ${detail}`,
-              });
-              throw new Error(detail);
+            checkCancellation();
+            const chunk = await reader.read();
+            checkCancellation();
+            buffer += decoder.decode(chunk.value, { stream: !chunk.done });
+            for (;;) {
+              const newline = buffer.indexOf('\n');
+              if (newline < 0) break;
+              const line = buffer.slice(0, newline);
+              buffer = buffer.slice(newline + 1);
+              if (!line.trim()) continue;
+              const event = JSON.parse(line) as unknown;
+              if (!event || typeof event !== 'object' || Array.isArray(event)) continue;
+              const record = event as Record<string, unknown>;
+              if (record.type === 'progress' && isModelBuildProgress(record.progress)) {
+                options?.onProgress?.(record.progress);
+              } else if (record.type === 'result') {
+                result = validatedModelBuildResult(
+                  record.result,
+                  artifacts.map((artifact) => artifact.name),
+                );
+              } else if (record.type === 'error') {
+                const stage = typeof record.stage === 'string' ? record.stage : 'unknown stage';
+                const detail =
+                  typeof record.detail === 'string' ? record.detail : 'Model build failed.';
+                options?.onProgress?.({
+                  phase: 'failed',
+                  message: `Failed during ${stage}: ${detail}`,
+                });
+                throw new Error(detail);
+              }
             }
+            if (chunk.done) break;
           }
-          if (chunk.done) break;
+        } finally {
+          await reader.cancel().catch(() => undefined);
+          reader.releaseLock();
         }
         if (!response.ok || !result) throw new Error('Model builder returned no result.');
         return result;
       }
       const payload: unknown = await response.json();
+      checkCancellation();
       if (!response.ok || !payload || typeof payload !== 'object') {
         const detail =
           payload && typeof payload === 'object' && 'detail' in payload

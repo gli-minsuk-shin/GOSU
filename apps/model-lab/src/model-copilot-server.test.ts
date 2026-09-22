@@ -109,7 +109,7 @@ function expectEveryObjectPropertyRequired(schema: unknown, path = 'root'): void
   }
 }
 
-describe('Model Copilot server prompt boundary', () => {
+describe('Model Assistant server prompt boundary', () => {
   it('resumes only freshly audited narrative-only candidates and requests small patches instead of a whole graph', () => {
     const port = (name: string, shape: (string | number)[], binding: string) => ({
       name,
@@ -250,7 +250,8 @@ describe('Model Copilot server prompt boundary', () => {
     expect(prompt).toContain('Never invent runtime measurements');
     expect(prompt).toContain('use one operation per line');
     expect(prompt).toContain('Reconcile transform, formula, and explanation together');
-    expect(prompt).toContain('CURRENT VALIDATED STATIC MODELIR');
+    expect(prompt).toContain('CURRENT SAVED STATIC MODELIR');
+    expect(prompt).toContain('may contain legacy defects');
     expect(prompt).not.toContain('"gradientEvidence"');
     expect(prompt).not.toContain('"checkpoints"');
     expect(compactEditableModelSeed(residualClassifier)).not.toHaveProperty('gradientEvidence');
@@ -655,10 +656,26 @@ describe('Model Copilot server prompt boundary', () => {
       catalog.models.map((model) => [model.providerId, model.modelId, model.isDefault]),
     ).toEqual([
       ['codex', 'gpt-5.6-sol', true],
+      ['claude-code', 'claude-code:haiku', false],
       ['claude-code', MODEL_LAB_CLAUDE_CODE_SONNET_ID, false],
+      ['claude-code', 'claude-code:sonnet-5', false],
       ['claude-code', MODEL_LAB_CLAUDE_CODE_OPUS_ID, false],
       ['claude-code', MODEL_LAB_CLAUDE_CODE_OPUS_5_ID, false],
     ]);
+    const current = standaloneModelCopilotCatalog('2026-09-16T00:00:00.000Z', {
+      version: '2.1.272 (Claude Code)',
+      subscriptionType: 'max',
+    });
+    expect(current.models.at(-1)).toMatchObject({
+      providerId: 'claude-code',
+      modelId: 'claude-code:fable-5-1',
+      displayName: 'Claude Code · Fable 5.1 (subscription)',
+      metadata: { upstreamModelId: 'claude-fable-5-1' },
+    });
+    expect(current.models.find((model) => model.modelId === 'claude-code:haiku')).toMatchObject({
+      contextWindowTokens: 200_000,
+      metadata: { upstreamModelId: 'claude-haiku-4-5' },
+    });
     expect(
       resolveModelCopilotSelection(catalog, {
         providerId: 'claude-code',
@@ -678,7 +695,7 @@ describe('Model Copilot server prompt boundary', () => {
     ).toBe(1_000_000);
   });
 
-  it('grounds Copilot in an inline-expanded submodule selected inside its parent graph', () => {
+  it('grounds Assistant in an inline-expanded submodule selected inside its parent graph', () => {
     const composition = composeModelSubgraphs(
       overviewModel(tropicLambdaPathCompiler, 'overview'),
       sampleModels,
@@ -906,9 +923,9 @@ describe('Model Builder server prompt boundary', () => {
       prompt: 'x'.repeat(114_241),
       cwd: process.cwd(),
     });
-    expect(plan[0]?.timeoutMs).toBe(600_000);
+    expect(plan[0]?.timeoutMs).toBe(1_800_000);
     expect(modelBuilderUserFacingError('model_builder_large_source_timeout')).toContain(
-      '10 minutes',
+      '30 minutes',
     );
   });
 
@@ -1002,7 +1019,7 @@ describe('Model Builder server prompt boundary', () => {
       timeoutMs: MODEL_BUILDER_TIMEOUT_MS,
       cwd: '/tmp/model-builder',
     });
-    expect(MODEL_BUILDER_TIMEOUT_MS).toBe(300_000);
+    expect(MODEL_BUILDER_TIMEOUT_MS).toBe(900_000);
     expect(MODEL_BUILDER_REASONING).toBe('medium');
     expect(plan[0]?.args.filter((argument) => argument === '--ignore-user-config')).toHaveLength(1);
     expect(plan[0]?.args).toContain('gpt-5.6-luna');
@@ -1025,7 +1042,7 @@ describe('Model Builder server prompt boundary', () => {
       'Codex exited before producing a ModelIR result',
     );
     expect(modelBuilderUserFacingError('model_copilot_codex_exit_1')).not.toContain('PDF');
-    expect(modelBuilderUserFacingError('model_copilot_timeout')).toContain('within 5 minutes');
+    expect(modelBuilderUserFacingError('model_copilot_timeout')).toContain('within 15 minutes');
     expect(modelBuilderUserFacingError('model_builder_source_context_exceeded')).toContain(
       'did not create or cache an incomplete graph',
     );

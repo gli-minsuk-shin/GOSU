@@ -8,9 +8,11 @@ import { bottleneckAutoencoder, residualClassifier } from './src/sample-models';
 import { projectModelLabInitialWorkspace } from './src/project-model-workspace';
 import {
   initialModelPseudocodeWorkspace,
+  modelToPseudocode,
   serializeModelPseudocodeWorkspace,
   MODEL_PSEUDOCODE_WORKSPACE_STORAGE_KEY,
 } from './src/model-pseudocode';
+import { PROJECT_MODEL_RECEIVED_COPIES_KEY } from './src/project-model-transfer';
 import { randomUUID } from 'node:crypto';
 
 const projectA = '11111111-1111-4111-8111-111111111111';
@@ -199,5 +201,40 @@ describe('bundled project Model Lab host', () => {
     const html = await (await fetch(a.url)).text();
     for (const key of ['workspace', 'chat', 'memory'])
       expect(html).toContain(`gosu.model-lab.${key}`);
+  });
+  it('adds a chat model to a project: added once an open Model Lab adopts it, queued otherwise', async () => {
+    const { host } = await fixture();
+    const location = await host.open(projectA);
+    const pseudocode = modelToPseudocode({ ...residualClassifier, id: 'chat-model' });
+    const pending = host.addModelForChat(
+      projectA,
+      { requestId: randomUUID(), pseudocode, origin: 'project-chat' },
+      { waitMs: 3000, pollMs: 20 },
+    );
+    // What an open Model Lab does: read the inbox, save the model with its receipt, acknowledge.
+    let copies: { id: string }[] = [];
+    for (let i = 0; i < 50 && !copies.length; i++) {
+      copies = (await (await fetch(`${location.url}api/model-lab-project-copies`)).json()).copies;
+      if (!copies.length) await new Promise((r) => setTimeout(r, 10));
+    }
+    await fetch(`${location.url}api/model-lab-storage`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        key: PROJECT_MODEL_RECEIVED_COPIES_KEY,
+        value: JSON.stringify([copies[0]!.id]),
+      }),
+    });
+    await fetch(`${location.url}api/model-lab-project-copies/ack`, {
+      method: 'POST',
+      body: JSON.stringify({ id: copies[0]!.id }),
+    });
+    expect(await pending).toMatchObject({ modelId: 'chat-model', status: 'added' });
+    // With no Model Lab open it is reported as waiting, not as added.
+    const queued = await host.addModelForChat(
+      projectB,
+      { requestId: randomUUID(), pseudocode, origin: 'ai-assistant' },
+      { waitMs: 0 },
+    );
+    expect(queued.status).toBe('queued');
   });
 });

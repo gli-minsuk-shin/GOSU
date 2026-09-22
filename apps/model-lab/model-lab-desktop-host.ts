@@ -105,6 +105,31 @@ export class ModelLabDesktopHost {
     })(projectId, input);
   }
 
+  /**
+   * Adds a chat-written model to this project's Model Lab. An open Model Lab adopts it within a few
+   * seconds; otherwise it stays queued and is adopted the next time the project's Model Lab opens.
+   */
+  async addModelForChat(
+    projectId: string,
+    input: { requestId: string; pseudocode: string; origin: 'project-chat' | 'ai-assistant' },
+    options: { waitMs?: number; pollMs?: number } = {},
+  ) {
+    const copy = await this.copies.addFromChat(projectId, input);
+    const waitMs = options.waitMs ?? 6000;
+    const pollMs = options.pollMs ?? 250;
+    let status = copy.status;
+    for (let waited = 0; status === 'pending' && waited < waitMs; waited += pollMs) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, pollMs));
+      status = (await this.copies.status(projectId, copy.id)) ?? status;
+    }
+    return {
+      requestId: copy.id,
+      modelId: copy.rootModelId,
+      modelName: copy.modelName,
+      status: status === 'delivered' ? ('added' as const) : ('queued' as const),
+    };
+  }
+
   private directory(projectId: string) {
     return join(this.options.stateDirectory, projectId);
   }

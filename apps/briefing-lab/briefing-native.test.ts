@@ -14,8 +14,52 @@ import type { CodexDynamicToolHandler } from '../desktop/src/main/codex-app-serv
 import { initialWorkspace } from './src/fixtures';
 import type { RoutineRequest } from './src/routine-builder';
 import { ASSISTANT_TOOL_TIMEOUTS, briefingToolFailure } from './briefing-tool-policy';
+import { configureNativeUsageObserver, withNativeUsageScope } from './native-usage-observer';
+import { briefingClientContext, briefingClientHash } from './briefing-client-context';
 
 const now = '2026-09-08T01:00:00.000Z';
+it('records the actually resolved model and reported counters at native completion with its owning workload', async () => {
+  const observe = vi.fn(async () => undefined);
+  configureNativeUsageObserver(observe);
+  try {
+    const engine = fake(async (emitter) => {
+      emitter.emit('notification', {
+        method: 'thread/tokenUsage/updated',
+        params: {
+          threadId: 'thread',
+          turnId: 'turn',
+          tokenUsage: {
+            total: { inputTokens: 100, outputTokens: 20, totalTokens: 120, cachedInputTokens: 80 },
+            last: { totalTokens: 120 },
+          },
+        },
+      });
+      complete(emitter);
+    });
+    await withNativeUsageScope({ workloadKind: 'briefing_assistant', projectId: null }, () =>
+      runRoutineAgent(request, new AbortController().signal, () => undefined, {
+        factory: () => engine,
+        now,
+      }),
+    );
+    expect(observe).toHaveBeenCalledOnce();
+    expect(observe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workloadKind: 'briefing_assistant',
+        projectId: null,
+        invocation: expect.objectContaining({ resolvedModelId: 'actual-model' }),
+        usage: expect.objectContaining({
+          inputTokens: 100,
+          outputTokens: 20,
+          cachedInputTokens: 80,
+        }),
+        successful: true,
+      }),
+    );
+  } finally {
+    configureNativeUsageObserver(undefined);
+  }
+});
 const source = initialWorkspace(now).routines[0]!;
 const proposal = {
   name: '논문 브리핑',
@@ -111,6 +155,65 @@ const call = (tool: string, args: Parameters<CodexDynamicToolHandler>[0]['argume
 });
 
 describe('Briefing Lab GOSU native engine', () => {
+  it('runs a provider tool call as the client that started the chat, even when the call arrives outside its async context', async () => {
+    // Claude Code delivers MCP tool calls from its bridge, outside the chat request's async context.
+    // Without the client, workspace.owns() failed and read_calendar reported assistant_settings_changed.
+    const token = 'a'.repeat(64);
+    const seen: (string | null)[] = [];
+    const executeTool = vi.fn(async () => {
+      seen.push(briefingClientHash());
+      return { events: [] };
+    });
+    const transport = fake(async (emitter, handler) => {
+      await briefingClientContext.exit(() => handler(call('read_calendar'), delivery));
+      complete(emitter, { answer: 'done' });
+    });
+    await briefingClientContext.run(token, () =>
+      runRoutineAgent(request, new AbortController().signal, vi.fn(), {
+        factory: () => transport,
+        structuredJob: {
+          instructions: 'Read the calendar',
+          prompt: 'fixture',
+          schema: { type: 'object' },
+          tools: [
+            {
+              type: 'function',
+              name: 'read_calendar',
+              description: 'Fixture only',
+              inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+            },
+          ],
+          executeTool,
+        },
+      }),
+    );
+    expect(executeTool).toHaveBeenCalledOnce();
+    expect(seen[0]).toMatch(/^[a-f0-9]{64}$/);
+    // A run started without a client does not gain one.
+    seen.length = 0;
+    await runRoutineAgent(request, new AbortController().signal, vi.fn(), {
+      factory: () =>
+        fake(async (emitter, handler) => {
+          await handler(call('read_calendar'), delivery);
+          complete(emitter, { answer: 'done' });
+        }),
+      structuredJob: {
+        instructions: 'Read the calendar',
+        prompt: 'fixture',
+        schema: { type: 'object' },
+        tools: [
+          {
+            type: 'function',
+            name: 'read_calendar',
+            description: 'Fixture only',
+            inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+          },
+        ],
+        executeTool,
+      },
+    });
+    expect(seen).toEqual([null]);
+  });
   it('allows a bounded larger tool budget for a long-context assistant without opening unrelated tools', async () => {
     const replies: unknown[] = [];
     const executeTool = vi.fn(async () => ({ evidence: 'fixture' }));
@@ -358,6 +461,7 @@ describe('Briefing Lab GOSU native engine', () => {
       factory: () => transport,
       structuredJob: {
         instructions: 'Read tools only',
+        webSearchMode: 'live',
         prompt: 'Read public sources',
         schema: { type: 'object' },
         tools: ['search_papers', 'search_email'].map((name) => ({
@@ -370,7 +474,7 @@ describe('Briefing Lab GOSU native engine', () => {
       },
     });
     expect(execute.mock.calls.map((c) => c[0])).toEqual(['search_papers', 'search_email']);
-    expect(transport.startThread.mock.calls[0]![0].webSearchMode).toBe('disabled');
+    expect(transport.startThread.mock.calls[0]![0].webSearchMode).toBe('live');
     expect(transport.dispose).toHaveBeenCalledOnce();
   });
   it('ships the same pinned Codex fallback as Desktop so native discovery works outside Electron', async () => {
@@ -406,10 +510,19 @@ describe('Briefing Lab GOSU native engine', () => {
     expect(JSON.stringify(transport.runTurn.mock.calls)).toContain(JSON.stringify(schema));
     expect(JSON.parse(result.answer)).toEqual(output);
     expect(transport.dispose).toHaveBeenCalledOnce();
+    // Only a job that asks for it runs without extended thinking.
+    expect(JSON.stringify(transport.runTurn.mock.calls)).not.toContain('"thinking"');
+    const quick = fake(async (emitter) => complete(emitter, output));
+    await runRoutineAgent(request, new AbortController().signal, vi.fn(), {
+      factory: () => quick,
+      structuredJob: { instructions: 'Quick', prompt: 'Metadata', schema, thinking: 'disabled' },
+    });
+    expect(JSON.stringify(quick.runTurn.mock.calls)).toContain('"thinking":"disabled"');
   });
   it.each([
     ['claude_code_auth_required', 'claude_code_auth_required'],
     ['claude_code_timeout', 'claude_code_timeout'],
+    ['claude_code_network_unavailable', 'claude_code_network_unavailable'],
     [
       "Invalid schema for response_format: Missing 'researchQuestion'. private diagnostic must not leak",
       'routine_output_schema_invalid',
@@ -473,6 +586,13 @@ describe('Briefing Lab GOSU native engine', () => {
       expect(transport.startThread.mock.calls[0]![0].webSearchMode).toBe('disabled');
       expect(transport.runTurn.mock.calls[0]).toBeDefined();
       expect(progress.mock.calls.some(([event]) => event.stage === 'validated')).toBe(true);
+      // The model that actually runs is named, so a summary following the Settings role is
+      // distinguishable from the model picked in the Briefing chat.
+      const connecting = progress.mock.calls
+        .map(([event]) => event)
+        .find((event) => event.stage === 'connecting');
+      expect(connecting.detail).toContain(request.modelId);
+      expect(connecting.detail).toContain(providerId);
       expect(transport.dispose).toHaveBeenCalledOnce();
       expect(transport.releaseThread).toHaveBeenCalledWith('thread');
       await expect(access(transport.startThread.mock.calls[0]![0].cwd)).rejects.toThrow();

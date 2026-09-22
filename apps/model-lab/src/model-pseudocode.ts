@@ -218,6 +218,9 @@ export function modelToPseudocode(model: ModelSpec) {
       ...(module.explanation.trim() && module.explanation.trim() !== module.transform.trim()
         ? textBlock('notes', module.explanation)
         : []),
+      ...(module.presentation
+        ? textBlock('presentation', JSON.stringify(module.presentation))
+        : []),
       ...(module.block
         ? [
             `  block: ${module.block.id} | ${JSON.stringify(module.block.repeatCount)} | ${module.block.label}`,
@@ -528,6 +531,13 @@ function parseV2(lines: readonly string[], expectedModelId?: string): ModelPseud
         activation: activation === 'none' ? null : activation,
         formula: aliasedField(block.fields, ['math', 'equation'], transform),
         explanation: optionalField(block.fields, 'notes', transform),
+        ...(block.fields.has('presentation')
+          ? {
+              presentation: JSON.parse(
+                optionalField(block.fields, 'presentation', 'null'),
+              ) as unknown,
+            }
+          : {}),
         parameterCount: optionalNumberField(block.fields, 'parameters', 0),
         codeReference: optionalField(block.fields, 'code', defaultCodeReference),
         repeat,

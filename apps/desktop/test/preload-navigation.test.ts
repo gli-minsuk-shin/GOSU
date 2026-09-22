@@ -32,6 +32,8 @@ type NavigationApi = {
   app: {
     onOpenSettings: (listener: () => void) => () => void;
     onToggleSidebar: (listener: () => void) => () => void;
+    onOpenAssistant: (listener: () => void) => () => void;
+    onOpenSurface: (listener: (target: 'calendar' | 'tasks' | 'briefing') => void) => () => void;
   };
   agentAddOns: {
     status: (ids: readonly AgentAddOnId[]) => Promise<unknown>;
@@ -48,8 +50,32 @@ beforeAll(async () => {
 });
 
 describe('preload app navigation bridge', () => {
+  it('buffers an early assistant shortcut, repeats focus requests and rejects payloads', () => {
+    const emit = electron.listeners.get(APP_NAVIGATION_CHANNELS.openAssistant)!;
+    emit({});
+    const callback = vi.fn(),
+      unsubscribe = api.app.onOpenAssistant(callback);
+    expect(callback).toHaveBeenCalledOnce();
+    emit({}, 'untrusted payload');
+    expect(callback).toHaveBeenCalledOnce();
+    emit({});
+    expect(callback).toHaveBeenCalledTimes(2);
+    unsubscribe();
+    emit({});
+    expect(callback).toHaveBeenCalledTimes(2);
+  });
   it('exposes only a fixed settings subscription and buffers an early event', () => {
-    expect(Object.keys(api.app)).toEqual(['onOpenSettings', 'onToggleSidebar']);
+    expect(Object.keys(api.app)).toEqual([
+      'onOpenSettings',
+      'onToggleSidebar',
+      'onOpenAssistant',
+      'getAssistantShortcut',
+      'setAssistantShortcut',
+      // Calendar, To-do and Briefing Lab shortcuts: one fixed subscription and their settings.
+      'onOpenSurface',
+      'getAppShortcuts',
+      'setAppShortcuts',
+    ]);
     expect(electron.listeners.has(APP_NAVIGATION_CHANNELS.openSettings)).toBe(true);
 
     electron.listeners.get(APP_NAVIGATION_CHANNELS.openSettings)?.({});
@@ -67,6 +93,33 @@ describe('preload app navigation bridge', () => {
     expect(listener).toHaveBeenCalledTimes(2);
     expect(nextListener).toHaveBeenCalledTimes(1);
     unsubscribeNext();
+  });
+
+  it('opens only the three known screens from a shortcut and buffers an early one', () => {
+    const channel = APP_NAVIGATION_CHANNELS.openSurface;
+    expect(electron.listeners.has(channel)).toBe(true);
+    // Sent before the renderer subscribed (the app was just opened by the shortcut).
+    electron.listeners.get(channel)?.({}, 'tasks');
+    const listener = vi.fn();
+    const unsubscribe = api.app.onOpenSurface(listener);
+    expect(listener).toHaveBeenCalledExactlyOnceWith('tasks');
+    electron.listeners.get(channel)?.({}, 'calendar');
+    electron.listeners.get(channel)?.({}, 'briefing');
+    expect(listener.mock.calls.map(([target]) => target)).toEqual([
+      'tasks',
+      'calendar',
+      'briefing',
+    ]);
+    // Anything else main could never have sent is dropped, not forwarded.
+    electron.listeners.get(channel)?.({}, 'settings');
+    electron.listeners.get(channel)?.({}, { target: 'tasks' });
+    electron.listeners.get(channel)?.({});
+    electron.listeners.get(channel)?.({}, 'tasks', 'extra');
+    expect(listener).toHaveBeenCalledTimes(3);
+    unsubscribe();
+    electron.listeners.get(channel)?.({}, 'calendar');
+    expect(listener).toHaveBeenCalledTimes(3);
+    expect(() => api.app.onOpenSurface('nope' as never)).toThrow('invalid_surface_listener');
   });
 
   it('buffers sidebar menu toggles by parity and supports unsubscribe', () => {

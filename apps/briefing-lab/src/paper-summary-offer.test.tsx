@@ -1,6 +1,7 @@
 import { act, create } from 'react-test-renderer';
 import { expect, it, vi } from 'vitest';
 import { PaperSummarySaveOffer, type PaperSaveReplyHandler } from './paper-summary-offer';
+import type { PaperSummaryCandidate } from './paper-summary-contract';
 it('asks first, saves only on click/explicit reply, reports errors and prevents double submit', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   let reply: PaperSaveReplyHandler | null = null;
@@ -65,6 +66,85 @@ it('decline performs no write and a rejected save never displays success', async
     expect(onSave).toHaveBeenCalledOnce();
   } finally {
     await act(() => ui.unmount());
+    vi.unstubAllGlobals();
+  }
+});
+
+it('answers a library question the assistant asked itself with two buttons: 추가 and 나중에', async () => {
+  // 2026-09-21: the answer ended with "이 설명도 Briefing Lab 논문 요약 라이브러리에 추가할까요?" and
+  // nothing to press; the card was hidden because the paper was already in the library.
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const asked =
+    'ProvDA는 그래프 데이터를 합성·증강해 APT 탐지에 활용하려는 연구입니다. 구체적인 방법이나 성능은 확인되지 않았습니다.\n\n이 설명도 Briefing Lab 논문 요약 라이브러리에 추가할까요?';
+  const onSave = vi.fn(async (_candidate: PaperSummaryCandidate) => ({
+    id: 'x',
+    savedAt: '2026-09-21T00:00:00Z',
+    alreadySaved: false,
+  }));
+  let ui!: ReturnType<typeof create>;
+  try {
+    await act(() => {
+      ui = create(
+        <PaperSummarySaveOffer
+          asked
+          question="provenance graph가 뭐야?"
+          answer={asked}
+          references={[
+            {
+              title: 'ProvDA: VGAE-Based Synthetic Provenance Data Augmentation for APT Detection',
+              url: 'https://arxiv.org/abs/2609.12345',
+            },
+          ]}
+          onSave={onSave}
+        />,
+      );
+    });
+    const labels = () => ui.root.findAllByType('button').map((b) => b.props.children);
+    expect(labels()).toEqual(['추가', '나중에']);
+    // The question is already in the answer above: no second copy, no card text.
+    const text = JSON.stringify(ui.toJSON());
+    expect(text).not.toContain('추가할까요');
+    expect(text).toContain('is-answer');
+    expect(ui.root.findAllByType('p')).toHaveLength(0);
+    // What pressing 추가 will do stays one hover away.
+    expect(ui.root.findAllByType('button')[0]!.props.title).toContain('AI 사용량이 발생할 수');
+    await act(() => ui.root.findAllByType('button')[0]!.props.onClick());
+    expect(onSave).toHaveBeenCalledOnce();
+    const candidate = onSave.mock.calls[0]![0];
+    // The saved analysis does not contain the question itself.
+    expect(candidate.markdown).toContain('ProvDA는 그래프 데이터를');
+    expect(candidate.markdown).not.toContain('추가할까요');
+    expect(candidate.sourceUrls).toEqual(['https://arxiv.org/abs/2609.12345']);
+    expect(JSON.stringify(ui.toJSON())).toContain('논문 분석 저장됨');
+  } finally {
+    await act(() => ui?.unmount());
+    vi.unstubAllGlobals();
+  }
+});
+
+it('removes the two buttons on 나중에 without saving anything', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const onSave = vi.fn();
+  let ui!: ReturnType<typeof create>;
+  try {
+    await act(() => {
+      ui = create(
+        <PaperSummarySaveOffer
+          asked
+          question="이 논문 설명해줘"
+          answer={
+            '설명입니다. '.repeat(5) + '\n\n이 설명도 Briefing Lab 논문 요약 보관함에 저장할까요?'
+          }
+          references={[{ title: 'Paper', url: 'https://arxiv.org/abs/2609.00002' }]}
+          onSave={onSave}
+        />,
+      );
+    });
+    await act(() => ui.root.findAllByType('button')[1]!.props.onClick());
+    expect(ui.toJSON()).toBeNull();
+    expect(onSave).not.toHaveBeenCalled();
+  } finally {
+    await act(() => ui?.unmount());
     vi.unstubAllGlobals();
   }
 });

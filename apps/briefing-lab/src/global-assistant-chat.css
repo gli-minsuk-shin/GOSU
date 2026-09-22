@@ -50,13 +50,21 @@
   width: 100%;
   max-width: 1040px;
   align-self: center;
-  padding: 20px 24px;
+  padding: 20px 24px 8px;
+}
+/* The "최신" control stays on the centered conversation column, not the window edge. */
+.briefing-app.is-global-assistant .briefing-chat-jump {
+  right: max(24px, calc((100% - 1040px) / 2 + 24px));
 }
 .briefing-app.is-global-assistant .briefing-chat-message {
   padding: 17px 20px;
   margin-bottom: 20px;
   border-radius: 18px;
   border-color: #e0e6db;
+}
+/* The composer sits directly under the latest answer; no trailing gap stacks above it. */
+.briefing-app.is-global-assistant .briefing-chat-message:last-child {
+  margin-bottom: 0;
 }
 .briefing-app.is-global-assistant .briefing-chat-message.user {
   width: fit-content;
@@ -135,9 +143,14 @@
   width: 100%;
   max-width: 1040px;
   align-self: center;
-  padding: 12px 24px 18px;
+  padding: 4px 24px 14px;
   border: 0;
   background: #fbfcfa;
+}
+.briefing-app.is-global-assistant .briefing-chat-composer > small[role='status'] {
+  display: block;
+  margin: 0 0 4px;
+  line-height: 1.4;
 }
 .briefing-app.is-global-assistant .briefing-chat-input-box {
   border: 1px solid #ccd8c4;
@@ -150,25 +163,20 @@
   outline: 2px solid #829b65;
   outline-offset: 2px;
 }
+/* The typing area keeps the height it had when the icons lay over a 128px field (about three
+   lines); the space was won by putting send and the context chip in the toolbar row below it. */
 .briefing-app.is-global-assistant .briefing-chat-input-box textarea {
-  min-height: 128px;
+  min-height: 80px;
   max-height: 240px;
-  padding: 16px 18px 48px;
+  padding: 14px 18px 4px;
   border: 0;
   outline: none;
   border-radius: 0;
   font-size: 13px;
   line-height: 1.65;
 }
-.briefing-app.is-global-assistant .briefing-chat-input-shortcuts {
-  left: 12px;
-  bottom: 10px;
-}
-.briefing-app.is-global-assistant .briefing-chat-composer > div:last-child {
-  justify-content: flex-end;
-}
-.briefing-app.is-global-assistant .briefing-chat-composer > div:last-child > small {
-  margin-right: auto;
+.briefing-app.is-global-assistant .briefing-chat-input-toolbar {
+  padding: 0 12px 10px;
 }
 .briefing-app.is-global-assistant .briefing-chat-status:empty {
   display: none;
@@ -176,7 +184,7 @@
 .briefing-app.is-global-assistant .briefing-chat-status {
   align-self: center;
   width: min(100%, 1040px);
-  padding-inline: 24px;
+  padding: 2px 24px 0;
 }
 @media (max-width: 600px) {
   .briefing-app.is-global-assistant .briefing-workspace {

@@ -1,5 +1,11 @@
 export const BALANCED_LITERATURE_POLICY_ID = 'balanced-three-layer' as const;
-export const BALANCED_LITERATURE_POLICY_VERSION = 3;
+export const BALANCED_LITERATURE_POLICY_VERSION = 4;
+/**
+ * Version 4 changed what may be saved (a paper must mention the search terms; Broad is no longer
+ * topped up with off-topic works). The Core and Rising gates below are unchanged since version 3,
+ * so a version 3 label still means what the current explanation says and is not shown as legacy.
+ */
+export const BALANCED_LITERATURE_CORE_GATES_SINCE_VERSION = 3;
 
 export const LITERATURE_CORE_MIN_RELEVANCE_SCORE = 0.55;
 export const LITERATURE_CORE_MIN_CITATIONS = 50;

@@ -22,16 +22,19 @@ export async function restoreBriefingConversation(
   for (let attempt = 0; ; attempt++) {
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
     try {
-      return await sourceRequest<{ messages: ConversationMessage[]; otherScopeMessages?: number }>(
-        '/assistant/conversation/get',
-        { routineId },
-        signal,
-      );
+      return await sourceRequest<{
+        messages: ConversationMessage[];
+        otherScopeMessages?: number;
+        /** Set once `/new` was used: where the screen draws the "new conversation" line. */
+        contextStartedAt?: string;
+      }>('/assistant/conversation/get', { routineId }, signal);
     } catch (error) {
       const transient =
         error instanceof TypeError ||
         (error instanceof Error &&
-          ['routine_busy', 'routine_token_denied'].includes(error.message));
+          ['routine_busy', 'routine_token_denied'].includes(
+            (error as Error & { code?: string }).code ?? error.message,
+          ));
       if (signal.aborted || !transient || attempt >= 2) throw error;
       await pause(400 * (attempt + 1), signal);
     }

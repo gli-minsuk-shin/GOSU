@@ -1,0 +1,49 @@
+.briefing-quick-first {
+  margin: 10px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid #d6e0cb;
+  border-radius: 10px;
+  background: #fff;
+  color: #2f3b2a;
+  line-height: 1.6;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.briefing-quick-first-label {
+  margin: 0 0 4px;
+  color: #5f6f53;
+  font-size: 11px;
+}
+.briefing-quick-first-headline {
+  margin: 0;
+  font-weight: 600;
+}
+.briefing-quick-first ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.briefing-quick-first li + li {
+  margin-top: 2px;
+}
+.briefing-quick-first-note {
+  margin: 6px 0 0;
+  color: #6b7862;
+  font-size: 11px;
+}
+
+/* A same-day update: new lines are marked, lines carried over from the earlier briefing recede. */
+.briefing-quick-first-new {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--briefing-green);
+  color: white;
+  font-size: 0.78em;
+  font-weight: 750;
+  line-height: 1.6;
+  vertical-align: 1px;
+}
+.briefing-quick-first li.is-carried {
+  opacity: 0.78;
+}

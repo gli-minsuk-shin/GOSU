@@ -84,7 +84,7 @@ describe('Desktop domain UI language', () => {
         onSetTaskArchived={vi.fn()}
       />,
     );
-    expect(html).toContain('프로젝트 보드');
+    expect(html).toContain('열 이름 및 설정 변경');
     expect(html).toContain('작업 추가');
     expect(html).toContain('모든 우선순위');
     expect(html).toContain('<h3>Save</h3>');

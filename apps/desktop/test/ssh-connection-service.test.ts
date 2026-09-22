@@ -224,6 +224,106 @@ function deferredSignal() {
 afterEach(() => vi.useRealTimers());
 
 describe('SSH connection and Allow once service', () => {
+  it('reuses an approved standard workspace across chat sessions, audits it, and preserves command/project boundaries', async () => {
+    const storage = new MemorySshStorage(
+      connectionFixture({
+        directTarget: { host: '203.0.113.10', user: 'researcher', localForwards: [] },
+      }),
+    );
+    const { runner, execute } = runnerFixture();
+    const blocked = new Set<string>();
+    const service = new SshConnectionService(storage, runner, {
+      reuseApprovedScopes: (id) => !blocked.has(id),
+      revokeReusedScope: async (id) => {
+        blocked.add(id);
+      },
+    });
+    const grant = await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace/research',
+      permissionMode: 'workspace',
+      confirmWorkspaceRisk: true,
+    });
+    const events: unknown[] = [];
+    service.on('event', (e) => events.push(e));
+    await service.runAgentWorkspaceCommand(workspaceCommandFixture(grant));
+    await service.runAgentWorkspaceCommand(
+      workspaceCommandFixture(grant, { sessionId: SESSION_B }),
+    );
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(events).toEqual([]);
+    expect(storage.trustedWorkspaceAudit).toHaveLength(2);
+    expect(storage.trustedWorkspaceAudit[0]?.policyVersion).toBe(2);
+    await expect(
+      service.runAgentWorkspaceCommand(
+        workspaceCommandFixture(grant, { projectId: OTHER_PROJECT_ID }),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      service.runAgentWorkspaceCommand(
+        workspaceCommandFixture(grant, { command: '/bin/rm', args: ['-rf', '/'] }),
+      ),
+    ).rejects.toThrow();
+    await service.revokeTrustedWorkspace({
+      projectId: PROJECT_ID,
+      grantId: grant.id,
+      expectedVersion: grant.version,
+    });
+    const approval = nextApproval(service);
+    const pending = service.runAgentWorkspaceCommand(workspaceCommandFixture(grant));
+    const rejected = expect(pending).rejects.toMatchObject({ code: 'ssh_approval_cancelled' });
+    await approval;
+    service.shutdown();
+    await rejected;
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+  it('does not reuse root/unknown/diagnostic or mismatched scopes, and rechecks policy after delayed audit', async () => {
+    const profile = connectionFixture({
+      directTarget: { host: '203.0.113.10', user: 'researcher', localForwards: [] },
+    });
+    const storage = new MemorySshStorage(profile);
+    const { runner, execute } = runnerFixture();
+    let reuse = true;
+    const service = new SshConnectionService(storage, runner, { reuseApprovedScopes: () => reuse });
+    const grant = await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace/research',
+      permissionMode: 'workspace',
+      confirmWorkspaceRisk: true,
+    });
+    expect(
+      service.canReuseApprovedScope(grant, {
+        ...profile,
+        directTarget: { ...profile.directTarget!, user: 'root' },
+      }),
+    ).toBe(false);
+    expect(
+      service.canReuseApprovedScope({ ...grant, permissionMode: 'diagnostics' }, profile),
+    ).toBe(false);
+    expect(service.canReuseApprovedScope(grant, { ...profile, id: OTHER_PROJECT_ID })).toBe(false);
+    expect(
+      service.canReuseApprovedScope(grant, { ...profile, updatedAt: '2099-01-01T00:00:00Z' }),
+    ).toBe(false);
+    const auditStarted = deferredSignal(),
+      release = deferredSignal();
+    vi.spyOn(storage, 'appendSshTrustedWorkspaceAudit').mockImplementation(async () => {
+      auditStarted.resolve();
+      await release.promise;
+      return true;
+    });
+    const pending = service.runAgentWorkspaceCommand(workspaceCommandFixture(grant));
+    const rejected = expect(pending).rejects.toMatchObject({
+      code: 'ssh_trusted_workspace_expired',
+    });
+    await auditStarted.promise;
+    reuse = false;
+    release.resolve();
+    await rejected;
+    expect(execute).not.toHaveBeenCalled();
+    service.shutdown();
+  });
   it('serializes project inactivation after an in-flight grant commit and blocks later grant mutations', async () => {
     const storage = new MemorySshStorage();
     const { runner } = runnerFixture();

@@ -1,0 +1,123 @@
+/* First-run macOS permissions helper: the same dialog frame as the other modal windows. */
+.permissions-helper-backdrop {
+  position: fixed;
+  z-index: 950;
+  inset: 0;
+  display: grid;
+  padding: 24px;
+  place-items: center;
+  background: rgba(20, 28, 18, 0.48);
+  backdrop-filter: blur(4px);
+}
+.permissions-helper {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(100%, 680px);
+  max-height: min(calc(100dvh - 48px), 720px);
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--green) 38%, var(--line));
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 28px 100px rgba(0, 0, 0, 0.34);
+}
+.permissions-helper > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.permissions-helper > header span {
+  color: var(--green);
+  font-size: var(--font-caption);
+  font-weight: 800;
+  letter-spacing: 0.13em;
+}
+.permissions-helper > header h2 {
+  margin: 4px 0 0;
+  font-size: var(--font-title);
+}
+.permissions-helper > header p,
+.permissions-helper-list p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: var(--font-control);
+  line-height: 1.55;
+}
+.permissions-helper > header .icon-button {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  font-size: var(--font-title);
+  line-height: 1;
+}
+.permissions-helper-list {
+  display: grid;
+  gap: 10px;
+  min-height: 0;
+  margin: 0;
+  padding: 14px 18px;
+  overflow: auto;
+  list-style: none;
+}
+.permissions-helper-list > li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.permissions-helper-list > li[data-tone='todo'] {
+  border-color: light-dark(#e2b98f, #7a5a35);
+  background: light-dark(#fff8f0, #231b12);
+}
+.permissions-helper-list strong {
+  margin-right: 8px;
+}
+.permissions-helper-list em {
+  color: var(--muted);
+  font-size: var(--font-control);
+  font-style: normal;
+}
+.permissions-helper-list > li[data-tone='ok'] em {
+  color: light-dark(#3f6f14, #9fd05a);
+}
+.permissions-helper-list > li[data-tone='todo'] em {
+  color: light-dark(#a05a12, #e0a53a);
+  font-weight: 600;
+}
+.permissions-helper-actions {
+  display: grid;
+  gap: 6px;
+  justify-items: stretch;
+}
+.permissions-helper-failure {
+  margin: 0;
+  padding: 0 18px 8px;
+  color: light-dark(#a04b2e, #ef8a6d);
+  font-size: var(--font-control);
+}
+.permissions-helper > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--line);
+}
+.permissions-helper > footer small {
+  color: var(--muted);
+}
+@media (max-width: 720px) {
+  .permissions-helper-list > li {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .permissions-helper-actions {
+    grid-auto-flow: column;
+    justify-content: start;
+  }
+}

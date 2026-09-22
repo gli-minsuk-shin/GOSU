@@ -1,5 +1,12 @@
 import type { MenuItemConstructorOptions } from 'electron';
 import { DEFAULT_APP_LANGUAGE, type AppLanguage } from '@gosu/contracts';
+import { DEFAULT_ASSISTANT_SHORTCUT } from '../shared/assistant-shortcut';
+import {
+  APP_SHORTCUT_TARGETS,
+  DEFAULT_APP_SHORTCUTS,
+  type AppShortcuts,
+  type AppShortcutTarget,
+} from '../shared/app-shortcuts';
 
 type NativeMenuItem = {
   id?: string;
@@ -91,13 +98,27 @@ export function buildMacApplicationMenuTemplate({
   appName,
   openSettings,
   toggleSidebar,
+  openAssistant = () => undefined,
+  assistantShortcut = DEFAULT_ASSISTANT_SHORTCUT,
+  appShortcuts = DEFAULT_APP_SHORTCUTS,
+  openSurface = () => undefined,
   language = DEFAULT_APP_LANGUAGE,
 }: {
   appName: string;
   openSettings: () => void;
   toggleSidebar: () => void;
+  openAssistant?: () => void;
+  assistantShortcut?: string;
+  appShortcuts?: AppShortcuts;
+  openSurface?: (target: AppShortcutTarget) => void;
   language?: AppLanguage;
 }): MenuItemConstructorOptions[] {
+  const surfaceLabels: Record<AppShortcutTarget, readonly [string, string]> = {
+    calendar: ['캘린더 열기', 'Open Calendar'],
+    tasks: ['할 일 열기', 'Open To-do'],
+    briefing: ['Briefing Lab 열기', 'Open Briefing Lab'],
+    briefingRun: ['새 브리핑 실행', 'Run a New Briefing'],
+  };
   return [
     {
       label: appName,
@@ -125,6 +146,19 @@ export function buildMacApplicationMenuTemplate({
     {
       role: 'viewMenu',
       submenu: [
+        {
+          id: 'view.open-assistant',
+          label: language === 'ko' ? 'AI 비서 열기' : 'Open AI Assistant',
+          accelerator: assistantShortcut,
+          click: openAssistant,
+        },
+        ...APP_SHORTCUT_TARGETS.map((target): MenuItemConstructorOptions => ({
+          id: `view.open-${target}`,
+          label: surfaceLabels[target][language === 'ko' ? 0 : 1],
+          // A shortcut that is turned off keeps its menu item, without a chord.
+          ...(appShortcuts[target] ? { accelerator: appShortcuts[target] } : {}),
+          click: () => openSurface(target),
+        })),
         {
           id: 'view.toggle-project-sidebar',
           label: language === 'ko' ? '프로젝트 사이드바 접기/펼치기' : 'Toggle Project Sidebar',

@@ -435,6 +435,7 @@ const LECTURE_ATTEMPT_LATEX_REASON_LABELS: Record<LectureStudioAttemptLatexReaso
 
 const LECTURE_ATTEMPT_REASONING_LABELS: Readonly<Record<string, string>> = {
   none: 'None',
+  off: 'Thinking off',
   minimal: 'Minimal',
   low: 'Low',
   medium: 'Medium',

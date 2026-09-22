@@ -6,7 +6,7 @@ import { defaultModelRouting } from '@gosu/contracts';
 import { LiveSourceService } from './live-source-service';
 
 it.each([null, 'explicit-model'])(
-  'reports the assistant role, preserving explicit pin %s',
+  'reports the model Settings → Agent assigns to every Briefing usage, whatever the routine stored (%s)',
   async (pin) => {
     const policy = defaultModelRouting();
     policy.strong = { providerId: 'codex', modelId: 'gpt-6-astra', reasoningOptionId: 'high' };
@@ -37,10 +37,19 @@ it.each([null, 'explicit-model'])(
     } as unknown as ServerResponse;
     await service.handle(req, res, new AbortController().signal);
     expect(writeHead.mock.calls[0]?.[0]).toBe(200);
+    // A model stored with the routine (from the picker Briefing had until 0.58.135) wins nowhere.
     expect(JSON.parse(body)).toMatchObject({
-      modelId: pin ?? 'gpt-6-astra',
-      reasoning: pin ? null : 'high',
+      modelId: 'gpt-6-astra',
+      reasoning: 'high',
+      usages: [
+        { usage: 'briefing', providerId: 'codex', modelId: 'fast-summary', assigned: true },
+        { usage: 'briefingAssistant', modelId: 'gpt-6-astra', reasoning: 'high', assigned: true },
+        // No lightweight model in Settings → Agent: the routine's stored selection still runs.
+        { usage: 'lightweightTasks', modelId: pin, assigned: false },
+        // The paper summary AI has no role of its own here, so it follows Briefing, as before.
+        { usage: 'paperSummary', providerId: 'codex', modelId: 'fast-summary', assigned: true },
+      ],
     });
-    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledTimes(4);
   },
 );

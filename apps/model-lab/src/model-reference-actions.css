@@ -5,11 +5,14 @@
   align-items: center;
 }
 .model-reference-actions button {
-  display: inline-grid;
-  place-items: center;
-  width: 29px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 29px;
+  white-space: nowrap;
   height: 29px;
-  padding: 4px;
+  padding: 4px 6px;
+  font-size: 11px;
   border: 1px solid transparent;
   border-radius: 7px;
   background: transparent;

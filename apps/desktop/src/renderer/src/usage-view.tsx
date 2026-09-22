@@ -11,6 +11,15 @@ import {
 } from 'react';
 
 import {
+  MODEL_PRICE_SOURCE_LABEL,
+  estimateUsageCostUsd,
+  modelPriceKey,
+  type ModelPrice,
+  type ModelPriceStatus,
+  type UsageCostSummary,
+} from '../../shared/model-price-contracts';
+import {
+  type MODEL_USAGE_DETAIL_WORKLOADS,
   MODEL_USAGE_WORKLOAD_KINDS,
   type ModelUsageAggregate,
   type ModelUsageAnalyticsQuery,
@@ -20,6 +29,7 @@ import {
   type ModelUsageLectureGenerationRow,
   type ModelUsageModelRow,
   type ModelUsageProjectRow,
+  type ModelUsageProjectModelRow,
   type ModelUsageTokenTotals,
   type ModelUsageWorkloadKind,
 } from '../../shared/model-usage-contracts';
@@ -34,6 +44,7 @@ import {
   formatCompactTokenCount,
   formatTokenCount,
   formatUsageRange,
+  formatUsd,
   localCalendarDate,
   reportedUsageTurnCount,
   usageBreakdownLabel,
@@ -43,10 +54,24 @@ import {
   type UsagePeriod,
 } from './usage-view-model';
 import './usage-view.css';
+import { UsageLimitsPanel } from './usage-limits-panel';
+import { UsageDistribution } from './usage-distribution';
+import {
+  buildUsageDistribution,
+  type UsageCostState,
+  type UsageDistributionMetric,
+} from './usage-distribution-model';
+import type { UsageLimitSettings, UsageLimitStatus } from '../../shared/usage-limit-contracts';
 
 const LECTURE_PAGE_SIZE = 25;
 
 const WORKLOAD_LABELS: Readonly<Record<ModelUsageWorkloadKind, string>> = {
+  briefing_assistant: 'AI 비서',
+  briefing_summary: '브리핑·요약',
+  paper_summary: '논문 요약',
+  context_compaction: '대화 문맥 압축',
+  daily_quote: '오늘의 격언',
+  model_lab: 'Model Lab',
   project_chat: 'Project Chat',
   project_chat_title: 'Chat titles',
   lecture_generation: 'Lecture generation',
@@ -59,6 +84,9 @@ type UsagePhase = 'loading' | 'refreshing' | 'ready';
 
 export type UsageViewAdapter = Readonly<{
   query: (input: ModelUsageAnalyticsQuery) => Promise<ModelUsageAnalyticsReport>;
+  /** The public API price list GOSU keeps; without it the view shows tokens only. */
+  prices?: () => Promise<ModelPriceStatus>;
+  refreshPrices?: () => Promise<ModelPriceStatus>;
 }>;
 
 export type UsageViewProps = Readonly<{
@@ -66,6 +94,18 @@ export type UsageViewProps = Readonly<{
   projects: readonly ProjectRecord[];
   initialReport?: ModelUsageAnalyticsReport | null;
   initialBreakdown?: UsageBreakdown;
+  /** A price list already in hand (tests, or a caller that loaded it), shown before the first load. */
+  initialPriceStatus?: ModelPriceStatus | null;
+  /** What the distribution lists compare by. Cost first: the user asked "how much money". */
+  initialDistributionMetric?: UsageDistributionMetric;
+  /** Remaining plan limits of the connected CLIs, kept by the app shell (the title bar shows them too). */
+  limits?: Readonly<{
+    status: UsageLimitStatus | null;
+    now: number;
+    failure?: string | null;
+    onRefresh: () => void;
+    onConfigure: (settings: UsageLimitSettings) => void;
+  }>;
 }>;
 
 function resolvedTimeZone() {
@@ -143,7 +183,7 @@ function providerDisplayName(providerId: string) {
 
 export function usageModelDisplayName(modelId: string) {
   const leaf = modelId.split('/').at(-1) ?? modelId;
-  const gpt = /^gpt-(\d{1,2})(?:[.-](\d{1,2}))?(?:-(sol|terra|luna))?$/iu.exec(leaf);
+  const gpt = /^gpt-(\d{1,2})(?:[.-](\d{1,2}))?(?:-(sol|terra|luna|astra))?$/iu.exec(leaf);
   if (gpt) {
     const version = gpt[2] ? `${gpt[1]}.${gpt[2]}` : gpt[1];
     const variant = gpt[3]
@@ -297,7 +337,10 @@ export function UsageView({
   adapter,
   projects,
   initialReport = null,
-  initialBreakdown = 'projects',
+  initialBreakdown = 'briefing',
+  initialPriceStatus = null,
+  initialDistributionMetric = 'usd',
+  limits,
 }: UsageViewProps) {
   useUiText();
   const timeZone = useMemo(resolvedTimeZone, []);
@@ -310,7 +353,33 @@ export function UsageView({
   const [lectureOffset, setLectureOffset] = useState(0);
   const [lectureSnapshotAt, setLectureSnapshotAt] = useState<string | null>(null);
   const [breakdown, setBreakdown] = useState<UsageBreakdown>(initialBreakdown);
+  // Kept here, not in the report: the report remounts on every period or filter change.
+  const [distributionMetric, setDistributionMetric] =
+    useState<UsageDistributionMetric>(initialDistributionMetric);
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const [priceStatus, setPriceStatus] = useState<ModelPriceStatus | null>(initialPriceStatus);
+  const [pricesRefreshing, setPricesRefreshing] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void adapter
+      .prices?.()
+      .then((status) => {
+        if (!cancelled) setPriceStatus(status);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [adapter]);
+  const refreshPrices = adapter.refreshPrices
+    ? () => {
+        setPricesRefreshing(true);
+        void adapter.refreshPrices!()
+          .then(setPriceStatus)
+          .catch(() => undefined)
+          .finally(() => setPricesRefreshing(false));
+      }
+    : undefined;
   const { report, optionsReport, phase, error } = useUsageQueries({
     adapter,
     period,
@@ -368,6 +437,17 @@ export function UsageView({
           {phase === 'refreshing' ? uiText('Refreshing…') : uiText('Refresh')}
         </button>
       </header>
+
+      {limits?.status && (
+        <UsageLimitsPanel
+          status={limits.status}
+          now={limits.now}
+          timeZone={timeZone}
+          failure={limits.failure ?? null}
+          onRefresh={limits.onRefresh}
+          onConfigure={limits.onConfigure}
+        />
+      )}
 
       <UsageFilters
         period={period}
@@ -429,9 +509,14 @@ export function UsageView({
       ) : (
         <UsageReport
           report={report}
+          priceStatus={priceStatus}
+          pricesRefreshing={pricesRefreshing}
+          onRefreshPrices={refreshPrices}
           filtersActive={filtersActive}
           breakdown={breakdown}
           onBreakdown={setBreakdown}
+          distributionMetric={distributionMetric}
+          onDistributionMetric={setDistributionMetric}
           onLectureOffset={(offset) => {
             setLectureSnapshotAt(report.lectureGenerations.snapshotAt);
             setLectureOffset(offset);
@@ -625,17 +710,34 @@ function qualifiedModelOptionValue(connectionKey: string, modelId: string) {
 
 function UsageReport({
   report,
+  priceStatus = null,
+  pricesRefreshing = false,
+  onRefreshPrices,
   filtersActive,
   breakdown,
   onBreakdown,
+  distributionMetric = 'usd',
+  onDistributionMetric = () => undefined,
   onLectureOffset,
 }: Readonly<{
   report: ModelUsageAnalyticsReport;
+  priceStatus?: ModelPriceStatus | null;
+  pricesRefreshing?: boolean;
+  onRefreshPrices?: (() => void) | undefined;
   filtersActive: boolean;
   breakdown: UsageBreakdown;
   onBreakdown: (breakdown: UsageBreakdown) => void;
+  distributionMetric?: UsageDistributionMetric;
+  onDistributionMetric?: (metric: UsageDistributionMetric) => void;
   onLectureOffset: (offset: number) => void;
 }>) {
+  // One source for every amount on the screen (summary card, model cards, both lists, the feature
+  // table): cost does not add up across different groupings, see buildUsageDistribution.
+  const distribution = useMemo(
+    () => buildUsageDistribution(report, priceStatus?.catalog?.models ?? null),
+    [report, priceStatus?.catalog],
+  );
+  const workloadCosts = new Map(distribution.workloads.map((row) => [row.id, row.cost]));
   const reportedTurns = reportedUsageTurnCount(report.totals);
   const noTurns = report.totals.turnCount === 0;
   const noReportedTokens = report.totals.turnCount > 0 && reportedTurns === 0;
@@ -704,9 +806,61 @@ function UsageReport({
         </div>
       )}
 
-      <UsageSummary aggregate={report.totals} />
+      <UsageSummary aggregate={report.totals} cost={distribution.total} />
+      {priceStatus && (
+        <UsagePriceNote
+          status={priceStatus}
+          timeZone={report.range.timeZone}
+          refreshing={pricesRefreshing}
+          onRefresh={onRefreshPrices}
+        />
+      )}
 
-      <UsageModelSummary rows={report.byModel} />
+      <UsageDistribution
+        models={distribution.models}
+        workloads={distribution.workloads}
+        metric={distributionMetric}
+        onMetric={onDistributionMetric}
+        modelLabel={usageModelDisplayName}
+        workloadLabel={(kind) => workloadLabel(kind as ModelUsageWorkloadKind)}
+      />
+      <p className="usage-coverage-notice">
+        AI 비서·브리핑 기록은 수집 기능 적용 후부터 보입니다. 과거 미수집 사용량은 추측해 채우지
+        않습니다. 모델 표는 위의 프로젝트·작업 종류 필터와 함께 사용할 수 있습니다. 캐시 읽기는
+        입력의 일부이며 중복 합산하지 않습니다. 토큰 수는 청구 금액이나 구독 잔액이 아닙니다.
+      </p>
+      {report.byWorkload.length > 0 && (
+        <UsageTable label={uiText('Usage by feature')}>
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">{uiText('Feature')}</th>
+                <th scope="col">{uiText('Calls')}</th>
+                <th scope="col">{uiText('Input')}</th>
+                <th scope="col">{uiText('Output')}</th>
+                <th scope="col">{uiText('Cached read')}</th>
+                <th scope="col">{uiText('Total')}</th>
+                {distribution.total && <th scope="col">{uiText('API-equivalent')}</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {report.byWorkload.map((row) => (
+                <tr key={row.workloadKind}>
+                  <td>{uiText(WORKLOAD_LABELS[row.workloadKind])}</td>
+                  <td>{row.turnCount}</td>
+                  <TokenAggregateCell aggregate={row} field="inputTokens" />
+                  <TokenAggregateCell aggregate={row} field="outputTokens" />
+                  <TokenAggregateCell aggregate={row} field="cachedReadTokens" />
+                  <TokenAggregateCell aggregate={row} field="totalTokens" />
+                  {distribution.total && (
+                    <WorkloadCostCell cost={workloadCosts.get(row.workloadKind) ?? null} />
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </UsageTable>
+      )}
 
       {noTurns ? (
         <div className="usage-empty">
@@ -747,6 +901,7 @@ function UsageReport({
 
       <UsageBreakdownTabs
         report={report}
+        prices={priceStatus?.catalog?.models ?? null}
         active={breakdown}
         onActive={onBreakdown}
         onLectureOffset={onLectureOffset}
@@ -755,10 +910,32 @@ function UsageReport({
   );
 }
 
-function UsageSummary({ aggregate }: { aggregate: ModelUsageAggregate }) {
+function UsageSummary({
+  aggregate,
+  cost = null,
+}: {
+  aggregate: ModelUsageAggregate;
+  cost?: UsageCostSummary | null;
+}) {
   const reported = reportedUsageTurnCount(aggregate);
   return (
-    <section className="usage-summary-grid" aria-label={uiText('Usage summary')}>
+    <section
+      className={`usage-summary-grid${cost ? ' with-cost' : ''}`}
+      aria-label={uiText('Usage summary')}
+    >
+      {cost && (
+        <article className="usage-summary-card cost">
+          <span>{uiText('API-equivalent cost')}</span>
+          <strong>{cost.usd === null ? '—' : formatUsd(cost.usd)}</strong>
+          <small>
+            {cost.unpricedModelIds.length > 0
+              ? uiText('{count} models without a price are left out', {
+                  count: cost.unpricedModelIds.length,
+                })
+              : uiText('Estimate at standard API prices · not a bill')}
+          </small>
+        </article>
+      )}
       <UsageSummaryCard
         label={uiText('Known input tokens')}
         value={aggregateTokenValue(aggregate, 'inputTokens')}
@@ -807,89 +984,62 @@ function UsageSummaryCard({
   );
 }
 
-function UsageModelSummary({ rows }: { rows: readonly ModelUsageModelRow[] }) {
-  useUiText();
-  const [expanded, setExpanded] = useState(false);
-  const visibleRows = expanded ? rows : rows.slice(0, 8);
+/** Where the prices come from, how fresh they are, and a way to fetch them now. */
+function UsagePriceNote({
+  status,
+  timeZone,
+  refreshing,
+  onRefresh,
+}: Readonly<{
+  status: ModelPriceStatus;
+  timeZone: string;
+  refreshing: boolean;
+  onRefresh?: (() => void) | undefined;
+}>) {
   return (
-    <section className="usage-model-summary" aria-labelledby="usage-model-summary-heading">
-      <header>
-        <div>
-          <span className="eyebrow">{uiText('MODEL MIX')}</span>
-          <h3 id="usage-model-summary-heading">{uiText('Usage by model')}</h3>
-          <p>
-            {uiText(
-              'Each resolved model is counted separately. The connection remains visible so usage from different accounts or providers is not silently merged.',
-            )}
-          </p>
-        </div>
-        {rows.length > 8 && (
-          <button
-            type="button"
-            className="ghost-button"
-            aria-expanded={expanded}
-            onClick={() => setExpanded((current) => !current)}
-          >
-            {expanded
-              ? uiText('Show top 8')
-              : uiText('Show all {value1} models', { value1: rows.length.toLocaleString() })}
-          </button>
-        )}
-      </header>
-      {rows.length === 0 ? (
-        <div className="usage-model-summary-empty">
-          {uiText('No finalized turn in this report included a resolved model identity.')}
-        </div>
-      ) : (
-        <div className="usage-model-card-grid">
-          {visibleRows.map((row) => (
-            <article
-              className="usage-model-card"
-              key={`${row.connectionKey}:${row.resolvedModelId}`}
-            >
-              <header>
-                <div>
-                  <strong>{usageModelDisplayName(row.resolvedModelId)}</strong>
-                  <small>{row.resolvedModelId}</small>
-                </div>
-                <span>{row.connectionLabel}</span>
-              </header>
-              <dl>
-                <ModelTokenMetric
-                  label={uiText('Input')}
-                  value={aggregateTokenValue(row, 'inputTokens')}
-                />
-                <ModelTokenMetric
-                  label={uiText('Output')}
-                  value={aggregateTokenValue(row, 'outputTokens')}
-                />
-                <ModelTokenMetric
-                  label={uiText('Total')}
-                  value={aggregateTokenValue(row, 'totalTokens')}
-                />
-              </dl>
-              <footer>
-                <span>{providerIdentity(row)}</span>
-                <span>{describeAggregateCoverage(row)}</span>
-              </footer>
-            </article>
-          ))}
-        </div>
+    <div className="usage-price-note" role="status">
+      <span>
+        {status.catalog
+          ? uiText('Prices: {source} · updated {time}', {
+              source: MODEL_PRICE_SOURCE_LABEL,
+              time: formatDateTime(status.catalog.fetchedAt, timeZone),
+            })
+          : uiText('No price list yet · token counts only')}
+        {status.lastError
+          ? ` · ${uiText('The price list could not be refreshed ({code}). The last list is still used.', { code: status.lastError })}`
+          : ''}
+      </span>
+      {onRefresh && (
+        <button type="button" className="ghost-button" disabled={refreshing} onClick={onRefresh}>
+          {refreshing ? uiText('Refreshing…') : uiText('Refresh prices')}
+        </button>
       )}
-    </section>
+    </div>
   );
 }
 
-function ModelTokenMetric({ label, value }: { label: string; value: number | null }) {
-  return (
-    <div>
-      <dt>{label}</dt>
-      <dd
-        aria-label={`${label}: ${value === null ? 'Not reported' : `${formatTokenCount(value)} tokens`}`}
+/** A feature's API-equivalent amount, or why there is none; never a bare zero for an unknown. */
+function WorkloadCostCell({ cost }: { cost: UsageCostState | null }) {
+  if (!cost || cost.kind === 'unreported') return <td className="usage-token-unavailable">—</td>;
+  if (cost.kind === 'known')
+    return (
+      <td
+        title={
+          cost.excludedModelIds.length
+            ? uiText('{count} models without a price are left out', {
+                count: cost.excludedModelIds.length,
+              })
+            : undefined
+        }
       >
-        {formatCompactTokenCount(value)}
-      </dd>
-    </div>
+        {formatUsd(cost.usd)}
+        {cost.excludedModelIds.length > 0 && '+'}
+      </td>
+    );
+  return (
+    <td className="usage-token-unavailable">
+      {cost.kind === 'unpriced' ? uiText('Price unknown') : uiText('No model breakdown')}
+    </td>
   );
 }
 
@@ -899,7 +1049,6 @@ function UsageTokenChart({ report }: { report: ModelUsageAnalyticsReport }) {
   const titleId = `usage-chart-title-${generatedId}`;
   const descriptionId = `usage-chart-description-${generatedId}`;
   const helpId = `usage-chart-table-help-${generatedId}`;
-  const patternId = `usage-chart-incomplete-${generatedId}`;
   const buckets = usageSeriesChartBuckets(report.series, report.range.timeZone);
   const chart = buildUsageTokenChart(buckets);
   const labelIndexes = new Set(
@@ -914,11 +1063,7 @@ function UsageTokenChart({ report }: { report: ModelUsageAnalyticsReport }) {
         <div>
           <span className="eyebrow">{uiText('KNOWN TOKENS OVER TIME')}</span>
           <h3>{uiText('Input and output trend')}</h3>
-          <p>
-            {uiText(
-              'Hatched bars include partial or unavailable turns and are known lower bounds.',
-            )}
-          </p>
+          <p>{uiText('Each day’s reporting coverage is in the token data table below.')}</p>
         </div>
         <div className="usage-chart-legend" aria-label={uiText('Chart legend')}>
           <span className="input">
@@ -928,10 +1073,6 @@ function UsageTokenChart({ report }: { report: ModelUsageAnalyticsReport }) {
           <span className="output">
             <i />
             {uiText('Output')}
-          </span>
-          <span className="incomplete">
-            <i />
-            {uiText('Lower bound')}
           </span>
         </div>
       </header>
@@ -948,17 +1089,6 @@ function UsageTokenChart({ report }: { report: ModelUsageAnalyticsReport }) {
               'calendar buckets. The accompanying data table contains the same values and reporting coverage.',
             )}
           </desc>
-          <defs>
-            <pattern
-              id={patternId}
-              width="7"
-              height="7"
-              patternUnits="userSpaceOnUse"
-              patternTransform="rotate(45)"
-            >
-              <line x1="0" y1="0" x2="0" y2="7" className="usage-chart-pattern-line" />
-            </pattern>
-          </defs>
           {chart.ticks.map((tick) => (
             <g key={tick.value}>
               <line
@@ -1000,16 +1130,6 @@ function UsageTokenChart({ report }: { report: ModelUsageAnalyticsReport }) {
                 width={bar.width}
                 height={bar.outputHeight}
               />
-              {bar.incomplete && (
-                <rect
-                  className="usage-chart-lower-bound"
-                  x={bar.x}
-                  y={bar.outputY}
-                  width={bar.width}
-                  height={bar.inputHeight + bar.outputHeight}
-                  fill={`url(#${patternId})`}
-                />
-              )}
               {labelIndexes.has(index) && (
                 <text
                   className="usage-chart-axis-label"
@@ -1070,11 +1190,13 @@ function UsageTokenChart({ report }: { report: ModelUsageAnalyticsReport }) {
 
 function UsageBreakdownTabs({
   report,
+  prices,
   active,
   onActive,
   onLectureOffset,
 }: Readonly<{
   report: ModelUsageAnalyticsReport;
+  prices: Readonly<Record<string, ModelPrice>> | null;
   active: UsageBreakdown;
   onActive: (breakdown: UsageBreakdown) => void;
   onLectureOffset: (offset: number) => void;
@@ -1128,7 +1250,18 @@ function UsageBreakdownTabs({
         ))}
       </div>
       <div id={panelId} role="tabpanel" aria-labelledby={`usage-tab-${generatedId}-${active}`}>
-        {active === 'projects' && <ProjectUsageTable rows={report.byProject} />}
+        {active === 'briefing' && (
+          <DailyWorkloadUsageTable report={report} kind="briefing_summary" prices={prices} />
+        )}
+        {active === 'papers' && (
+          <DailyWorkloadUsageTable report={report} kind="paper_summary" prices={prices} />
+        )}
+        {active === 'projects' && (
+          <>
+            <ProjectUsageTable rows={report.byProject} />
+            <ProjectModelUsageTable rows={report.byProjectModel ?? []} />
+          </>
+        )}
         {active === 'lectures' && <LectureUsageTable report={report} onOffset={onLectureOffset} />}
         {active === 'providers' && (
           <ProviderUsageTables connections={report.byConnection} models={report.byModel} />
@@ -1138,6 +1271,130 @@ function UsageBreakdownTabs({
   );
 }
 
+/**
+ * One of the two detail tabs: what Briefing, or paper summaries, used on each day, by model. The
+ * amount is the API-equivalent estimate of that day's row, priced like the rest of the screen.
+ */
+function DailyWorkloadUsageTable({
+  report,
+  kind,
+  prices,
+}: Readonly<{
+  report: ModelUsageAnalyticsReport;
+  kind: (typeof MODEL_USAGE_DETAIL_WORKLOADS)[number];
+  prices: Readonly<Record<string, ModelPrice>> | null;
+}>) {
+  const rows = (report.byDayWorkloadModel ?? []).filter((row) => row.workloadKind === kind);
+  const severalConnections = new Set(rows.map((row) => row.connectionKey)).size > 1;
+  if (!rows.length)
+    return (
+      <BreakdownEmpty>
+        {kind === 'paper_summary' ? (
+          <>
+            {uiText('No paper summary usage was recorded in this range')}
+            <br />
+            {uiText(
+              'Paper summaries are counted apart from briefings since 0.58.140; earlier ones are part of Briefing.',
+            )}
+          </>
+        ) : (
+          uiText('No briefing usage was recorded in this range')
+        )}
+      </BreakdownEmpty>
+    );
+  return (
+    <UsageTable
+      label={
+        kind === 'paper_summary'
+          ? uiText('Paper summary usage by day')
+          : uiText('Briefing usage by day')
+      }
+    >
+      <thead>
+        <tr>
+          <th scope="col">{uiText('Date')}</th>
+          <th scope="col">{uiText('Model')}</th>
+          <th scope="col">{uiText('Calls')}</th>
+          <th scope="col">{uiText('Input')}</th>
+          <th scope="col">{uiText('Output')}</th>
+          <th scope="col">{uiText('Cached read')}</th>
+          <th scope="col">{uiText('Total')}</th>
+          {prices && <th scope="col">{uiText('API-equivalent')}</th>}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row, index) => {
+          const priceKey = prices ? modelPriceKey(row.resolvedModelId, prices) : null;
+          const usd = prices && priceKey ? estimateUsageCostUsd(row, prices[priceKey]!) : null;
+          return (
+            <tr key={`${row.bucketKey}:${row.connectionKey}:${row.resolvedModelId}`}>
+              {/* The date is said once per day; the rows under it belong to it. */}
+              <td>{rows[index - 1]?.bucketKey === row.bucketKey ? '' : row.bucketKey}</td>
+              <td title={row.resolvedModelId}>
+                {usageModelDisplayName(row.resolvedModelId)}
+                {severalConnections && <small> · {row.connectionLabel}</small>}
+              </td>
+              <td>{row.turnCount.toLocaleString()}</td>
+              <TokenAggregateCell aggregate={row} field="inputTokens" />
+              <TokenAggregateCell aggregate={row} field="outputTokens" />
+              <TokenAggregateCell aggregate={row} field="cachedReadTokens" />
+              <TokenAggregateCell aggregate={row} field="totalTokens" />
+              {prices && (
+                <td className={usd === null ? 'usage-token-unavailable' : undefined}>
+                  {usd === null
+                    ? reportedUsageTurnCount(row) === 0
+                      ? '—'
+                      : uiText('Price unknown')
+                    : formatUsd(usd)}
+                </td>
+              )}
+            </tr>
+          );
+        })}
+      </tbody>
+    </UsageTable>
+  );
+}
+
+function ProjectModelUsageTable({ rows }: { rows: readonly ModelUsageProjectModelRow[] }) {
+  if (!rows.length) return null;
+  return (
+    <UsageTable label="프로젝트 내 모델별 사용량">
+      <table>
+        <thead>
+          <tr>
+            <th>프로젝트</th>
+            <th>모델 · 연결</th>
+            <th>입력</th>
+            <th>출력</th>
+            <th>캐시 읽기</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr
+              key={JSON.stringify([
+                row.projectId,
+                row.connectionKey,
+                row.providerId,
+                row.resolvedModelId,
+              ])}
+            >
+              <td>{row.projectName ?? row.projectId}</td>
+              <td>
+                {row.resolvedModelId}
+                <small>{row.connectionLabel}</small>
+              </td>
+              <TokenAggregateCell aggregate={row} field="inputTokens" />
+              <TokenAggregateCell aggregate={row} field="outputTokens" />
+              <TokenAggregateCell aggregate={row} field="cachedReadTokens" />
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </UsageTable>
+  );
+}
 function ProjectUsageTable({ rows }: { rows: readonly ModelUsageProjectRow[] }) {
   if (rows.length === 0)
     return <BreakdownEmpty>{uiText('No project-owned usage matches this report.')}</BreakdownEmpty>;
@@ -1427,9 +1684,17 @@ function TokenAggregateCell({
   field,
 }: {
   aggregate: ModelUsageAggregate;
-  field: 'inputTokens' | 'outputTokens' | 'totalTokens';
+  field: 'inputTokens' | 'outputTokens' | 'totalTokens' | 'cachedReadTokens';
 }) {
-  return <TokenCell value={aggregateTokenValue(aggregate, field)} />;
+  return (
+    <TokenCell
+      value={
+        field === 'cachedReadTokens'
+          ? aggregate.tokens.cachedReadTokens
+          : aggregateTokenValue(aggregate, field)
+      }
+    />
+  );
 }
 
 function LectureTokenCell({

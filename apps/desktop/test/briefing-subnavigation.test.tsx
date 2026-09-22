@@ -2,7 +2,7 @@ import { act, create } from 'react-test-renderer';
 import { expect, it, vi } from 'vitest';
 import { ProjectSidebar, type ProjectSidebarProps } from '../src/renderer/src/project-sidebar';
 import { DEFAULT_PROJECT_NAVIGATION_STATE } from '../src/renderer/src/project-navigation-state';
-it('expands Briefing children in the main sidebar and selects papers without a second sidebar', async () => {
+it('opens Briefing directly and selects its sibling paper destination without any submenu', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   const onSelectBriefingView = vi.fn();
   const onOpenAssistant = vi.fn();
@@ -28,14 +28,14 @@ it('expands Briefing children in the main sidebar and selects papers without a s
     expect(quick[0]!.props['aria-label']).toBe('AI 비서');
     await act(() => quick[0]!.props.onClick());
     expect(onOpenAssistant).toHaveBeenCalledOnce();
-    expect(parent.props['aria-expanded']).toBe(false);
+    expect(parent.props['aria-expanded']).toBeUndefined();
     await act(() => parent.props.onClick());
-    expect(parent.props['aria-expanded']).toBe(true);
+    expect(onSelectBriefingView).toHaveBeenLastCalledWith('history');
     const children = ui!.root
-      .findByProps({ 'aria-label': 'Briefing Lab 하위 세션' })
+      .findByProps({ 'aria-label': 'Personal workspace' })
       .findAllByType('button');
-    expect(children).toHaveLength(3);
-    await act(() => children[1]!.props.onClick());
+    expect(children).toHaveLength(4);
+    await act(() => children[3]!.props.onClick());
     expect(onSelectBriefingView).toHaveBeenCalledWith('papers');
     await act(() => parent.props.onClick());
     expect(ui!.root.findAllByProps({ 'aria-label': 'Briefing Lab 하위 세션' })).toHaveLength(0);

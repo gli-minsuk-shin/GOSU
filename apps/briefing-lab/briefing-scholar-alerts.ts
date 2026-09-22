@@ -21,13 +21,13 @@ function scholarBibliography(citation?: string) {
   };
 }
 /** Recognition is a heuristic, never sender authentication or permission to read more mail. */
-export function isScholarAlert(mail: LiveItem) {
-  return (
-    mail.kind === 'email' &&
-    /(?:scholaralerts(?:-noreply)?@google\.com)|google scholar|구글 학술검색/i.test(
-      `${mail.details[0] ?? ''} ${mail.title}`,
-    )
+export function isScholarAlertMessage(sender: string, title: string) {
+  return /(?:scholaralerts(?:-noreply)?@google\.com)|google scholar|구글 학술검색/i.test(
+    `${sender} ${title}`,
   );
+}
+export function isScholarAlert(mail: LiveItem) {
+  return mail.kind === 'email' && isScholarAlertMessage(mail.details[0] ?? '', mail.title);
 }
 const publisherHosts = new Set([
   'doi.org',
@@ -151,6 +151,21 @@ export function scholarCandidates(emails: readonly LiveItem[]) {
         },
       ];
     });
+    // Title links read from the raw HTML source, where Mail.content keeps the visible title but drops
+    // its href. Only an anchor whose text is an article title and whose target passes paperLink is
+    // used; "[PDF] arxiv.org"-style secondary links never become titles.
+    const titleLinks = (mail.mailLinks ?? []).flatMap((anchor) => {
+      if (/^\[(?:pdf|html)\]/i.test(anchor.text.trim())) return [];
+      const title = articleTitle(anchor.text);
+      if (!title || /^[\w.-]+\.[a-z]{2,}$/i.test(title)) return [];
+      const link = paperLink(anchor.href);
+      return link ? [{ ...link, title }] : [];
+    });
+    const titleLink = (title: string) =>
+      titleLinks.find((link) => link.title.toLowerCase() === normalize(title).toLowerCase());
+    const htmlDetails = [
+      '조회한 알림 원문(HTML)의 제목 링크와 알림 발췌로 만든 논문 후보입니다. 알림 발췌만으로 원문 전체를 읽었다고 판단하지 않습니다. 발신 진위는 검증하지 않았습니다.',
+    ];
     // Mail.content may keep visible citations but omit HTML hrefs.
     const lines = [...body.matchAll(/[^\n]+/g)].map((line) => ({
       text: normalize(line[0]),
@@ -217,6 +232,36 @@ export function scholarCandidates(emails: readonly LiveItem[]) {
         links.some((link) => normalize(link.title).toLowerCase() === citation.title.toLowerCase())
       )
         continue;
+      const linked = titleLink(citation.title);
+      if (linked) {
+        const excerpt = normalize(
+          body
+            .slice(citation.start, nextEntry(citation.start))
+            .replace(/https?:\/\/[^\s<>"\]]+/g, (raw) => paperLink(raw)?.url ?? ''),
+        ).slice(0, 1800);
+        if (
+          !found.has(linked.id) &&
+          !isExplicitCommercialPaperCandidate(
+            citation.title,
+            excerpt,
+            publisherHosts.has(new URL(linked.url).hostname),
+          )
+        )
+          found.set(linked.id, {
+            id: linked.id,
+            kind: 'papers',
+            title: citation.title,
+            text: excerpt || citation.title,
+            source: 'Google Scholar 알림',
+            bibliography: scholarBibliography(citation.authors),
+            sourceUrl: linked.url,
+            readScope: 'mail-preview',
+            privateOrigin: 'mail',
+            discoverySource: 'google-scholar-alert',
+            details: htmlDetails,
+          });
+        continue;
+      }
       const id = `scholar-citation:${digest(normalize(`${citation.title}\n${citation.authors}`).toLowerCase())}`;
       if (!found.has(id))
         found.set(id, {
@@ -237,6 +282,45 @@ export function scholarCandidates(emails: readonly LiveItem[]) {
             '알림의 제목·저자·연도 구조에서 추출한 후보입니다. 원문 링크와 전체 내용을 확인하지 못했으며, 알림 발췌만 사용합니다. 발신 진위는 검증하지 않았습니다.',
           ],
         });
+    }
+    // Linked titles the plain text did not reach (Mail's body preview is cut at 4,000 characters).
+    for (const linked of titleLinks) {
+      const title = linked.title.toLowerCase();
+      if (
+        found.has(linked.id) ||
+        [...found.values()].some((item) => item.title.toLowerCase() === title)
+      )
+        continue;
+      const at = body.toLowerCase().indexOf(title);
+      const excerpt =
+        at >= 0
+          ? normalize(
+              body
+                .slice(at, nextEntry(at))
+                .replace(/https?:\/\/[^\s<>"\]]+/g, (raw) => paperLink(raw)?.url ?? ''),
+            ).slice(0, 1800)
+          : '';
+      if (
+        isExplicitCommercialPaperCandidate(
+          linked.title,
+          excerpt,
+          publisherHosts.has(new URL(linked.url).hostname),
+        )
+      )
+        continue;
+      found.set(linked.id, {
+        id: linked.id,
+        kind: 'papers',
+        title: linked.title,
+        text: excerpt || linked.title,
+        source: 'Google Scholar 알림',
+        bibliography: scholarBibliography(),
+        sourceUrl: linked.url,
+        readScope: 'mail-preview',
+        privateOrigin: 'mail',
+        discoverySource: 'google-scholar-alert',
+        details: htmlDetails,
+      });
     }
     if (found.size >= 12) break;
   }

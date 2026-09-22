@@ -50,6 +50,8 @@ const categories = {
   ]),
   unavailable: new Set([
     'mail_search_turn_limit',
+    'mail_search_index_required',
+    'mail_search_too_broad',
     'mail_account_refresh_required',
     'mail_grant_limit',
     'mail_invalid_response',
@@ -101,7 +103,7 @@ export function briefingToolFailure(error: unknown) {
       retryable: false,
       guidance:
         raw === 'mail_search_outside_scope'
-          ? 'The requested date is outside the saved lookback scope. Explain that this email was not searched, not that it does not exist. Do not broaden settings.'
+          ? 'The requested window lies wholly in the future, so nothing was searched. Ask for a date range that has already passed.'
           : 'The receiving account did not match a connected approved account. Explain the account scope mismatch; do not claim the message is absent or search another account instead.',
     };
   const candidate =

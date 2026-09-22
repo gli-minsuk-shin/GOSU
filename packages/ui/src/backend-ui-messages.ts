@@ -627,7 +627,7 @@ const pairs: readonly (readonly [string, string])[] = [
   ],
   [
     'Select an active, non-archived project before reading linked resources.',
-    '연결된 자원을 읽기 전에 보관되지 않은 활성 프로젝트를 선택하세요.',
+    '연결된 자원을 읽기 전에 아카이브하지 않은 활성 프로젝트를 선택하세요.',
   ],
   [
     'Host key not trusted — verify its fingerprint and connect once in Terminal.',
@@ -730,7 +730,7 @@ const pairs: readonly (readonly [string, string])[] = [
   ],
   [
     'This project is archived. Restore it to active before making changes.',
-    '보관된 프로젝트입니다. 변경하려면 먼저 활성 상태로 복원하세요.',
+    '아카이브한 프로젝트입니다. 변경하려면 먼저 활성 상태로 복원하세요.',
   ],
   ['This project is already active.', '이미 활성 상태인 프로젝트입니다.'],
   [
@@ -852,6 +852,18 @@ const pairs: readonly (readonly [string, string])[] = [
   [
     'Choose an Obsidian Vault before opening this project’s Research Notes.',
     '프로젝트 연구 노트를 열려면 먼저 Obsidian Vault를 선택하세요.',
+  ],
+  [
+    'The saved Obsidian Vault folder was not found at its path. It may have been moved, renamed or be on a disk that is not mounted. Your setting is kept; retry, or choose the Vault again.',
+    '저장된 Obsidian Vault 폴더를 그 경로에서 찾지 못했습니다. 폴더가 옮겨졌거나 이름이 바뀌었거나, 연결되지 않은 디스크에 있을 수 있습니다. 설정은 그대로 있습니다. 다시 시도하거나 Vault를 다시 선택하세요.',
+  ],
+  [
+    'macOS did not let GOSU read the saved Obsidian Vault folder. Allow GOSU under System Settings → Privacy & Security → Files and Folders, then retry. Your setting is kept.',
+    'macOS가 GOSU의 Obsidian Vault 폴더 읽기를 막았습니다. 시스템 설정 → 개인정보 보호 및 보안 → 파일 및 폴더에서 GOSU를 허용한 뒤 다시 시도하세요. 설정은 그대로 있습니다.',
+  ],
+  [
+    'GOSU could not read the saved Obsidian Vault folder. Your setting is kept; retry, or choose the Vault again.',
+    '저장된 Obsidian Vault 폴더를 읽지 못했습니다. 설정은 그대로 있습니다. 다시 시도하거나 Vault를 다시 선택하세요.',
   ],
   [
     'The selected Obsidian Vault changed. GOSU kept the existing project notes untouched.',
@@ -1117,7 +1129,7 @@ const pairs: readonly (readonly [string, string])[] = [
   ],
   [
     'Remote workspace access is available only for an active, non-archived project.',
-    '원격 작업 공간은 보관되지 않은 활성 프로젝트에서만 접근할 수 있습니다.',
+    '원격 작업 공간은 아카이브하지 않은 활성 프로젝트에서만 접근할 수 있습니다.',
   ],
   [
     'GOSU blocked this remote workspace command or permission mode. Use an approved bounded text file action, smaller Git inspection, direct test/build command, or relative Python experiment entrypoint.',

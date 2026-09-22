@@ -15,6 +15,8 @@ import { briefingClientContext } from './briefing-client-context';
 import type { assistantModel } from './briefing-assistant';
 import { CalendarService } from './calendar-service';
 import { summarySourceDigest, summaryContextDigest } from './briefing-summary-cache';
+import * as discovery from './briefing-paper-discovery';
+import * as taskDraft from './email-task-draft';
 const modelFixture = (): Awaited<ReturnType<typeof assistantModel>> => ({
   schemaVersion: 1,
   catalogVersion: 'fixture',
@@ -41,6 +43,32 @@ vi.mock('./briefing-workspace-store', () => ({
     }
   },
 }));
+it('names the rate-limited or unanswered paper index instead of a generic incomplete notice', () => {
+  // A lost connection is neither a login nor a CLI version problem.
+  expect(sourceError(new Error('claude_code_network_unavailable'))).toContain('인터넷(DNS) 연결');
+  expect(sourceError(new Error('claude_code_network_unavailable'))).not.toContain('로그인 상태');
+  const arxivLimited = sourceError(
+    new discovery.PapersDiscoveryIncompleteError([
+      { source: 'arXiv', code: 'source_rate_limited' },
+    ]),
+  );
+  expect(arxivLimited).toContain('arXiv가 이 네트워크의 요청을 잠시 제한');
+  expect(arxivLimited).toContain('Crossref·OpenReview는 확인했지만');
+  expect(arxivLimited).not.toContain('일부가 응답하지 않아');
+
+  const mixed = sourceError(
+    new discovery.PapersDiscoveryIncompleteError([
+      { source: 'arXiv', code: 'source_timeout' },
+      { source: 'OpenReview', code: 'source_http_503' },
+    ]),
+  );
+  expect(mixed).toContain('arXiv·OpenReview 응답을 받지 못해');
+  expect(mixed).toContain('Crossref에는 조회 기간에 맞는 새 논문이 없었습니다');
+
+  expect(sourceError(new Error('papers_discovery_incomplete'))).toContain(
+    '공개 논문 출처 일부가 응답하지 않아',
+  );
+});
 vi.mock('./briefing-memory-store', () => ({
   BriefingMemoryStore: class {
     async related() {
@@ -52,6 +80,474 @@ vi.mock('./briefing-memory-store', () => ({
   },
 }));
 describe('live source execution', () => {
+  it.each(['allowed', 'foreign', 'revoked'])(
+    'saves Reminders preferences only for approved owned UI scope: %s',
+    async (mode) => {
+      const profile = { routineId: 'r', preferences: { todoRead: false } };
+      const workspace = {
+        profile: async () => profile,
+        owns: () => mode !== 'foreign',
+        approved: () => mode !== 'revoked',
+      };
+      const service = new LiveSourceService(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        workspace as never,
+      );
+      const configure = vi.fn(async (value, _signal, guard) => {
+        await guard();
+        return value;
+      });
+      service.taskActions = { options: vi.fn(), create: vi.fn(), configure };
+      try {
+        const req = Object.assign(
+          Readable.from([JSON.stringify({ routineId: 'r', enabled: true, listId: 'icloud' })]),
+          {
+            method: 'POST',
+            url: '/api/briefing-agent/sources/todo/preferences',
+            headers: { 'content-type': 'application/json' },
+          },
+        ) as IncomingMessage;
+        const res = { writeHead: vi.fn(), end: vi.fn(), headersSent: false, destroyed: false };
+        await service.handle(req, res as unknown as ServerResponse, new AbortController().signal);
+        expect(res.writeHead.mock.calls[0]![0]).toBe(mode === 'allowed' ? 200 : 400);
+        expect(configure).toHaveBeenCalledTimes(mode === 'allowed' ? 1 : 0);
+        expect(service.taskActions.create).not.toHaveBeenCalled();
+      } finally {
+        service.close();
+      }
+    },
+  );
+  it('allows reviewed UI task creation without granting AI access to existing tasks', async () => {
+    const profile = { routineId: 'r', preferences: { todoRead: false } };
+    const read = vi.fn(async () => {
+      throw Error('no AI task read grant');
+    });
+    const workspace = {
+      profile: async () => profile,
+      owns: () => true,
+      approved: () => true,
+      assertTodoRead: read,
+    };
+    const service = new LiveSourceService(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      workspace as never,
+    );
+    const create = vi.fn(async (_input, _signal, guard) => {
+      await guard();
+      return {
+        taskId: '22222222-2222-4222-8222-222222222222',
+        reminderState: 'skipped' as const,
+        message: 'Saved',
+      };
+    });
+    service.taskActions = { options: vi.fn(), create };
+    try {
+      const body = {
+        routineId: 'r',
+        sourceKey: 'email',
+        requestId: '22222222-2222-4222-8222-222222222222',
+        projectId: null,
+        title: 'Review',
+        notes: 'Review details',
+        dueDate: null,
+        reminderListId: null,
+      };
+      const req = Object.assign(Readable.from([JSON.stringify(body)]), {
+        method: 'POST',
+        url: '/api/briefing-agent/sources/todo/create',
+        headers: { 'content-type': 'application/json' },
+      }) as IncomingMessage;
+      const res = { writeHead: vi.fn(), end: vi.fn(), headersSent: false, destroyed: false };
+      await service.handle(req, res as unknown as ServerResponse, new AbortController().signal);
+      expect(res.writeHead.mock.calls[0]![0]).toBe(200);
+      expect(create).toHaveBeenCalledOnce();
+      expect(read).not.toHaveBeenCalled();
+      expect(profile.preferences.todoRead).toBe(false);
+    } finally {
+      service.close();
+    }
+  });
+  it.each(['allowed', 'foreign', 'private-denied', 'unapproved'])(
+    'routes task AI drafting through owned private scope without native writes: %s',
+    async (mode) => {
+      const profile = {
+        routineId: 'r',
+        timeZone: 'Asia/Seoul',
+        preferences: defaultAssistantPreferences(),
+      };
+      const workspace = {
+        profile: async () => profile,
+        owns: () => mode !== 'foreign',
+        approved: () => mode !== 'unapproved',
+        canPrivateAi: async () => mode !== 'private-denied',
+        assertTodoRead: async () => {
+          throw Error('Task drafting must not require existing-task AI read permission');
+        },
+        requiresPerRequestConfirmation: () => false,
+      };
+      const service = new LiveSourceService(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        workspace as never,
+        undefined,
+        vi.fn(async () => modelFixture()),
+      );
+      const draft = vi.spyOn(taskDraft, 'draftEmailTask').mockResolvedValue({
+        draft: { title: 'Review material', notes: 'Review', dueDate: null },
+        notice: 'No deadline',
+      });
+      const create = vi.fn(),
+        options = vi.fn();
+      service.taskActions = { create, options };
+      try {
+        const req = Object.assign(
+          Readable.from([JSON.stringify({ routineId: 'r', title: 'Mail', text: 'Please review' })]),
+          {
+            method: 'POST',
+            url: '/api/briefing-agent/sources/todo/draft',
+            headers: { 'content-type': 'application/json' },
+          },
+        ) as IncomingMessage;
+        const res = { writeHead: vi.fn(), end: vi.fn(), headersSent: false, destroyed: false };
+        await service.handle(req, res as unknown as ServerResponse, new AbortController().signal);
+        expect(res.writeHead.mock.calls[0]![0]).toBe(mode === 'allowed' ? 200 : 400);
+        expect(draft).toHaveBeenCalledTimes(mode === 'allowed' ? 1 : 0);
+        expect(create).not.toHaveBeenCalled();
+        expect(options).not.toHaveBeenCalled();
+      } finally {
+        draft.mockRestore();
+        service.close();
+      }
+    },
+  );
+  it.each(['foreign', 'revoked'] as const)(
+    'blocks task integration before native calls for %s access',
+    async (mode) => {
+      const workspace = {
+        profile: async () => ({ routineId: 'r' }),
+        owns: () => mode !== 'foreign',
+        approved: () => mode !== 'revoked',
+        assertTodoRead: async () => {
+          if (mode === 'revoked') throw Error('assistant_todo_permission_required');
+        },
+      };
+      const service = new LiveSourceService(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        workspace as never,
+      );
+      const options = vi.fn(),
+        create = vi.fn();
+      service.taskActions = { options, create };
+      try {
+        const req = Object.assign(Readable.from([JSON.stringify({ routineId: 'r' })]), {
+          method: 'POST',
+          url: '/api/briefing-agent/sources/todo/authorize',
+          headers: { 'content-type': 'application/json' },
+        }) as IncomingMessage;
+        const res = { writeHead: vi.fn(), end: vi.fn(), headersSent: false, destroyed: false };
+        await service.handle(req, res as unknown as ServerResponse, new AbortController().signal);
+        expect(options).not.toHaveBeenCalled();
+        expect(create).not.toHaveBeenCalled();
+        expect(res.writeHead.mock.calls[0]![0]).toBe(400);
+      } finally {
+        service.close();
+      }
+    },
+  );
+  it('suppresses project and reminder catalog data if the owned profile changes during the read', async () => {
+    const workspace = {
+      profile: vi
+        .fn()
+        .mockResolvedValueOnce({ routineId: 'r' })
+        .mockResolvedValueOnce({ routineId: 'r' })
+        .mockResolvedValue({ routineId: 'changed' }),
+      owns: () => true,
+      approved: () => true,
+      assertTodoRead: async () => undefined,
+    };
+    const service = new LiveSourceService(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      workspace as never,
+    );
+    service.taskActions = {
+      options: vi.fn(async () => ({
+        projects: [{ id: 'secret-project', name: 'Private project' }],
+        authorized: false,
+        lists: [],
+        defaultListId: '',
+      })),
+      create: vi.fn(),
+    };
+    try {
+      const req = Object.assign(Readable.from([JSON.stringify({ routineId: 'r' })]), {
+        method: 'POST',
+        url: '/api/briefing-agent/sources/todo/options',
+        headers: { 'content-type': 'application/json' },
+      }) as IncomingMessage;
+      const res = { writeHead: vi.fn(), end: vi.fn(), headersSent: false, destroyed: false };
+      await service.handle(req, res as unknown as ServerResponse, new AbortController().signal);
+      expect(res.writeHead.mock.calls[0]![0]).toBe(400);
+      expect(res.end.mock.calls[0]![0]).not.toContain('Private project');
+    } finally {
+      service.close();
+    }
+  });
+  it.each([false, true])(
+    'finds Scholar papers outside incremental mail results even when ordinary Mail fails=%s',
+    async (mailFails) => {
+      const mail = new AppleMailConnection();
+      vi.spyOn(mail, 'assertScope').mockImplementation(() => undefined);
+      vi.spyOn(mail, 'restorePolicyGrant').mockResolvedValue(undefined);
+      const scope = {
+        accountId: 'a',
+        mailboxId: 'b',
+        days: 3,
+        limit: 100,
+        subject: '',
+        sender: '',
+        unreadOnly: false,
+        bodyPreview: true,
+      };
+      const alert: LiveItem = {
+        id: 'previously-summarized-email',
+        kind: 'email',
+        title: 'Google Scholar alert',
+        text: 'A new research paper\nhttps://arxiv.org/abs/2609.11111v1\nAn evidence excerpt.',
+        source: 'Mail',
+        readScope: 'mail-preview',
+        details: ['scholaralerts-noreply@google.com'],
+      };
+      const collect = vi
+        .spyOn(mail, 'collect')
+        .mockImplementation(async (_r, _scope, _s, _progress, plan, search) => {
+          if (search) {
+            expect(plan).toBeUndefined();
+            expect(search.query).toBe('scholar');
+            return { items: [alert], note: 'Targeted scope' };
+          }
+          if (mailFails) throw new Error('mail_timeout_metadata');
+          return { items: [], note: 'Already summarized email excluded' };
+        });
+      const profile = { timeZone: 'Asia/Seoul' };
+      const workspace = {
+        profile: async () => profile,
+        assertMail: vi.fn(async () => undefined),
+        requiresPerRequestConfirmation: () => false,
+      };
+      const service = new LiveSourceService(
+        mail,
+        {
+          papers: async () => {
+            throw new Error('papers_discovery_incomplete');
+          },
+          cities: async () => [],
+          weather: async () => [],
+        },
+        async () => undefined,
+        undefined,
+        undefined,
+        workspace as never,
+      );
+      try {
+        const result = await service.collect(
+          {
+            routineId: 'r',
+            interest: { keywords: [], excluded: [] },
+            live: { ...defaultLiveSettings(), mail: scope },
+          },
+          new AbortController().signal,
+          vi.fn(),
+          false,
+        );
+        expect(result.find((r) => r.kind === 'papers')).toMatchObject({
+          status: 'ready',
+          items: [
+            expect.objectContaining({
+              kind: 'papers',
+              privateOrigin: 'mail',
+              discoverySource: 'google-scholar-alert',
+            }),
+          ],
+        });
+        expect(result.find((r) => r.kind === 'email')?.items).toEqual([]);
+        expect(collect).toHaveBeenCalledTimes(2);
+        expect(
+          collect.mock.calls.every((c) => JSON.stringify(c[1]) === JSON.stringify(scope)),
+        ).toBe(true);
+        expect(workspace.assertMail).toHaveBeenCalledTimes(4);
+      } finally {
+        service.close();
+      }
+    },
+  );
+  it('tries a Mail that stopped answering once more within a run, but does not wait again for one that never answered', async () => {
+    const mail = new AppleMailConnection();
+    vi.spyOn(mail, 'assertScope').mockImplementation(() => undefined);
+    vi.spyOn(mail, 'restorePolicyGrant').mockResolvedValue(undefined);
+    const scope = {
+      accountId: 'a',
+      mailboxId: 'b',
+      days: 3,
+      limit: 100,
+      subject: '',
+      sender: '',
+      unreadOnly: false,
+      bodyPreview: true,
+    };
+    const item: LiveItem = {
+      id: 'new-mail',
+      kind: 'email',
+      title: 'Meeting moved',
+      text: 'The meeting is now at three.',
+      source: 'Mail',
+      readScope: 'mail-preview',
+      details: ['colleague@example.test'],
+    };
+    let outcomes: (string | number)[] = [];
+    const collect = vi
+      .spyOn(mail, 'collect')
+      .mockImplementation(async (_r, _scope, _s, _progress, _plan, search) => {
+        if (search) return { items: [], note: 'Scholar' };
+        const outcome = outcomes.shift();
+        if (typeof outcome === 'string') throw new Error(outcome);
+        return { items: [item], note: 'Read', ...(outcome ? { delayedAccounts: outcome } : {}) };
+      });
+    const workspace = {
+      profile: async () => ({ timeZone: 'Asia/Seoul' }),
+      assertMail: vi.fn(async () => undefined),
+      requiresPerRequestConfirmation: () => false,
+    };
+    const service = new LiveSourceService(
+      mail,
+      { papers: async () => [], cities: async () => [], weather: async () => [] },
+      async () => undefined,
+      undefined,
+      undefined,
+      workspace as never,
+    );
+    service.mailRetryPauseMs = 0;
+    const run = async (next: (string | number)[]) => {
+      outcomes = next;
+      collect.mockClear();
+      const onDelayed = vi.fn(),
+        progress = vi.fn();
+      const result = await service.collect(
+        {
+          routineId: 'r',
+          interest: { keywords: [], excluded: [] },
+          live: { ...defaultLiveSettings(), mail: scope },
+        },
+        new AbortController().signal,
+        progress,
+        false,
+        undefined,
+        undefined,
+        { retry: true, onDelayed },
+      );
+      const ordinary = collect.mock.calls.filter((call) => !call[5]).length,
+        scholar = collect.mock.calls.length - ordinary;
+      return {
+        email: result.find((r) => r.kind === 'email')!,
+        ordinary,
+        scholar,
+        onDelayed,
+        progress,
+      };
+    };
+    try {
+      // Mail answered and then stopped: the second reader gets through and nothing is left over.
+      const recovered = await run(['mail_timeout_metadata']);
+      expect(recovered.email).toMatchObject({ status: 'ready', items: [{ id: 'new-mail' }] });
+      expect(recovered).toMatchObject({ ordinary: 2, scholar: 1 });
+      expect(recovered.onDelayed).not.toHaveBeenCalled();
+      expect(recovered.progress).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'email',
+          detail: expect.stringContaining('한 번 더 시도'),
+        }),
+      );
+
+      // Mail never answered for its whole waiting time: no second wait and no Scholar search
+      // against the same silent Mail; the run is told so it can look again soon.
+      const silent = await run(['mail_timeout_account']);
+      expect(silent).toMatchObject({ ordinary: 1, scholar: 0 });
+      expect(silent.email.status).toBe('failed');
+      expect(silent.email.error).toContain('Apple Mail이 5분 동안 응답하지 않아');
+      expect(silent.onDelayed).toHaveBeenCalledOnce();
+
+      // Still failing after the one retry, or one account left unread: told as well.
+      const stillDown = await run(['mail_timeout_mailbox', 'mail_unavailable']);
+      expect(stillDown).toMatchObject({ ordinary: 2, scholar: 1 });
+      expect(stillDown.email.error).toContain('Apple Mail을 조회하지 못했습니다');
+      expect(stillDown.onDelayed).toHaveBeenCalledOnce();
+      const partly = await run([1]);
+      expect(partly.email).toMatchObject({ status: 'ready' });
+      expect(partly.email).not.toHaveProperty('delayedAccounts');
+      expect(partly.onDelayed).toHaveBeenCalledOnce();
+
+      // A changed mailbox is not a slow Mail: no retry and no early follow-up.
+      const changed = await run(['mail_account_refresh_required']);
+      expect(changed).toMatchObject({ ordinary: 1 });
+      expect(changed.onDelayed).not.toHaveBeenCalled();
+    } finally {
+      service.close();
+    }
+  });
+  it('words a Mail timeout by the stage it reached, with the right particle', async () => {
+    const { sourceError } = await import('./live-source-service');
+    expect(sourceError(new Error('mail_timeout_mailbox'))).toContain('메일함 응답이 지연되고');
+    expect(sourceError(new Error('mail_timeout_metadata'))).toContain('메일 목록 읽기가 지연되고');
+    expect(sourceError(new Error('mail_timeout_body'))).toContain('본문 읽기가 지연되고');
+    expect(sourceError(new Error('mail_timeout_account'))).toContain('5분 동안 응답하지 않아');
+    expect(sourceError(new Error('mail_timeout_account'))).not.toContain('응답가');
+  });
+  it('routes default recurring collection through multi-source discovery, not chat-only search', async () => {
+    const spy = vi.spyOn(discovery, 'searchCollectionPapers').mockResolvedValue([]);
+    const service = new LiveSourceService();
+    try {
+      await service.collect(
+        {
+          routineId: 'recovery-test',
+          live: {
+            ...defaultLiveSettings(),
+            weather: null,
+            mail: null,
+            papers: { enabled: true, days: 10, limit: 3, author: '' },
+          },
+          interest: {
+            keywords: [{ term: 'neural networks', weight: 5, synonyms: [] }],
+            excluded: [],
+          },
+        },
+        new AbortController().signal,
+        () => undefined,
+        false,
+      );
+      expect(spy).toHaveBeenCalledOnce();
+    } finally {
+      service.close();
+      spy.mockRestore();
+    }
+  });
   it('includes Scholar alert papers by default within the existing single mail read, deduplicates arXiv, and keeps private-AI gating', async () => {
     const mail = new AppleMailConnection();
     vi.spyOn(mail, 'assertScope').mockImplementation(() => undefined);
@@ -1076,6 +1572,21 @@ describe('live source execution', () => {
     expect(sourceError(new Error('routine_output_schema_invalid'))).not.toContain('항목 수');
     expect(sourceError(new Error('private provider output'))).not.toContain(
       'private provider output',
+    );
+  });
+  it('names the provider failure instead of blaming the network, and keeps the stable code', () => {
+    const invalid = sourceError(new Error('claude_code_result_invalid'));
+    expect(invalid).toContain('claude_code_result_invalid');
+    expect(invalid).toContain('실행기');
+    expect(invalid).not.toContain('네트워크');
+    expect(sourceError(new Error('claude_code_not_connected'))).toContain('Claude Code');
+    expect(sourceError(new Error('claude_code_auth_required'))).toContain('로그인');
+    // An unknown internal code is still reported; free-form provider text never is.
+    expect(sourceError(new Error('some_unmapped_internal_code'))).toContain(
+      'some_unmapped_internal_code',
+    );
+    expect(sourceError(new Error('Private provider sentence with spaces'))).not.toContain(
+      'Private provider sentence',
     );
   });
 });

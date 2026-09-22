@@ -1,5 +1,48 @@
 # Briefing workspace: assistant, automatic summaries and Apple Calendar
 
+2026-09-14 [0.58.78 candidate](releases/0.58.78.md): the desktop sidebar shows Briefing Lab and
+Paper summaries as independent sibling destinations. Briefing Lab opens personal history directly;
+the nested group and routine-management entry are removed, while settings/routine data remain.
+Paper titles expose their saved source URL before expansion; unavailable links are not guessed.
+
+2026-09-14 [0.58.77 candidate](releases/0.58.77.md): the idle header no longer repeats completed
+job details, source errors or the next-run timestamp. Running progress/cancellation and actionable
+request/settings failures remain. Schedule storage and source status in the Briefing body are unchanged.
+The [0.58.75 prepared-action path](EMAIL_PREPARED_ACTIONS.md) supersedes button-time email drafting
+described below; legacy explicit draft endpoints remain separate.
+
+2026-09-14: generation header actions share one right-aligned row, including Collapse All.
+The responsive 420px progress column is reserved independently of disclosure contents, so opening
+details does not change button positions or spread Collapse All away from generation controls.
+The details use a minmax(0,1fr) track; narrow headers wrap without horizontal overflow.
+This is layout-only and does not change scheduling, generation, cancellation or stored data.
+
+2026-09-14 email event drafts use `/mail/event-draft`, a tool-free structured job on the routed
+briefing model. The old first-date regex is no longer used to populate the editor. The displayed
+email summary is treated as untrusted evidence (not silently called original mail). The job chooses
+the confirmed actionable appointment, prefills title/start/end/location/notes, and discloses missing
+duration or inferred year. Unresolved dates/ambiguous events fail with a question instead of today
+defaults. The server rechecks ownership, private-AI provider permission and Calendar scope before/
+after inference, validates evidence quote/timezone/range, and never writes an event at this step.
+
+2026-09-14: daily updates retain weather but refresh the approved today/tomorrow Calendar window
+on every generation. The old `hasCalendar` skip discarded newly created events until the next day.
+Successful reads replace the current daily agenda (including an empty result after deletion);
+failed reads retain the previous agenda and report the error. Older daily histories, Calendar
+permissions, email/paper summary deduplication and weather data are unchanged.
+
+2026-09-14 [0.58.52 candidate](releases/0.58.52.md): email lists and email highlights are ordered
+by existing importance buckets, then actual receipt time descending. Summary/cache timestamps do
+not reorder emails; missing dates sort last within their bucket. Stored `mailSender` comes only
+from the source header, not the LLM. Sender → receiving account and receipt time share the existing
+compact metadata row, with truncation/tooltips for long labels. Stored histories without a sender
+can explicitly recover one exact message's header through `/mail/read-sender`; this preserves
+read status and does not read bodies or call the LLM. Recovery uses the same current-owner,
+approved-account, native/RFC-ID guards and cancellation checks as the bounded Mail status reader.
+Recovered metadata is encrypted and does not overwrite a previously recorded sender. Merely
+opening History does not trigger bulk Mail queries. Old records without resolvable provenance
+remain explicitly unknown. The earlier statements below about live-only sender display are historical.
+
 The 2026-09-13 changes below are included in installed [0.58.30](releases/0.58.30.md).
 Earlier source-only statements describe development-time status; see the release for verification limits.
 
@@ -687,6 +730,20 @@ this source update. The visual fixture does not access private accounts or call 
 
 ## One-click daily updates and hourly generation (2026-09-10)
 
+2026-09-14 follow-up [0.58.56](releases/0.58.56.md): intervals are not erased when startup or scheduler
+checks fail. Transient errors retry the local eligibility check after one minute; real scope/owner
+changes pause dispatch and keep the selected hours visible. Only explicit Off clears the interval.
+The v2 scheduler digest binds the routine and approved source/provider permissions, not the list of
+already authorized client windows, UI preferences or model choice. Existing exact legacy profiles
+can migrate when approved owners were only appended; unknown/changed legacy profiles stay paused.
+Source reads/inference/saves retain a separate full run-configuration digest to reject mid-run edits.
+The effective global approved-scope policy can satisfy unattended confirmation, but cannot grant a
+new account or bypass OS permissions. Initial status loading never looks like a stored Off value.
+Existing encrypted `generation.v1.enc.json`, next due time and coalesced restart behavior remain.
+This supersedes the older "select the interval again after any model change" description below.
+If an older build already erased a period, its value cannot be guessed from zero; do not re-enable
+an explicitly disabled schedule or invent a former interval without evidence.
+
 - The personal History title bar now has an accessible **브리핑 생성** document/plus icon.
   It starts backend collection and summary processing directly, without switching to the live tab
   or requiring another collect click. Progress and stop controls remain in the header; History
@@ -768,8 +825,10 @@ this source update. The visual fixture does not access private accounts or call 
   messages and first reproduced returning only the first three unrelated messages.
 - `search_email` now accepts separate receiving `account`, `sender`, `subject`, inclusive `from`
   and exclusive `to` conditions. Date-only inputs use the routine timezone. These conditions narrow,
-  never expand, the saved account/mailbox/lookback/unread/body-preview scope. An unknown account or
-  out-of-range date is reported as a scope mismatch, not proof the message is absent. Receiving
+  never expand, the saved account/mailbox/unread/body-preview scope. Since 0.58.140 the saved
+  lookback days are only the default of a search: an earlier `from` is searched as asked, through
+  Mail's index only (see [0.58.140](releases/0.58.140.md)). An unknown account
+  is reported as a scope mismatch, not proof the message is absent. Receiving
   addresses disambiguate identically named accounts. Existing user settings are not rewritten.
 - `briefing-mail-search.ts` builds fixed literal native predicates. Targeted requests use Mail's
   `whose` filtering before the 250-candidate/result cap, with case-insensitive title/sender terms
@@ -1788,6 +1847,14 @@ validated highlights appear in the top card while the next paper batch is still 
   across restart. Historical badges describe **브리핑 당시**, live badges **마지막 메일 조회 당시**
   in their accessible label/tooltip. They are snapshots, not a claim of continuous Mail sync.
   Existing histories without a flag remain unknown; no private source is re-read to backfill them.
+- Each briefing's email heading offers **모두 읽음 (N)** (0.58.140): one request and one confirmation
+  for the still-unread mail of that briefing; the server marks one message at a time through the
+  single-message writer and answers per mail.
+- The history view has a display filter, **안 읽은 메일만** (0.58.139): it keeps the mail whose saved
+  state is unread and that was not marked read from GOSU since (`mailStillUnread`). It reads saved
+  state only and never asks Mail again; mail with an unknown state is hidden and counted in a note;
+  highlights and section counts follow the filter; it is not kept between visits. The collection
+  setting **읽지 않은 메일만** is separate: it decides what a briefing collects.
 - Rendering or opening a summary does not mutate Mail, fetch a source, invoke an LLM or rewrite
   saved summaries. The new flag duplicates existing observed metadata and is not added separately
   to the source digest; existing exact-detail/cache checks remain unchanged. Message links retain

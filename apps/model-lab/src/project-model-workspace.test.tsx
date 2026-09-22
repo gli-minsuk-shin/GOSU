@@ -130,7 +130,7 @@ describe('project-owned model initialization', () => {
     expect(html).toContain('No models in this project yet');
     expect(html).toContain('New / Import model');
     expect(html).not.toContain('data-testid="model-graph"');
-    expect(html).not.toContain('Message GOSU Model Copilot');
+    expect(html).not.toContain('Message GOSU Model Assistant');
   });
   it('initializes a missing host workspace once, without overwriting an existing workspace', () => {
     const initialized = migrateProjectModelSeeds({});

@@ -409,6 +409,8 @@ export interface LectureStudioCodex {
     responseVerbosity?: 'low' | 'medium' | 'high' | null;
     dynamicTools?: readonly never[];
     webSearchMode?: 'disabled';
+    /** Claude Code only: per-turn CLI limit for long lecture generations. */
+    turnTimeoutMs?: number;
   }): Promise<{ threadId: string }>;
   runTurn(input: {
     threadId: string;
@@ -1037,6 +1039,13 @@ function lectureErrorFromFigureService(error: unknown) {
  */
 function classifyCodexTurnFailure(turn: unknown): LectureTurnFailureCode {
   if (!isRecord(turn) || !isRecord(turn.error)) return 'lecture_generation_failed';
+  // Claude Code reports only stable GOSU error codes, never raw provider text.
+  switch (turn.error.message) {
+    case 'claude_code_auth_required':
+      return 'lecture_auth_required';
+    case 'claude_code_timeout':
+      return 'lecture_generation_interrupted';
+  }
   const info = turn.error.codexErrorInfo;
   const kind =
     typeof info === 'string'
@@ -1063,6 +1072,16 @@ function classifyCodexTurnFailure(turn: unknown): LectureTurnFailureCode {
     default:
       return 'lecture_generation_failed';
   }
+}
+
+function isClaudeCodeLectureModel(modelId: string | null) {
+  return typeof modelId === 'string' && modelId.startsWith('claude-code:');
+}
+
+function lectureThreadProvider(threadId: string) {
+  if (threadId.startsWith('claude-code:')) return 'claude-code';
+  if (threadId.startsWith('hermes:')) return 'hermes';
+  return 'codex';
 }
 
 function notificationIdentity(notification: CodexNotification) {
@@ -1312,9 +1331,12 @@ export class LectureStudioService {
     dependencies.codex.on('notification', (notification: CodexNotification) => {
       this.routeNotification(notification);
     });
-    dependencies.codex.on('disconnected', () => {
+    dependencies.codex.on('disconnected', (event?: { providerId?: string }) => {
       for (const pending of this.pendingByThread.values()) {
         if (pending.terminal) continue;
+        // A routed provider disconnect ends only that provider's turns.
+        if (event?.providerId && lectureThreadProvider(pending.threadId) !== event.providerId)
+          continue;
         pending.terminal = true;
         const bufferedNativeImageRejection = (
           this.bufferedByThread.get(pending.threadId) ?? []
@@ -2566,6 +2588,11 @@ export class LectureStudioService {
       const sourceManifestSha256 = sha256(JSON.stringify(sourceManifest));
       this.publishProgress(active, 'preparing_edit_context');
       this.publishProgress(active, 'starting_model');
+      const hardTimeoutMs = Math.max(
+        5_000,
+        Math.min(this.dependencies.hardTimeoutMs ?? 1_800_000, 1_800_000),
+      );
+      const claudeCodeModel = isClaudeCodeLectureModel(request.requestedModelId);
       let started: Awaited<ReturnType<LectureStudioCodex['startThread']>>;
       try {
         started = await this.dependencies.codex.startThread({
@@ -2575,6 +2602,7 @@ export class LectureStudioService {
           responseVerbosity: 'medium',
           dynamicTools: [],
           webSearchMode: 'disabled',
+          ...(claudeCodeModel ? { turnTimeoutMs: hardTimeoutMs } : {}),
         });
       } catch (error) {
         throw new LectureStudioServiceError(lectureErrorFromCodexRequest(error));
@@ -2590,13 +2618,13 @@ export class LectureStudioService {
       });
       this.throwIfCancelled(active);
 
-      const idleTimeoutMs = Math.max(
-        5_000,
-        Math.min(this.dependencies.timeoutMs ?? 180_000, 1_800_000),
-      );
-      const hardTimeoutMs = Math.max(
-        idleTimeoutMs,
-        Math.min(this.dependencies.hardTimeoutMs ?? 1_800_000, 1_800_000),
+      // Claude Code runs a whole turn in one CLI call and emits no progress notifications, so only
+      // the absolute deadline applies to it; Codex keeps its idle watchdog.
+      const idleTimeoutMs = Math.min(
+        hardTimeoutMs,
+        claudeCodeModel
+          ? hardTimeoutMs
+          : Math.max(5_000, Math.min(this.dependencies.timeoutMs ?? 180_000, 1_800_000)),
       );
       const hardDeadline = Date.now() + hardTimeoutMs;
       const executeCodexTurn = async (

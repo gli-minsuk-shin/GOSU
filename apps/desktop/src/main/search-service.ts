@@ -284,6 +284,7 @@ function workspaceHits(
   const hits: SearchHit[] = [];
   if (categories.includes('board')) {
     for (const task of snapshot.tasks) {
+      if (task.projectId === null) continue; // Project search remains scoped; personal tasks live in To-do.
       const projectName = projectNames.get(task.projectId);
       if (!projectName || task.archivedAt) continue;
       const matched = matchFields(query, {

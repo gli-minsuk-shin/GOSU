@@ -1,5 +1,6 @@
 import type { BriefingRoutine } from '@gosu/briefing-core';
 import { ImportanceIcon } from './importance-icon';
+import { compareEmails } from './email-presentation';
 import type { AnalysisResult } from './briefing-analysis-client';
 import type { CalendarEvent } from './workspace-contracts';
 import type { LiveSourceResult } from './live-types';
@@ -12,9 +13,15 @@ import { briefingTargetId, type BriefingJumpTarget } from './briefing-jump';
 import { isGosuEmbedded } from './desktop-bridge';
 import { openBriefingItem } from './briefing-item-navigation';
 
-export function sortSummaryPriority<T extends { importance: string }>(items: readonly T[]) {
+export function sortSummaryPriority<
+  T extends { importance: string; kind?: string | undefined; receivedAt?: string | undefined },
+>(items: readonly T[]) {
   const rank: Record<string, number> = { high: 0, medium: 1, uncertain: 2, low: 3 };
-  return [...items].sort((a, b) => (rank[a.importance] ?? 2) - (rank[b.importance] ?? 2));
+  return [...items].sort(
+    (a, b) =>
+      (rank[a.importance] ?? 4) - (rank[b.importance] ?? 4) ||
+      compareEmails({ receivedAt: a.receivedAt }, { receivedAt: b.receivedAt }),
+  );
 }
 export function SummaryHighlight({
   target,
@@ -78,7 +85,12 @@ export function BriefingAssistantSummary({
       .filter(({ insight }) => insight)
       .sort((a, b) => {
         const rank = { high: 0, medium: 1, uncertain: 2, low: 3 } as const;
-        return rank[a.insight!.importance] - rank[b.insight!.importance];
+        return (
+          rank[a.insight!.importance] - rank[b.insight!.importance] ||
+          (kind === 'email'
+            ? compareEmails({ receivedAt: a.item.publishedAt }, { receivedAt: b.item.publishedAt })
+            : 0)
+        );
       });
   const emailInsights = prioritized('email'),
     paperInsights = prioritized('papers');
@@ -86,6 +98,7 @@ export function BriefingAssistantSummary({
     ...emailInsights.slice(0, 3).map((entry) => ({
       ...entry,
       kind: 'email' as const,
+      receivedAt: entry.item.publishedAt,
       importance: entry.insight!.importance,
     })),
     ...paperInsights.slice(0, 3).map((entry) => ({
@@ -161,6 +174,7 @@ export function BriefingAssistantSummary({
               <strong>{item.title}</strong>
               {kind === 'email' && (
                 <EmailDeliveryMeta
+                  sender={item.details[0]}
                   account={item.mailAccount}
                   receivedAt={item.publishedAt}
                   timeZone={routine.schedule.timeZone}

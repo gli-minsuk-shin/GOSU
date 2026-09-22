@@ -1,5 +1,8 @@
 import { expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { EmailPreparedActionsSchema } from './email-prepared-actions';
 import {
+  chatTaskDraft,
   formatBriefingEventRange,
   formatBriefingEvidence,
   hasExistingCalendarEvent,
@@ -47,4 +50,37 @@ it('detects an existing Calendar event so the UI can suppress duplicate-add acti
   expect(
     hasExistingCalendarEvent([{ id: 'event-2', title: '다른 일정', kind: 'calendar' }], proposal),
   ).toBe(false);
+});
+
+it('turns a chat task proposal into the reviewed to-do dialog draft, and offers it on the card', () => {
+  const task = {
+    title: '리뷰 답장 작성',
+    description: '리뷰어 2의 질문에 답한다.',
+    deadline: '2026-09-22T18:00:00+09:00',
+    target: 'kanban' as const,
+    sourceId: null,
+  };
+  const draft = chatTaskDraft(task, 'Asia/Seoul');
+  expect(draft).toMatchObject({
+    title: '리뷰 답장 작성',
+    notes: '리뷰어 2의 질문에 답한다.',
+    dueDate: '2026-09-22',
+    dueAt: '2026-09-22T18:00:00+09:00',
+    timeZone: 'Asia/Seoul',
+  });
+  // It is a valid prepared task, so the dialog opens without another AI call.
+  expect(EmailPreparedActionsSchema.parse({ event: null, task: draft }).task).toEqual(draft);
+  expect(chatTaskDraft({ ...task, deadline: '다음 주' }, 'Asia/Seoul')).toMatchObject({
+    dueDate: null,
+    dueAt: null,
+  });
+  expect(chatTaskDraft({ ...task, deadline: '2026-09-22' }, 'Asia/Seoul')).toMatchObject({
+    dueDate: '2026-09-22',
+    dueAt: null,
+  });
+  expect(chatTaskDraft({ ...task, title: 'x' }, 'Asia/Seoul').title).toBe('할 일: x');
+  const source = readFileSync(new URL('./briefing-chat.tsx', import.meta.url), 'utf8');
+  expect(source).toMatch(
+    /<BriefingTodoButton[\s\S]*?preparedTask=\{chatTaskDraft\(t, routine\.schedule\.timeZone\)\}/u,
+  );
 });

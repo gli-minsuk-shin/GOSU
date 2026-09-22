@@ -148,7 +148,8 @@ it.each([50, 100])(
     const next = (await f.collect())[0]!;
     expect(next.items).toHaveLength(limit);
     expect(next.items.every((i) => !first.items.some((old) => old.id === i.id))).toBe(true);
-    expect(next.notice).toContain('동일 메일 3개');
+    // The routine read notice was removed at the user's request; the skip itself is shown above.
+    expect(next.notice).toBeUndefined();
     const refreshed = (await f.collect(new AbortController(), false))[0]!;
     expect(refreshed.items.some((i) => i.id === first.items[0]!.id)).toBe(true);
     expect(refreshed.notice).toBeUndefined();
@@ -187,4 +188,113 @@ it('never commits onboarding or provides skip metadata after scope revocation or
   await expect(
     f.store.completeMailRead(f.profile, [f.scope.accountId], new AbortController().signal),
   ).rejects.toThrow('settings_changed');
+});
+it('reads a mail again when its saved summary was written without the body', async () => {
+  const f = await fixture();
+  f.read.mockImplementation(async (q) => {
+    if (q.action === 'discover')
+      return {
+        limited: false,
+        accounts: [
+          {
+            id: 'native-a',
+            name: 'Synthetic',
+            mailboxes: [{ path: ['Inbox'], name: 'Inbox' }],
+            limited: false,
+            unavailable: false,
+          },
+        ],
+      };
+    if (q.action !== 'read') throw Error('Unexpected request');
+    return {
+      account: { id: 'native-a', name: 'Synthetic', addresses: ['a@example.test'] },
+      messages: ['with-body', 'without-body'].map((id) => ({
+        id,
+        title: `Subject ${id}`,
+        sender: 'Sender',
+        date: f.date,
+        unread: true,
+        preview: id === 'with-body' ? 'Body' : '',
+        bodyUnavailable: id === 'without-body',
+      })),
+      scanned: 2,
+      capped: false,
+    };
+  });
+  const first = (await f.collect())[0]!;
+  expect(first.items.find((i) => i.title === 'Subject without-body')?.readScope).toBe(
+    'mail-metadata',
+  );
+  await f.store.saveBriefing(
+    'r',
+    {
+      overview: 'Completed',
+      items: first.items.map((item) => ({
+        id: item.id,
+        summary: 'Saved AI summary',
+        importance: 'medium' as const,
+        importanceReason: '',
+        relevance: '',
+        action: '',
+        evidenceQuote: item.title,
+        equationIds: [],
+        figureIds: [],
+        memorySuggestion: null,
+      })),
+    },
+    first.items,
+    true,
+    f.profile,
+  );
+  const plan = await owner(() => f.store.mailReadPlan('r', f.scope));
+  const withBody = first.items.find((i) => i.title === 'Subject with-body')!;
+  const withoutBody = first.items.find((i) => i.title === 'Subject without-body')!;
+  expect(plan.excludeKeys).toContain(mailSummaryKey(withBody.id, f.date, withBody.title));
+  expect(plan.excludeKeys).not.toContain(mailSummaryKey(withoutBody.id, f.date, withoutBody.title));
+  expect(plan.excludeDeliveries).toHaveLength(1);
+});
+it('always reports a mailbox that could not be read, even before coverage exists', async () => {
+  const f = await fixture();
+  const gaps = await owner(() =>
+    f.store.commitMailCoverage(
+      f.profile,
+      [
+        {
+          accountId: f.scope.accountId,
+          mailboxId: f.scope.mailboxId,
+          accountName: 'Synthetic',
+          since: new Date(Date.now() - 3 * 86_400_000).toISOString(),
+          startedAt: new Date().toISOString(),
+          failed: true,
+          read: null,
+          items: [],
+        },
+      ],
+      new Set(),
+      new AbortController().signal,
+    ),
+  );
+  expect(gaps).toEqual([
+    expect.objectContaining({ accountName: 'Synthetic', reason: 'read-failed' }),
+  ]);
+  // A reader without coverage information is not a failure and changes nothing.
+  const quiet = await owner(() =>
+    f.store.commitMailCoverage(
+      f.profile,
+      [
+        {
+          accountId: f.scope.accountId,
+          mailboxId: f.scope.mailboxId,
+          accountName: 'Synthetic',
+          since: new Date(Date.now() - 3 * 86_400_000).toISOString(),
+          startedAt: new Date().toISOString(),
+          read: null,
+          items: [],
+        },
+      ],
+      new Set(),
+      new AbortController().signal,
+    ),
+  );
+  expect(quiet).toEqual([]);
 });

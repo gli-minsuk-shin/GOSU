@@ -13,14 +13,16 @@ it('requires explicit UI approval before storing a GOSU paper analysis and never
     savedAt: '2026-09-10T00:00:00Z',
     alreadySaved: false,
   }));
-  let handler!: (input: unknown) => Promise<unknown>;
-  registerPaperSummaryIpc(
-    (channel, callback) => {
-      expect(channel).toBe(PAPER_SUMMARY_SAVE_CHANNEL);
-      handler = callback;
-    },
-    { save },
+  const handlers = new Map<string, (input: unknown) => Promise<unknown>>();
+  registerPaperSummaryIpc((channel, callback) => handlers.set(channel, callback), { save });
+  expect([...handlers.keys()].sort()).toEqual(
+    [
+      PAPER_SUMMARY_SAVE_CHANNEL,
+      'gosu:paper-summary:import-to-literature',
+      'gosu:paper-summary:list',
+    ].sort(),
   );
+  const handler = handlers.get(PAPER_SUMMARY_SAVE_CHANNEL)!;
   const candidate = {
     title: 'Paper',
     question: '이 논문 요약해줘',
@@ -33,4 +35,42 @@ it('requires explicit UI approval before storing a GOSU paper analysis and never
   expect(save).not.toHaveBeenCalled();
   await handler({ candidate, confirmed: true });
   expect(save).toHaveBeenCalledWith({ candidate, confirmed: true }, 'GOSU');
+});
+it('lists and imports saved papers through bounded results and never as raw library errors', async () => {
+  const handlers = new Map<string, (input: unknown) => Promise<unknown>>();
+  const projectId = '11111111-1111-4111-8111-111111111111';
+  const paperId = 'a'.repeat(64);
+  const list = vi.fn(async () => {
+    throw new Error('keychain locked: secret detail');
+  });
+  const addLibraryPapers = vi.fn();
+  registerPaperSummaryIpc(
+    (channel, callback) => handlers.set(channel, callback),
+    { save: vi.fn(), list },
+    { addLibraryPapers },
+  );
+
+  await expect(handlers.get('gosu:paper-summary:list')!(undefined)).resolves.toEqual({
+    ok: false,
+    error: { code: 'paper_library_unavailable' },
+  });
+  await expect(
+    handlers.get('gosu:paper-summary:import-to-literature')!({ projectId, paperIds: [] }),
+  ).resolves.toEqual({ ok: false, error: { code: 'invalid_paper_library_input' } });
+  await expect(
+    handlers.get('gosu:paper-summary:import-to-literature')!({ projectId, paperIds: [paperId] }),
+  ).resolves.toEqual({ ok: false, error: { code: 'paper_library_unavailable' } });
+  expect(addLibraryPapers).not.toHaveBeenCalled();
+
+  list.mockResolvedValue([] as never);
+  await expect(handlers.get('gosu:paper-summary:list')!(undefined)).resolves.toEqual({
+    ok: true,
+    value: { entries: [], unverifiedCount: 0 },
+  });
+  await expect(
+    handlers.get('gosu:paper-summary:import-to-literature')!({ projectId, paperIds: [paperId] }),
+  ).resolves.toEqual({
+    ok: true,
+    value: { projectId, importedCount: 0, alreadySavedCount: 0, missingCount: 1 },
+  });
 });

@@ -4,6 +4,138 @@ import { GlobalBriefingView } from '../src/renderer/src/global-briefing-view';
 import { BRIEFING_LAB_URL, validBriefingLocation } from '../src/shared/briefing-lab-contracts';
 import { rendererContentSecurityPolicy, createTrustedRenderer } from '../src/main/renderer-trust';
 let ui: ReactTestRenderer;
+it('resets only the visible Briefing host offset on notification navigation without reloading the iframe', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const host = { scrollTop: 170, scrollLeft: 12 },
+    child = { postMessage: vi.fn() };
+  vi.stubGlobal('window', {
+    gosu: { briefingLab: { open: async () => ({ url: BRIEFING_LAB_URL, configuration: {} }) } },
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  });
+  await act(() => {
+    ui = create(<GlobalBriefingView view="history" />, {
+      createNodeMock: (e) =>
+        e.type === 'iframe' ? { contentWindow: child, closest: () => host } : null,
+    });
+  });
+  const frame = ui.root.findByType('iframe');
+  expect(host.scrollTop).toBe(0);
+  expect(host.scrollLeft).toBe(0);
+  host.scrollTop = 90;
+  await act(() => ui.update(<GlobalBriefingView view={null} />));
+  expect(host.scrollTop).toBe(90);
+  await act(() =>
+    ui.update(
+      <GlobalBriefingView
+        view="history"
+        navigationRevision={2}
+        briefingTarget={{
+          routineId: 'r',
+          runId: '11111111-1111-4111-8111-111111111111',
+          requestId: 2,
+        }}
+      />,
+    ),
+  );
+  expect(host.scrollTop).toBe(0);
+  expect(ui.root.findByType('iframe')).toBe(frame);
+});
+it('refreshes task data only for the owned embedded frame after a confirmed creation', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const handlers = new Set<(event: MessageEvent) => void>(),
+    child = { postMessage: vi.fn() },
+    changed = vi.fn();
+  vi.stubGlobal('window', {
+    gosu: { briefingLab: { open: async () => ({ url: BRIEFING_LAB_URL, configuration: {} }) } },
+    addEventListener: (_t: string, h: (event: MessageEvent) => void) => handlers.add(h),
+    removeEventListener: (_t: string, h: (event: MessageEvent) => void) => handlers.delete(h),
+  });
+  await act(() => {
+    ui = create(<GlobalBriefingView view="history" onWorkspaceChanged={changed} />, {
+      createNodeMock: (e) => (e.type === 'iframe' ? { contentWindow: child } : null),
+    });
+  });
+  const send = (source: unknown, origin: string) =>
+    handlers.forEach((h) =>
+      h({ source, origin, data: { type: 'gosu-briefing-todo-created' } } as MessageEvent),
+    );
+  send(child, 'https://foreign.test');
+  send({}, new URL(BRIEFING_LAB_URL).origin);
+  expect(changed).not.toHaveBeenCalled();
+  send(child, new URL(BRIEFING_LAB_URL).origin);
+  expect(changed).toHaveBeenCalledOnce();
+});
+it('turns a counted "run a new briefing" shortcut into the frame\'s run message and tells it the chord', async () => {
+  // The chord is a setting (Settings → Shortcuts). The main process catches it and the app shell
+  // counts it while the briefing feed shows; this view only relays it to the owned frame.
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const handlers = new Map<string, Set<(event: never) => void>>(),
+    child = { postMessage: vi.fn() };
+  vi.stubGlobal('window', {
+    gosu: {
+      briefingLab: { open: async () => ({ url: BRIEFING_LAB_URL, configuration: {} }) },
+      app: { getAppShortcuts: async () => ({ briefingRun: 'Control+Alt+R' }) },
+    },
+    addEventListener: (type: string, h: (event: never) => void) =>
+      handlers.set(type, (handlers.get(type) ?? new Set()).add(h)),
+    removeEventListener: (type: string, h: (event: never) => void) => handlers.get(type)?.delete(h),
+  });
+  const options = {
+    createNodeMock: (e: { type: unknown }) =>
+      e.type === 'iframe' ? { contentWindow: child } : null,
+  };
+  await act(() => {
+    ui = create(<GlobalBriefingView view="history" />, options);
+  });
+  const runs = () =>
+    child.postMessage.mock.calls.filter(([message]) => message.type === 'gosu-briefing-run-now');
+  expect(runs()).toHaveLength(0);
+  // The page itself no longer listens for a hardcoded ⇧⌘Enter.
+  expect(handlers.get('keydown')?.size ?? 0).toBe(0);
+  await act(() => ui.update(<GlobalBriefingView view="history" runRequest={1} />));
+  expect(runs()).toEqual([[{ type: 'gosu-briefing-run-now' }, new URL(BRIEFING_LAB_URL).origin]]);
+  await act(() => ui.update(<GlobalBriefingView view="history" runRequest={1} />));
+  expect(runs()).toHaveLength(1);
+  await act(() => ui.update(<GlobalBriefingView view="history" runRequest={2} />));
+  expect(runs()).toHaveLength(2);
+  // The frame shows the user's chord on its button.
+  expect(
+    child.postMessage.mock.calls.some(
+      ([message]) =>
+        message.type === 'gosu-briefing-navigation' && message.runShortcut === 'Ctrl + ⌥ + R',
+    ),
+  ).toBe(true);
+});
+it('opens Settings → Agent only when the owned Briefing frame asks for it', async () => {
+  // Briefing has no model picker: its "AI model" links lead to the one place that decides.
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const handlers = new Set<(event: MessageEvent) => void>(),
+    child = { postMessage: vi.fn() },
+    agent = vi.fn(),
+    briefing = vi.fn();
+  vi.stubGlobal('window', {
+    gosu: { briefingLab: { open: async () => ({ url: BRIEFING_LAB_URL, configuration: {} }) } },
+    addEventListener: (_t: string, h: (event: MessageEvent) => void) => handlers.add(h),
+    removeEventListener: (_t: string, h: (event: MessageEvent) => void) => handlers.delete(h),
+  });
+  await act(() => {
+    ui = create(
+      <GlobalBriefingView view="settings" onSettings={briefing} onAgentSettings={agent} />,
+      { createNodeMock: (e) => (e.type === 'iframe' ? { contentWindow: child } : null) },
+    );
+  });
+  const send = (source: unknown, origin: string) =>
+    handlers.forEach((h) =>
+      h({ source, origin, data: { type: 'gosu-open-agent-settings' } } as MessageEvent),
+    );
+  send(child, 'https://foreign.test');
+  send({}, new URL(BRIEFING_LAB_URL).origin);
+  expect(agent).not.toHaveBeenCalled();
+  send(child, new URL(BRIEFING_LAB_URL).origin);
+  expect(agent).toHaveBeenCalledOnce();
+  expect(briefing).not.toHaveBeenCalled();
+});
 afterEach(async () => {
   await act(() => ui?.unmount());
   vi.unstubAllGlobals();

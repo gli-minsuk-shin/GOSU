@@ -1,5 +1,7 @@
 import ReactMarkdown from 'react-markdown';
 import { PaperChatButton } from './paper-chat-reference';
+import { PaperSourceLink } from './paper-source-link';
+import { AssistantWebImage, AssistantWebLink } from './assistant-web-media';
 import remarkMath from 'remark-math';
 import remarkGfm from 'remark-gfm';
 import rehypeKatex from 'rehype-katex';
@@ -10,18 +12,20 @@ import type { PaperInsight } from './briefing-intelligence';
 import type { BriefingMemorySession } from './briefing-memory-panel';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { AppleMailLink } from './apple-mail-link';
+import { safeAppleMailUrl } from './apple-mail-url';
 import { remarkBriefingTitles } from './briefing-title-emphasis';
 import { remarkBriefingEmphasis } from './briefing-emphasis';
 import { observedMailUnread } from './mail-read-state';
-import { MailReadStatus } from './mail-read-status';
+import { MailReadStatus, markMailReadFor } from './mail-read-status';
 import { EmailDeliveryMeta } from './email-delivery-meta';
 import type { MailOpenTarget } from './mail-open-contract';
-import { BriefingBottomCollapse } from './briefing-disclosure-collapse';
+import { BriefingBottomCollapse, BriefingSectionRail } from './briefing-disclosure-collapse';
 import { cleanPaperTags } from './paper-tags';
 import { ImportanceIcon } from './importance-icon';
 import { PaperByline, PaperAuthors, type PaperBibliography } from './paper-bibliography';
 import { EmailCalendarButton } from './email-calendar';
-export type FeedbackDecision = 'important' | 'not-interested';
+import type { EmailPreparedActions } from './email-prepared-actions';
+export type FeedbackDecision = 'important' | 'not-interested' | null;
 export function FeedbackControls({
   choice,
   onChoose,
@@ -40,12 +44,12 @@ export function FeedbackControls({
       data-decision={decision}
       aria-pressed={choice === decision}
       aria-label={label}
-      title={`${label}${choice === decision ? ' · 저장됨' : ''} · ${title}`}
+      title={`${label}${choice === decision ? ' · 저장됨 · 다시 누르면 해제' : ''} · ${title}`}
       disabled={disabled}
       onClick={(event) => {
         event.preventDefault();
         event.stopPropagation();
-        if (!disabled && choice !== decision) onChoose(decision);
+        if (!disabled) onChoose(choice === decision ? null : decision);
       }}
     >
       <span className="briefing-feedback-icon" aria-hidden="true">
@@ -84,6 +88,7 @@ export function FeedbackControls({
   );
 }
 export function PaperBriefingDisclosure({
+  sourceUrl,
   chatAction,
   title,
   titleBadge,
@@ -100,6 +105,7 @@ export function PaperBriefingDisclosure({
   children,
 }: {
   title: string;
+  sourceUrl?: string | undefined;
   chatAction?: ReactNode;
   titleBadge?: ReactNode;
   bibliography?: PaperBibliography | undefined;
@@ -128,6 +134,7 @@ export function PaperBriefingDisclosure({
             <h3 title={title}>
               {title}
               {titleBadge}
+              <PaperSourceLink url={sourceUrl} title={title} />
               <PaperByline publishedAt={publishedAt} bibliography={bibliography} />
             </h3>
             <div className="briefing-item-meta">
@@ -155,10 +162,12 @@ export function PaperBriefingDisclosure({
             </div>
           </div>
         </summary>
+        {/* The open paper's left bar closes it, like a Briefing section's accent bar. */}
+        <BriefingSectionRail label="이 논문 접기" className="briefing-item-rail" />
         <div className="briefing-paper-expanded">
           <PaperAuthors bibliography={bibliography} />
           {children}
-          <BriefingBottomCollapse label="논문 요약 접기" />
+          <BriefingBottomCollapse label="논문 요약 접기" leadingAction={chatAction} />
         </div>
       </details>
       {feedbackStatus && (
@@ -170,6 +179,7 @@ export function PaperBriefingDisclosure({
   );
 }
 export function EmailBriefingDisclosure({
+  preparedActions,
   calendarText,
   title,
   titleBadge,
@@ -179,6 +189,7 @@ export function EmailBriefingDisclosure({
   mailOpenTarget,
   mailAccount,
   mailCopies,
+  bodyUnavailable,
   receivedAt,
   unread,
   markedReadAt,
@@ -192,6 +203,7 @@ export function EmailBriefingDisclosure({
   children,
 }: {
   calendarText?: string | undefined;
+  preparedActions?: EmailPreparedActions | null | undefined;
   title: string;
   titleBadge?: ReactNode;
   summary?: string | undefined;
@@ -200,6 +212,8 @@ export function EmailBriefingDisclosure({
   mailOpenTarget?: MailOpenTarget | undefined;
   mailAccount?: LiveItem['mailAccount'];
   mailCopies?: LiveItem['mailCopies'];
+  /** The summary was written without the message body; the original must be checked. */
+  bodyUnavailable?: boolean | undefined;
   receivedAt?: string | undefined;
   unread?: boolean | undefined;
   markedReadAt?: string | undefined;
@@ -224,8 +238,32 @@ export function EmailBriefingDisclosure({
               <h3 title={title}>
                 {title}
                 {titleBadge}
+                {historical && !summary?.trim() && (
+                  <span
+                    className="briefing-body-unavailable-badge"
+                    title="AI 요약에 실패해 제목·보낸 사람·받은 시각만 기록했습니다. 다음 브리핑에서 다시 요약하며, 펼쳐서 ‘다시 요약’으로 바로 시도할 수 있습니다."
+                  >
+                    요약 실패 · 원본 확인
+                  </span>
+                )}
+                {bodyUnavailable && (
+                  <span
+                    className="briefing-body-unavailable-badge"
+                    title="본문을 읽지 못해 제목·발신자만으로 요약했습니다. 중요한 내용이 빠졌을 수 있으니 원본을 확인해주세요. 다음 브리핑에서 본문을 다시 읽습니다."
+                  >
+                    본문 미확인 · 원본 확인
+                  </span>
+                )}
               </h3>
-              <AppleMailLink url={mailMessageUrl} target={mailOpenTarget} />
+              <AppleMailLink
+                url={mailMessageUrl}
+                target={mailOpenTarget}
+                onOpened={() => {
+                  // An email opened in Apple Mail has been read: keep GOSU and Mail in step.
+                  if (unread === true && !markedReadAt)
+                    void markMailReadFor(mailOpenTarget, mailMessageUrl);
+                }}
+              />
               <MailReadStatus
                 unread={unread}
                 historical={historical}
@@ -234,10 +272,16 @@ export function EmailBriefingDisclosure({
                 markedReadAt={markedReadAt}
               />
             </div>
-            <EmailDeliveryMeta account={mailAccount} receivedAt={receivedAt} timeZone={timeZone} />
+            <EmailDeliveryMeta
+              sender={sender}
+              senderTarget={safeAppleMailUrl(mailMessageUrl) ? mailOpenTarget : undefined}
+              account={mailAccount}
+              receivedAt={receivedAt}
+              timeZone={timeZone}
+            />
             {mailCopies && mailCopies.length > 1 && (
               <small className="briefing-duplicate-accounts">
-                원문 일치 확인 · {mailCopies.length}개 계정:{' '}
+                같은 메일 · {mailCopies.length}개 계정 수신:{' '}
                 {mailCopies
                   .map(
                     (copy) =>
@@ -249,24 +293,27 @@ export function EmailBriefingDisclosure({
               </small>
             )}
             <div className="briefing-item-meta briefing-email-meta">
-              {sender && (
-                <span className="briefing-email-sender" title={sender}>
-                  {sender}
-                </span>
-              )}
               {importance && <ImportanceIcon level={importance} />}
               {onFeedback && (
                 <FeedbackControls
                   choice={feedbackChoice ?? null}
-                  onChoose={onFeedback}
+                  onChoose={(decision) => {
+                    onFeedback(decision);
+                    // Rating an email means it has been seen: mark an unread one read in Apple Mail.
+                    if (decision && unread === true && !markedReadAt)
+                      void markMailReadFor(mailOpenTarget, mailMessageUrl);
+                  }}
                   compact
                   disabled={feedbackDisabled ?? false}
                 />
               )}
             </div>
             <div className="briefing-email-preview">
-              {summary ? (
+              {summary?.trim() ? (
                 <BriefingMarkdown text={summary} />
+              ) : historical ? (
+                // A saved entry without a summary: the summary failed, the mail is shown anyway.
+                <span>AI 요약 실패 · 메일이 온 것만 표시합니다 · 다음 브리핑에서 다시 요약</span>
               ) : (
                 <span>AI 요약 전 · 펼쳐서 수집한 메일 확인</span>
               )}
@@ -280,7 +327,9 @@ export function EmailBriefingDisclosure({
       </details>
       {mailOpenTarget && (
         <EmailCalendarButton
+          preparedActions={preparedActions}
           routineId={mailOpenTarget.routineId}
+          sourceKey={mailOpenTarget.itemId}
           title={title}
           text={calendarText || summary || title}
           receivedAt={receivedAt}
@@ -325,12 +374,14 @@ export function MathText({ latex }: { latex: string }) {
   }
 }
 export function BriefingMarkdown({
+  webMedia = false,
   text,
   emphasizedTitles = [],
   keywords = [],
   restrained = true,
   inline = false,
 }: {
+  webMedia?: boolean;
   text: string;
   emphasizedTitles?: readonly string[];
   keywords?: readonly string[];
@@ -349,8 +400,16 @@ export function BriefingMarkdown({
       rehypePlugins={[[rehypeKatex, { trust: false, maxExpand: 1000, maxSize: 10 }]]}
       components={{
         ...(inline ? inlineContainers : {}),
-        a: ({ children }) => <span>{children}</span>,
-        img: () => null,
+        a: ({ children, href }) =>
+          webMedia ? (
+            <AssistantWebLink href={href}>{children}</AssistantWebLink>
+          ) : (
+            <span>{children}</span>
+          ),
+        img: ({ src, alt }) =>
+          webMedia ? (
+            <AssistantWebImage src={typeof src === 'string' ? src : undefined} alt={alt} />
+          ) : null,
       }}
     >
       {text}
@@ -462,7 +521,7 @@ export function BriefingInsightCard({
     feedbackLock.current = true;
     setFeedbackPending(true);
     try {
-      if (kind === 'feedback' && decision && onFeedback) {
+      if (kind === 'feedback' && decision !== undefined && onFeedback) {
         await onFeedback(
           decision,
           insight?.tags ?? insight?.keywords ?? item.matchedKeywords ?? [],
@@ -472,6 +531,8 @@ export function BriefingInsightCard({
         return;
       }
       if (!memory) throw new Error('Briefing memory를 먼저 열어주세요.');
+      if (kind === 'feedback' && decision === null)
+        throw new Error('저장된 브리핑에서 관심 선택을 해제해주세요.');
       await memory.remember({ routineId, kind, text, sourceId: `${kind}:${item.id}` });
       if (kind === 'feedback' && decision) setFeedbackChoice(decision);
       setFeedback(kind === 'feedback' ? '' : 'Memory에 저장했습니다. 다음 분석에서 참조합니다.');
@@ -630,6 +691,7 @@ export function BriefingInsightCard({
     >
       {isPaper ? (
         <PaperBriefingDisclosure
+          sourceUrl={item.sourceUrl}
           title={item.title}
           chatAction={
             insight ? (
@@ -660,6 +722,7 @@ export function BriefingInsightCard({
         </PaperBriefingDisclosure>
       ) : (
         <EmailBriefingDisclosure
+          preparedActions={insight?.preparedActions}
           calendarText={`${insight?.action ?? ''}\n${insight?.summary ?? ''}`}
           title={item.title}
           summary={insight?.summary}
@@ -668,6 +731,7 @@ export function BriefingInsightCard({
           mailOpenTarget={mailOpenTarget}
           mailAccount={item.mailAccount}
           mailCopies={item.mailCopies}
+          bodyUnavailable={item.readScope === 'mail-metadata'}
           receivedAt={item.publishedAt}
           unread={observedMailUnread(item)}
           markedReadAt={item.mailMarkedReadAt}

@@ -34,6 +34,7 @@ export type CodexModel = {
 
 export function ConnectionsView({
   runtime,
+  pendingCount = 0,
   models,
   defaultModelId,
   defaultReasoningOptionId,
@@ -74,6 +75,7 @@ export function ConnectionsView({
   onSshWorkspaceSetupHandled = () => undefined,
 }: {
   runtime: RuntimeReadiness | null;
+  pendingCount?: number | undefined;
   models: readonly CodexModel[];
   defaultModelId: string | null;
   defaultReasoningOptionId: string | null;
@@ -132,7 +134,7 @@ export function ConnectionsView({
         onRefreshResource={onRefreshSshResource}
         onOpenWorkspaceSetup={onOpenSshWorkspaceSetup}
       />
-      <RuntimeCard runtime={runtime} />
+      <RuntimeCard runtime={runtime} pendingCount={pendingCount} />
       <article className="card codex-card">
         <CardHead title={uiText('Local Codex')} detail={status} />
         <div className="settings-preview codex-default-summary">

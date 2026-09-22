@@ -6,6 +6,13 @@ import '../../desktop/src/renderer/src/styles.css';
 const models = [
   {
     providerId: 'codex',
+    modelId: 'fixture-light',
+    displayName: 'Light model · 검증용',
+    isDefault: false,
+    reasoningOptions: [{ id: 'low', label: 'Low', isDefault: true }],
+  },
+  {
+    providerId: 'codex',
     modelId: 'fixture-fast',
     displayName: 'Fast model · 검증용',
     isDefault: false,

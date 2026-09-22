@@ -60,8 +60,10 @@ export function TrashSettingsSection({
   );
   const tasks =
     workspaceSnapshot?.tasks.filter((task) => {
-      const project = projectById.get(task.projectId);
-      return Boolean(task.archivedAt && project && !project.trashedAt);
+      const project = task.projectId === null ? null : projectById.get(task.projectId);
+      return Boolean(
+        task.archivedAt && (task.projectId === null || (project && !project.trashedAt)),
+      );
     }) ?? [];
   const totalItems = projects.length + lectures.length + tasks.length;
   const allSnapshotsLoaded = workspaceSnapshot !== null && lectureState === 'ready';
@@ -373,15 +375,19 @@ export function TrashSettingsSection({
         ) : (
           <div className="project-settings-list">
             {tasks.map((task) => {
-              const project = projectById.get(task.projectId);
-              const projectIsActive = Boolean(project && !project.archivedAt && !project.trashedAt);
+              const project = task.projectId === null ? null : projectById.get(task.projectId);
+              const projectIsActive =
+                task.projectId === null ||
+                Boolean(project && !project.archivedAt && !project.trashedAt);
               return (
                 <section className="project-settings-row trashed" key={task.id}>
                   <div className="project-settings-summary">
                     <strong>{task.title}</strong>
                     <span>
-                      {project?.name ?? uiText('Unavailable project')} {uiText('· deleted')}{' '}
-                      {new Date(task.archivedAt!).toLocaleString()}
+                      {task.projectId === null
+                        ? '개인 할 일'
+                        : (project?.name ?? uiText('Unavailable project'))}{' '}
+                      {uiText('· deleted')} {new Date(task.archivedAt!).toLocaleString()}
                       {!projectIsActive && uiText(' · restore the parent project to Active first')}
                     </span>
                     {!projectIsActive && (

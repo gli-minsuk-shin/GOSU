@@ -9,6 +9,9 @@ export const MODEL_ROUTING_USAGES = [
   'briefing',
   'briefingAssistant',
   'lecture',
+  'lightweightTasks',
+  'modelExtraction',
+  'paperSummary',
 ] as const;
 const opaque = z
   .string()
@@ -25,25 +28,40 @@ export const RoutedModelSchema = z
     reasoningOptionId: opaque.nullable(),
   })
   .strict();
-const role = z.enum(['fast', 'strong', 'existing']);
+const role = z.enum(['lightweight', 'fast', 'strong', 'existing']);
 export const ModelRoutingSchema = z
   .object({
     version: z.literal(1),
     fast: RoutedModelSchema.nullable(),
+    lightweight: RoutedModelSchema.nullable().optional(),
     strong: RoutedModelSchema.nullable(),
     usage: z
-      .object({ projectChat: role, briefing: role, briefingAssistant: role, lecture: role })
+      .object({
+        projectChat: role,
+        briefing: role,
+        briefingAssistant: role,
+        lecture: role,
+        lightweightTasks: role.optional(),
+        modelExtraction: z.enum(['fast', 'strong', 'existing']).optional(),
+        /** Absent means the paper summary AI follows Briefing, which is what it did before. */
+        paperSummary: role.optional(),
+      })
       .strict(),
   })
   .strict()
   .superRefine((policy, ctx) => {
-    for (const usage of ['lecture', 'briefing', 'briefingAssistant'] as const) {
-      const choice = policy.usage[usage],
+    for (const usage of [
+      'lecture',
+      'briefing',
+      'briefingAssistant',
+      'lightweightTasks',
+      'modelExtraction',
+      'paperSummary',
+    ] as const) {
+      const choice = usageChoice(policy, usage),
         model = choice === 'existing' ? null : policy[choice];
-      if (
-        model &&
-        (usage === 'lecture' ? model.providerId !== 'codex' : model.providerId === 'hermes')
-      )
+      // Lecture, Briefing and extraction run on Codex or Claude Code; Hermes is Project Chat only.
+      if (model && model.providerId === 'hermes')
         ctx.addIssue({
           code: 'custom',
           path: ['usage', usage],
@@ -58,16 +76,34 @@ export function defaultModelRouting(): ModelRouting {
   return {
     version: 1,
     fast: null,
+    lightweight: null,
     strong: null,
     usage: {
       projectChat: 'strong',
       briefing: 'fast',
       briefingAssistant: 'strong',
       lecture: 'strong',
+      lightweightTasks: 'lightweight',
+      modelExtraction: 'existing',
     },
   };
 }
+/**
+ * The role a usage actually runs on. A usage the saved settings do not mention takes its default,
+ * and the paper summary AI takes Briefing's role, which ran it before it had one of its own, so
+ * adding the setting changes nothing until the user picks.
+ */
+export function usageChoice(
+  policy: ModelRouting,
+  usage: ModelUsage,
+): 'lightweight' | 'fast' | 'strong' | 'existing' {
+  const saved = policy.usage[usage];
+  if (saved) return saved;
+  if (usage === 'modelExtraction') return 'existing';
+  if (usage === 'paperSummary') return policy.usage.briefing;
+  return 'lightweight';
+}
 export function routedModel(policy: ModelRouting, usage: ModelUsage): RoutedModel | null {
-  const choice = policy.usage[usage];
-  return choice === 'existing' ? null : policy[choice];
+  const choice = usageChoice(policy, usage);
+  return choice === 'existing' ? null : (policy[choice] ?? null);
 }

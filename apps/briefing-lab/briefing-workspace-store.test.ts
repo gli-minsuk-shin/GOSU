@@ -7,6 +7,153 @@ import { briefingClientContext } from './briefing-client-context';
 import { defaultAssistantPreferences, defaultLiveSettings } from '@gosu/briefing-core';
 import { randomUUID } from 'node:crypto';
 const dirs: string[] = [];
+it.each([false, true])(
+  'recovers and persists old summary deadlines without replacing the summary or calling AI (date-only=%s)',
+  async (dateOnly) => {
+    const { store, dir } = await fixture();
+    await owner(() => store.save(profile(), async () => undefined));
+    await store.saveBriefing(
+      'r',
+      {
+        overview: 'Overview',
+        items: [
+          {
+            id: 'legacy',
+            summary: '9월 21일 12시까지 회신해주세요.',
+            importance: 'high',
+            importanceReason: 'Deadline',
+            relevance: '',
+            action: '설문 회신',
+            evidenceQuote: '회신',
+            equationIds: [],
+            figureIds: [],
+            memorySuggestion: null,
+            ...(dateOnly
+              ? {
+                  preparedActions: {
+                    event: null,
+                    task: {
+                      title: '기존 작업 제목',
+                      notes: '기존 메모',
+                      dueDate: '2026-09-21',
+                      evidenceQuote: '회신',
+                      deadlineQuote: '9월 21일',
+                      notice: '기존 초안',
+                    },
+                  },
+                }
+              : {}),
+          },
+        ],
+      },
+      [
+        {
+          id: 'legacy',
+          kind: 'email',
+          title: '2027-1학기 설문 (회신기한: 9/21일 (월) 12:00)',
+          readScope: 'mail-metadata',
+          publishedAt: '2026-09-14T00:00:00Z',
+        },
+      ],
+    );
+    const before = await store.history('r');
+    expect(before[0]!.items[0]!.preparedActions?.task?.dueAt).toBeUndefined();
+    const recovered = await owner(() => store.history('r'));
+    expect(recovered[0]!.items[0]!.preparedActions?.task).toMatchObject({
+      dueDate: '2026-09-21',
+      dueAt: '2026-09-21T03:00:00Z',
+    });
+    expect(recovered[0]!.items[0]!.summary).toBe(before[0]!.items[0]!.summary);
+    expect(recovered[0]!.createdAt).toBe(before[0]!.createdAt);
+    if (dateOnly)
+      expect(recovered[0]!.items[0]!.preparedActions?.task).toMatchObject({
+        title: '기존 작업 제목',
+        notes: '기존 메모',
+      });
+    const fresh = new BriefingWorkspaceStore(dir, async () => Buffer.alloc(32, 7));
+    expect((await owner(() => fresh.history('r')))[0]!.items[0]!.preparedActions).toEqual(
+      recovered[0]!.items[0]!.preparedActions,
+    );
+  },
+);
+it('persists prepared email actions in encrypted history across a fresh workspace instance', async () => {
+  const { store, dir } = await fixture();
+  await owner(() => store.save(profile(), async () => undefined));
+  const preparedActions = {
+    event: {
+      title: '회의',
+      start: '2026-09-20T14:30:00Z',
+      end: '2026-09-20T15:30:00Z',
+      timeZone: 'Asia/Seoul',
+      allDay: false,
+      location: '회의실',
+      notes: '자정에 걸친 회의',
+      alarmMinutes: null,
+      evidenceQuote: '회의',
+      notice: '',
+    },
+    task: {
+      title: '자료 제출',
+      notes: '정리한 자료',
+      dueDate: '2026-09-20',
+      dueAt: '2026-09-20T04:30:00Z',
+      timeZone: 'Asia/Seoul',
+      evidenceQuote: '자료 제출',
+      deadlineQuote: '9월 20일',
+      notice: '기한 확인',
+    },
+  };
+  await store.saveBriefing(
+    'r',
+    {
+      overview: '요약',
+      items: [
+        {
+          id: 'm',
+          summary: '자료 제출 요청',
+          importance: 'high',
+          importanceReason: '기한',
+          relevance: '',
+          action: '자료 제출',
+          evidenceQuote: '자료 제출',
+          equationIds: [],
+          figureIds: [],
+          memorySuggestion: null,
+          preparedActions,
+        },
+      ],
+    },
+    [{ id: 'm', kind: 'email', title: '자료 요청', readScope: 'mail-preview' }],
+  );
+  const fresh = new BriefingWorkspaceStore(dir, async () => Buffer.alloc(32, 7));
+  expect((await fresh.history('r'))[0]?.items[0]?.preparedActions).toEqual(preparedActions);
+});
+it('reuses only a currently approved Briefing scope, retaining ownership and scope-change checks', async () => {
+  const { dir } = await fixture();
+  let reuse = true;
+  const store = new BriefingWorkspaceStore(
+    dir,
+    async () => Buffer.alloc(32, 7),
+    () => reuse,
+  );
+  const requested = profile();
+  requested.preferences.confirmationPolicy = 'ask';
+  await owner(() => store.save(requested, async () => undefined));
+  const saved = (await store.profile('r'))!;
+  expect(store.requiresPerRequestConfirmation(saved)).toBe(false);
+  expect(store.requiresPerRequestConfirmation({ ...saved, approvedScope: null })).toBe(true);
+  expect(
+    store.requiresPerRequestConfirmation({
+      ...saved,
+      live: { ...saved.live, mail: { ...scope, accountId: 'foreign' } },
+    }),
+  ).toBe(true);
+  await expect(
+    briefingClientContext.run('b'.repeat(64), () => store.assertMail('r', scope)),
+  ).rejects.toThrow();
+  reuse = false;
+  expect(store.requiresPerRequestConfirmation(saved)).toBe(true);
+});
 it('repairs content-less email summaries instead of treating them as completed ingestion or daily summaries', async () => {
   const { store } = await fixture();
   await owner(() => store.save(profile(), async () => undefined));
@@ -394,7 +541,8 @@ it('pages beyond 600 records without deleting older briefings', async () => {
   expect(older.map((h) => h.answer)).toEqual(['Record 2', 'Record 1', 'Record 0']);
   expect(recent[0]?.answer).toBe('Record 602');
   expect(await store.history('other', '', 600, 600)).toEqual([]);
-});
+  // 603 sequential encrypted saves take ~5s locally; this checks paging, not save speed.
+}, 20_000);
 it('persists approved scope encrypted, binds to browser, and reuses after restart without per-turn approval', async () => {
   const { dir, store } = await fixture(),
     approve = vi.fn(async () => undefined);
@@ -554,6 +702,7 @@ it('persists expandable paper detail, keywords and exact equations while excludi
         mailAccount: { id: 'saved-account', name: 'Google', addresses: ['work@example.test'] },
         mailUnread: false,
         publishedAt: '2026-09-08T04:22:00Z',
+        details: ['Research Office <sender@example.test>', '읽음'],
       },
     ],
   );
@@ -576,6 +725,7 @@ it('persists expandable paper detail, keywords and exact equations while excludi
     mailMessageUrl: 'message://%3Cstored-message%40example.test%3E',
     mailAccount: { id: 'saved-account', name: 'Google', addresses: ['work@example.test'] },
     receivedAt: '2026-09-08T04:22:00Z',
+    mailSender: 'Research Office <sender@example.test>',
     mailUnread: false,
   });
   expect(await readFile(join(dir, 'workspace.v1.enc.json'), 'utf8')).not.toContain(
@@ -584,4 +734,102 @@ it('persists expandable paper detail, keywords and exact equations while excludi
   expect(await readFile(join(dir, 'workspace.v1.enc.json'), 'utf8')).not.toContain(
     'work@example.test',
   );
+  expect(await readFile(join(dir, 'workspace.v1.enc.json'), 'utf8')).not.toContain(
+    'sender@example.test',
+  );
+});
+it('lets the GOSU host read on the user behalf under the saved permissions, without a client token', async () => {
+  const { store } = await fixture();
+  const saved = profile();
+  await owner(() => store.save(saved, async () => undefined));
+  const current = (await store.profile('r'))!;
+  // No browser client owns this call, yet the approved permissions still decide.
+  expect(store.owns(current)).toBe(false);
+  for (const kind of ['calendar', 'mail', 'briefings', 'papers'] as const)
+    expect((await store.hostReadProfile(kind))?.routineId).toBe('r');
+  expect(store.hostPrivateAllowed(current)).toBe(true);
+  await expect(store.assertHostRead('mail', current)).resolves.toMatchObject({ routineId: 'r' });
+
+  // Turning a permission off in Briefing Lab removes exactly that read.
+  const mailOff = profile();
+  mailOff.preferences.mailAi = false;
+  await owner(() => store.save(mailOff, async () => undefined));
+  expect(await store.hostReadProfile('mail')).toBeNull();
+  expect((await store.hostReadProfile('calendar'))?.routineId).toBe('r');
+  expect(store.hostPrivateAllowed((await store.profile('r'))!)).toBe(false);
+  await expect(store.assertHostRead('mail', current)).rejects.toThrow(
+    'assistant_mail_permission_required',
+  );
+  const calendarOff = profile();
+  calendarOff.preferences.calendarIds = [];
+  await owner(() => store.save(calendarOff, async () => undefined));
+  expect(await store.hostReadProfile('calendar')).toBeNull();
+  // A scope change during a host read fails the read.
+  await expect(store.assertHostRead('briefings', current)).rejects.toThrow(
+    'assistant_briefings_permission_required',
+  );
+});
+
+it('withholds only the sign-in code mail of a batch and saves the other summaries', async () => {
+  // One such mail used to make saveBriefing return null for the whole batch.
+  const { store } = await fixture();
+  await owner(() => store.save(profile(), async () => undefined));
+  const insight = (id: string, summary: string) => ({
+    id,
+    summary,
+    importance: 'medium' as const,
+    importanceReason: '',
+    relevance: '',
+    action: '',
+    evidenceQuote: '',
+    equationIds: [],
+    figureIds: [],
+    memorySuggestion: null,
+  });
+  const source = (id: string, title: string, text = '') => ({
+    id,
+    kind: 'email',
+    title,
+    text,
+    readScope: 'mail-preview',
+    publishedAt: '2026-09-21T00:00:00Z',
+  });
+  const historyId = await store.saveBriefing(
+    'r',
+    {
+      overview: 'Two mails and a sign-in code.',
+      items: [
+        insight('a', 'Budget reply needed.'),
+        insight('otp', 'Sign-in code 123456.'),
+        insight('b', 'Seminar moved.'),
+      ],
+    },
+    [
+      source('a', 'Budget'),
+      source('otp', 'Your one-time passcode for Example'),
+      source('b', 'Seminar'),
+    ],
+  );
+  expect(historyId).toEqual(expect.any(String));
+  const [saved] = await store.history('r');
+  expect(saved!.items.map((item) => item.id)).toEqual(['a', 'b']);
+  // The narrative covered the withheld mail too, so it is not kept.
+  expect(saved!.answer).toBe('');
+  expect(JSON.stringify(saved)).not.toContain('123456');
+  // A mail that merely says "one time" in a long body is an ordinary mail.
+  const ordinary = await store.saveBriefing(
+    'r',
+    { overview: 'One mail.', items: [insight('c', 'Committee schedule.')] },
+    [source('c', 'Committee schedule', `${'Agenda. '.repeat(200)} We met one time last year.`)],
+  );
+  expect(ordinary).toEqual(expect.any(String));
+  expect((await store.history('r'))[0]!.answer).toBe('One mail.');
+  // Nothing storable at all is still "no record", which the run now treats as handled.
+  expect(
+    await store.saveBriefing(
+      'r',
+      { overview: 'Only a code.', items: [insight('otp2', 'Code 654321.')] },
+      [source('otp2', '인증번호 안내')],
+    ),
+  ).toBeNull();
 });

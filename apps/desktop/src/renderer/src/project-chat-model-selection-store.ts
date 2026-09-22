@@ -21,11 +21,18 @@ type StoredProjectChatModelSelectionV1 = Readonly<{
   providerId: string | null;
   modelId: string | null;
   reasoningOptionId: string | null;
+  /**
+   * Present only for a model picked in the chat's own menu. Older versions saved the default of
+   * the day into every chat they opened, without this mark, which then looked like a choice and
+   * kept Settings → Agent from ever reaching that chat again.
+   */
+  origin?: 'user';
 }>;
 
 export type ProjectChatModelSelectionLoadState = Readonly<{
   selection: ProjectChatModelSelection;
-  status: 'missing' | 'stored' | 'invalid' | 'unavailable';
+  /** `stored` is the user's own pick; `inherited` is a saved default that still follows Settings. */
+  status: 'missing' | 'stored' | 'inherited' | 'invalid' | 'unavailable';
 }>;
 
 const STORED_SELECTION_KEYS = [
@@ -72,9 +79,14 @@ export function parseStoredProjectChatModelSelection(
 ): ProjectChatModelSelection | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
+  const keys = Object.keys(record)
+    .filter((key) => key !== 'origin')
+    .sort()
+    .join(',');
   if (
     record.schemaVersion !== PROJECT_CHAT_MODEL_SELECTION_SCHEMA_VERSION ||
-    Object.keys(record).sort().join(',') !== [...STORED_SELECTION_KEYS].sort().join(',')
+    keys !== [...STORED_SELECTION_KEYS].sort().join(',') ||
+    ('origin' in record && record.origin !== 'user')
   ) {
     return null;
   }
@@ -127,15 +139,19 @@ export function loadProjectChatModelSelectionState(
     return { selection: AUTO_PROJECT_CHAT_MODEL_SELECTION, status: 'invalid' };
   }
   try {
-    const selection = parseStoredProjectChatModelSelection(JSON.parse(serialized) as unknown);
-    return selection
-      ? { selection, status: 'stored' }
-      : { selection: AUTO_PROJECT_CHAT_MODEL_SELECTION, status: 'invalid' };
+    const record = JSON.parse(serialized) as unknown;
+    const selection = parseStoredProjectChatModelSelection(record);
+    if (!selection) return { selection: AUTO_PROJECT_CHAT_MODEL_SELECTION, status: 'invalid' };
+    return {
+      selection,
+      status: (record as { origin?: unknown }).origin === 'user' ? 'stored' : 'inherited',
+    };
   } catch {
     return { selection: AUTO_PROJECT_CHAT_MODEL_SELECTION, status: 'invalid' };
   }
 }
 
+/** Saves the model picked in a chat's own menu; that chat stays on it whatever Settings say. */
 export function saveProjectChatModelSelection(
   storage: Pick<ModelSelectionStorage, 'setItem' | 'removeItem'>,
   projectId: string,
@@ -153,6 +169,7 @@ export function saveProjectChatModelSelection(
     const value: StoredProjectChatModelSelectionV1 = {
       schemaVersion: PROJECT_CHAT_MODEL_SELECTION_SCHEMA_VERSION,
       ...parsed,
+      origin: 'user',
     };
     const serialized = JSON.stringify(value);
     if (serialized.length > PROJECT_CHAT_MODEL_SELECTION_MAX_SERIALIZED_LENGTH) return false;

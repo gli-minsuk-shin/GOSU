@@ -133,7 +133,10 @@ describe('application language settings', () => {
     expect(text(renderer)).toContain('언어 설정이 저장되었습니다');
     expect(
       renderer.root
-        .findByProps({ title: 'Settings', className: 'project-folder-button' })
+        .findByProps({
+          title: 'Settings · 드래그하여 순서 변경 · 우클릭으로 메뉴',
+          className: 'project-folder-button',
+        })
         .findByType('strong').children,
     ).toEqual(['Settings']);
     expect(renderer.root.findByType('textarea').props.value).toBe(

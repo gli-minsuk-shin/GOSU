@@ -1,0 +1,186 @@
+/* Remaining plan limits: compact pills in the title bar, detail cards on the Usage screen. */
+.usage-limit-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  /* Never clipped: the subtitle next to the logo gives way instead. */
+  flex: 0 0 auto;
+}
+.usage-limit-pill {
+  -webkit-app-region: no-drag;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 20px;
+  padding: 1px 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  /* Quiet by design: regular weight, caption size, muted. Only a nearly used-up limit takes color. */
+  color: var(--subtle, var(--muted));
+  font: inherit;
+  font-size: var(--font-caption);
+  font-weight: 400;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.usage-limit-pill:hover,
+.usage-limit-pill:focus-visible {
+  border-color: var(--line);
+  color: var(--text);
+}
+/* Not <strong>: `.titlebar strong` is the GOSU wordmark style (larger, letter-spaced). */
+.usage-limit-pill-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.usage-limit-pill[data-stale] {
+  border: 1px dashed var(--line);
+}
+.usage-limit-meter {
+  position: relative;
+  display: inline-block;
+  width: 26px;
+  height: 3px;
+  border-radius: 999px;
+  background: light-dark(#e4eadf, #252c24);
+  overflow: hidden;
+}
+.usage-limit-meter.wide {
+  display: block;
+  width: 100%;
+  height: 7px;
+}
+.usage-limit-meter > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: light-dark(#5a8a1f, #8fc04a);
+}
+[data-level='low'] .usage-limit-meter > i,
+.usage-limit-pill[data-level='low'] .usage-limit-meter > i {
+  background: light-dark(#c98512, #e0a53a);
+}
+[data-level='critical'] .usage-limit-meter > i,
+.usage-limit-pill[data-level='critical'] .usage-limit-meter > i {
+  background: light-dark(#c2452d, #ef6d55);
+}
+.usage-limit-pill[data-level='critical'] .usage-limit-pill-value {
+  color: light-dark(#a53a25, #ef6d55);
+}
+
+.usage-limits-panel {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: light-dark(#ffffff, #101411);
+}
+.usage-limits-panel > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: space-between;
+  gap: 10px;
+}
+.usage-limits-panel h3 {
+  margin: 2px 0 0;
+  font-size: var(--font-title, 15px);
+}
+.usage-limits-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: var(--font-control);
+}
+.usage-limits-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.usage-limits-toggle input {
+  width: 15px;
+  height: 15px;
+  min-height: 0;
+  margin: 0;
+  accent-color: light-dark(#5a8a1f, #8fc04a);
+}
+.usage-limits-controls select {
+  font: inherit;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: light-dark(#ffffff, #121713);
+  color: var(--text);
+}
+.usage-limits-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+.usage-limits-card {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.usage-limits-card:not([data-connected]) {
+  opacity: 0.72;
+}
+.usage-limits-card > header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.usage-limits-card > header small {
+  margin-left: auto;
+  color: var(--muted);
+}
+.usage-limits-plan {
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: var(--font-control);
+  text-transform: capitalize;
+}
+.usage-limits-window {
+  display: grid;
+  gap: 4px;
+}
+.usage-limits-window-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.usage-limits-window-head strong {
+  font-variant-numeric: tabular-nums;
+}
+.usage-limits-window small,
+.usage-limits-extra,
+.usage-limits-note,
+.usage-limits-empty {
+  color: var(--muted);
+  line-height: 1.5;
+}
+.usage-limits-note,
+.usage-limits-empty {
+  margin: 0;
+  font-size: var(--font-control);
+}
+.usage-limits-error {
+  margin: 0;
+  color: light-dark(#a04b2e, #ef8a6d);
+  font-size: var(--font-control);
+}
+@media (max-width: 1180px) {
+  .usage-limit-pill .usage-limit-meter {
+    display: none;
+  }
+}

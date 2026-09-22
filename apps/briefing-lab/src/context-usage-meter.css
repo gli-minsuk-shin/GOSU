@@ -1,21 +1,63 @@
+/* A chip in the composer's action row. Its details are a popover: they open in the browser's top
+   layer and the component places them from the chip, so no host container can clip them. */
 .briefing-context-empty {
-  display: block;
   color: #849078;
   font-size: 11px;
-  padding: 3px 0;
+  white-space: nowrap;
 }
 .briefing-context-meter {
+  display: inline-flex;
   color: #5b6c50;
   font-size: 11px;
-  margin: 3px 0 8px;
+  margin: 0;
 }
-.briefing-context-meter summary {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
+.briefing-context-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 0;
+  margin: 0;
+  padding: 2px 8px;
+  border: 1px solid light-dark(#dbe3d3, #3a4433);
+  border-radius: 999px;
+  background: light-dark(#f6f8f3, #1c2219);
+  color: light-dark(#5b6c50, #a9b89c);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.5;
   cursor: pointer;
-  list-style: none;
-  padding: 5px 0;
+  white-space: nowrap;
+}
+.briefing-context-meter[data-open] .briefing-context-chip {
+  border-color: light-dark(#aebf9c, #5a6b4c);
+  background: light-dark(#eef3e7, #242c20);
+}
+.briefing-context-detail {
+  position: fixed;
+  inset: auto;
+  box-sizing: border-box;
+  margin: 0;
+  width: min(380px, calc(100vw - 16px));
+  max-height: min(50vh, 420px);
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid light-dark(#d7e0cf, #3a4433);
+  border-radius: 10px;
+  background: light-dark(#fff, #161b14);
+  color: light-dark(#4a5a40, #c3d0b8);
+  box-shadow: 0 8px 24px rgb(30 40 20 / 14%);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+}
+.briefing-context-detail:not(:popover-open) {
+  display: none;
+}
+.briefing-context-detail > strong {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 600;
 }
 .briefing-context-meter progress {
   width: 100%;
@@ -40,4 +82,12 @@
   display: block;
   line-height: 1.5;
   color: #849078;
+}
+/* The hint is what the reader can do about the numbers above; the note after it is a caveat. */
+.briefing-context-meter small.briefing-context-commands-hint {
+  margin-bottom: 6px;
+  color: inherit;
+}
+.briefing-context-commands-hint code {
+  font-size: inherit;
 }

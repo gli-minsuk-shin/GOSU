@@ -212,11 +212,21 @@ describe('Briefing Lab phase 1 UI', () => {
       content(renderer).indexOf('OLDER BRIEFING'),
     );
     expect(renderer.root.findAllByProps({ className: 'briefing-history-run' })).toHaveLength(2);
-    expect(vi.mocked(sourceRequest).mock.calls.map((call) => call[0])).toEqual([
+    const paths = vi.mocked(sourceRequest).mock.calls.map((call) => call[0]);
+    expect(paths.filter((path) => path !== '/assistant/guidance/list')).toEqual([
       '/generation/status',
       '/history/list',
       '/history/list',
     ]);
+    // The header's guidance button and the feed's pinned mail share one read per routine, so they
+    // do not push the server past its three concurrent requests.
+    expect(
+      vi
+        .mocked(sourceRequest)
+        .mock.calls.filter((call) => call[0] === '/assistant/guidance/list')
+        .map((call) => (call[1] as { routineId: string }).routineId)
+        .sort(),
+    ).toEqual(['personal-research', 'second-personal']);
     const personal = renderer.root
       .findAllByType('button')
       .find(
@@ -225,10 +235,12 @@ describe('Briefing Lab phase 1 UI', () => {
           contentText(node).includes('전체 History'),
       )!;
     await click(personal);
-    expect(vi.mocked(sourceRequest).mock.calls.map((call) => call[0])).toEqual([
-      '/generation/status',
-      ...Array(4).fill('/history/list'),
-    ]);
+    expect(
+      vi
+        .mocked(sourceRequest)
+        .mock.calls.map((call) => call[0])
+        .filter((path) => path !== '/assistant/guidance/list'),
+    ).toEqual(['/generation/status', ...Array(4).fill('/history/list')]);
   });
   it('opens the complete History by default and removes all routine/sample navigation from the sidebar without deleting data', async () => {
     const base = runFixture(initialWorkspace(NOW), 'personal-research', NOW, 'kept-sample');

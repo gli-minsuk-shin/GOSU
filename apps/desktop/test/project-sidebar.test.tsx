@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 
 import { renderToStaticMarkup } from 'react-dom/server';
+import { act, create } from 'react-test-renderer';
 import { SidebarIcon } from '../src/renderer/src/sidebar-icon';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -12,13 +13,19 @@ import {
 import { DEFAULT_PROJECT_NAVIGATION_STATE } from '../src/renderer/src/project-navigation-state';
 import type { PortfolioProjectRecord } from '../src/renderer/src/project-portfolio-model';
 
-it('keeps a closed chat bubble and three dots, adding a separate upper-right AI sparkle', () => {
+it('preserves the bubble and green sparkle artwork at the same 18px size as neighboring icons', () => {
   const html = renderToStaticMarkup(<SidebarIcon name="assistant" />);
   expect(html.match(/<circle /g)).toHaveLength(3);
-  for (const cx of [7, 10.5, 14]) expect(html).toContain(`cx="${cx}" cy="12.5"`);
-  expect(html).toContain('M6.5 7h8a3.5');
+  for (const cx of [7, 11, 15]) expect(html).toContain(`cx="${cx}" cy="14"`);
+  expect(html).toContain('M6 5h12a4');
+  expect(html).toContain('data-assistant-bubble="true"');
   expect(html).toContain('data-assistant-sparkle="true"');
-  expect(html).toContain('M20 1.5l.85 2.15L23 4.5');
+  expect(html).toContain('M17.25 .75C18.2 4.7 19.3 5.8 23.25 6.75');
+  expect(html).toContain('fill="var(--green, currentColor)"');
+  expect(html).toContain('paint-order="stroke"');
+  expect(html).toContain('sidebar-nav-icon-assistant-slot');
+  const css = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
+  expect(css).toMatch(/\.sidebar-nav-icon-assistant\s*\{\s*width: 18px;\s*height: 18px;/u);
   expect(html).not.toContain('<animate');
   expect(renderToStaticMarkup(<SidebarIcon name="chat" />)).not.toContain('data-assistant-sparkle');
   expect(html).toContain('viewBox="0 0 24 24"');
@@ -57,7 +64,7 @@ const projects: readonly PortfolioProjectRecord[] = [
   },
 ];
 
-function renderSidebar(overrides: Partial<ProjectSidebarProps> = {}) {
+function sidebarElement(overrides: Partial<ProjectSidebarProps> = {}) {
   const props: ProjectSidebarProps = {
     projects,
     activeProjectId: baseProject.id,
@@ -85,8 +92,155 @@ function renderSidebar(overrides: Partial<ProjectSidebarProps> = {}) {
     onNewProject: vi.fn(),
     ...overrides,
   };
-  return renderToStaticMarkup(<ProjectSidebar {...props} />);
+  return <ProjectSidebar {...props} />;
 }
+function renderSidebar(overrides: Partial<ProjectSidebarProps> = {}) {
+  return renderToStaticMarkup(sidebarElement(overrides));
+}
+it('shows Critical Review work on Review rather than the ordinary chat icon', () => {
+  const html = renderSidebar({
+    aiActivity: { [`project:${baseProject.id}:review`]: { running: ['r'], completed: false } },
+  });
+  const buttons = [...html.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)].map((m) => m[1] ?? '');
+  expect(buttons.find((b) => b.includes('data-sidebar-icon="review"'))).toContain(
+    'sidebar-ai-star is-running',
+  );
+  expect(buttons.find((b) => b.includes('data-sidebar-icon="chat"'))).not.toContain(
+    'sidebar-ai-star',
+  );
+});
+it('renders running and completed stars without resizing the base icon, and acknowledges the clicked section', async () => {
+  const scope = `project:${baseProject.id}:model-lab`;
+  const onAcknowledgeAi = vi.fn();
+  const aiActivity = {
+    assistant: { running: ['a'], completed: false },
+    [scope]: { running: [], completed: true },
+  };
+  const html = renderSidebar({ aiActivity, busyProjectIds: new Set() });
+  expect(html).toContain('sidebar-ai-star is-running');
+  expect(html).toContain('sidebar-ai-star is-completed');
+  expect(html).toContain('data-sidebar-icon="model-lab"');
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  let ui!: ReturnType<typeof create>;
+  await act(() => {
+    ui = create(sidebarElement({ aiActivity, busyProjectIds: new Set(), onAcknowledgeAi }));
+  });
+  await act(() =>
+    ui.root
+      .findAllByType('button')
+      .find((b) => b.findAllByProps({ 'data-sidebar-icon': 'model-lab' }).length)!
+      .props.onClick(),
+  );
+  expect(onAcknowledgeAi).toHaveBeenCalledWith(scope);
+  await act(() => ui.unmount());
+  vi.unstubAllGlobals();
+  const css = readFileSync(
+    new URL('../src/renderer/src/sidebar-ai-activity.css', import.meta.url),
+    'utf8',
+  );
+  expect(css).toContain('prefers-reduced-motion: reduce');
+  expect(css).toContain('stroke-dashoffset: -1');
+  // Work in progress is a bright, glowing, pulsing star with two sparks, large enough to notice.
+  expect(css).toMatch(/\.sidebar-ai-star \{[^}]*width: 14px;[^}]*height: 14px;/);
+  expect(css).toMatch(
+    /\.sidebar-ai-star\.is-running \{[^}]*drop-shadow[^}]*animation: sidebar-ai-pulse 1\.15s/,
+  );
+  expect(css).toMatch(/\.sidebar-ai-star\.is-running path \{[^}]*fill: currentColor;/);
+  expect(css).toMatch(
+    /\.sidebar-ai-star\.is-running::before,\s*\.sidebar-ai-star\.is-running::after \{[^}]*clip-path: polygon/,
+  );
+  expect(css).toMatch(/@keyframes sidebar-ai-pulse \{[\s\S]*?scale\(1\.28\)/);
+});
+it('keeps a collapsed project activity visible without repeating it on the expanded project row', () => {
+  const aiActivity = {
+    [`project:${baseProject.id}:model-lab`]: { running: ['a'], completed: false },
+  };
+  const html = renderSidebar({
+    aiActivity,
+    busyProjectIds: new Set(),
+    navigationState: { ...DEFAULT_PROJECT_NAVIGATION_STATE, expandedProjectIds: [] },
+  });
+  expect(html).toContain('sidebar-ai-star is-running');
+  expect(html).not.toContain('data-sidebar-icon="model-lab"');
+});
+it('shows the star after the row name, glows yellow when finished, and clears through the row click', async () => {
+  const aiActivity = {
+    briefing: { running: [], completed: true },
+    papers: { running: ['p'], completed: false },
+    assistant: { running: [], completed: true },
+  };
+  const html = renderSidebar({ aiActivity, busyProjectIds: new Set() });
+  const buttons = [...html.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)].map((m) => m[1] ?? '');
+  const briefing = buttons.find((b) => b.includes('data-sidebar-icon="briefing-lab"'))!;
+  expect(briefing).toMatch(/<span>Briefing Lab<\/span><span class="sidebar-ai-star is-completed"/);
+  expect(briefing.slice(0, briefing.indexOf('<span>Briefing Lab</span>'))).not.toContain(
+    'sidebar-ai-star',
+  );
+  const papers = buttons.find((b) => b.includes('data-sidebar-icon="literature"'))!;
+  expect(papers.indexOf('sidebar-ai-star is-running')).toBeGreaterThan(
+    papers.indexOf('</svg></span>'),
+  );
+  // The icon-only assistant button has no name, so its star stays on the icon.
+  const assistant = buttons.find((b) => b.includes('data-sidebar-icon="assistant"'))!;
+  expect(assistant).toMatch(/<\/svg><span class="sidebar-ai-star is-completed"/);
+
+  const css = readFileSync(
+    new URL('../src/renderer/src/sidebar-ai-activity.css', import.meta.url),
+    'utf8',
+  );
+  expect(css).toMatch(/\.sidebar-ai-star\.is-completed \{[^}]*color: #f2b705;[^}]*drop-shadow/);
+  expect(css).toMatch(/\.sidebar-ai-star \{[^}]*pointer-events: none;/);
+
+  const onAcknowledgeAi = vi.fn();
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  let ui!: ReturnType<typeof create>;
+  try {
+    await act(() => {
+      ui = create(sidebarElement({ aiActivity, busyProjectIds: new Set(), onAcknowledgeAi }));
+    });
+    await act(() =>
+      ui.root.findByProps({ 'aria-label': 'Briefing Lab', type: 'button' }).props.onClick(),
+    );
+    expect(onAcknowledgeAi).toHaveBeenCalledWith('briefing');
+  } finally {
+    await act(() => ui?.unmount());
+    vi.unstubAllGlobals();
+  }
+});
+it('uses independent Briefing and paper rows, navigates directly, and selects only the current row', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const select = vi.fn(),
+    global = vi.fn();
+  let ui!: ReturnType<typeof create>;
+  try {
+    await act(() => {
+      ui = create(
+        sidebarElement({
+          activeTab: 'briefing-lab',
+          briefingView: 'papers',
+          onSelectBriefingView: select,
+          onSelectGlobalTab: global,
+        }),
+      );
+    });
+    const group = ui.root.findByProps({ 'aria-label': 'Personal workspace' });
+    const buttons = group.findAllByType('button');
+    expect(buttons).toHaveLength(4);
+    expect(buttons[2]!.props['aria-expanded']).toBeUndefined();
+    expect(buttons[2]!.props['aria-current']).toBeUndefined();
+    expect(buttons[3]!.props['aria-current']).toBe('page');
+    await act(() => buttons[2]!.props.onClick());
+    expect(select).toHaveBeenLastCalledWith('history');
+    await act(() => buttons[3]!.props.onClick());
+    expect(select).toHaveBeenLastCalledWith('papers');
+    expect(global).not.toHaveBeenCalled();
+    expect(ui.root.findAllByProps({ className: 'briefing-subnavigation' })).toHaveLength(0);
+    expect(renderSidebar()).not.toContain('루틴 관리');
+  } finally {
+    await act(() => ui.unmount());
+    vi.unstubAllGlobals();
+  }
+});
 
 describe('folder-style project sidebar', () => {
   it('places search/notifications then named shared personal tools before Projects', () => {
@@ -151,6 +305,7 @@ describe('folder-style project sidebar', () => {
       'calendar',
       'tasks',
       'briefing-lab',
+      'literature',
       'chat',
       'model-lab',
       'repository',
@@ -174,12 +329,12 @@ describe('folder-style project sidebar', () => {
       expect(markup).toContain('aria-hidden="true"');
       expect(markup).toContain('focusable="false"');
     }
-    expect(html.match(/class="sidebar-nav-icon"/gu)).toHaveLength(expectedIcons.length);
+    expect(html.match(/class="sidebar-nav-icon(?: [^"]*)?"/gu)).toHaveLength(expectedIcons.length);
     expect(html).not.toContain('project-folder-icon');
     expect(styles).not.toContain('.project-folder-icon');
     expect(html).not.toMatch(/[◈▰▱▦⌁▤◇⚙⌕▹]/u);
     expect(html).toContain('Actions for Active Alpha');
-    expect(html).toContain('Codex is running');
+    expect(html).toContain('AI working');
     expect(html).toContain('class="collapse-chevron"');
     expect(html).toContain('aria-label="Active projects"');
   });
@@ -310,12 +465,60 @@ describe('folder-style project sidebar', () => {
     expect(html).toContain('Literature');
     expect(html).toContain('Experiments');
     expect(html).not.toContain('References');
-    expect(html).toContain('Codex is running');
+    expect(html).toContain('AI working');
     expect(html).toContain('Hide locally');
     expect(html).toContain('before hiding this project');
-    expect(html).toContain('Archive');
+    expect(html).toContain('Move to archive');
     expect(html).toContain('Project settings');
     expect(html).not.toContain('Trashed Delta');
+  });
+
+  it('opens the project actions (with "Move to archive") on right-click, and archives from there', async () => {
+    // 2026-09-21: the user asked for an archive feature that already existed behind the ••• menu
+    // under the label "보관". Right-click now opens that menu and the wording says "아카이브".
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const onArchiveProject = vi.fn();
+    let ui!: ReturnType<typeof create>;
+    await act(() => {
+      ui = create(sidebarElement({ onArchiveProject }));
+    });
+    const row = ui.root
+      .findAllByProps({ className: 'project-folder-button' })
+      .find((b) => JSON.stringify(b.props.title).includes('Active Alpha'))!;
+    expect(row.props.title).toContain('Right-click for actions');
+    const menu = { open: false };
+    const event = {
+      preventDefault: vi.fn(),
+      currentTarget: { parentElement: { querySelector: vi.fn(() => menu) } },
+    };
+    await act(() => row.props.onContextMenu(event));
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(event.currentTarget.parentElement.querySelector).toHaveBeenCalledWith(
+      'details.project-folder-menu',
+    );
+    expect(menu.open).toBe(true);
+    const archive = ui.root
+      .findAllByProps({ role: 'menuitem' })
+      .find((b) => b.props.children === 'Move to archive')!;
+    await act(() => archive.props.onClick());
+    expect(onArchiveProject).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Active Alpha' }),
+    );
+    await act(() => ui.unmount());
+    vi.unstubAllGlobals();
+    const messages = readFileSync(
+      new URL('../../../packages/ui/src/desktop-messages.ts', import.meta.url),
+      'utf8',
+    );
+    expect(messages).toContain("['Move to archive', '아카이브로 이동']");
+    expect(messages).toContain("['Archived', '아카이브']");
+    const app = readFileSync(
+      new URL('../src/renderer/src/desktop-app.tsx', import.meta.url),
+      'utf8',
+    );
+    // The confirmation is translated and says where the project went.
+    expect(app).toContain('Restore it from “Archived” at the bottom of the project list.');
+    expect(app).not.toContain('`Archived ${project.name}.`');
   });
 
   it('keeps hidden and archived projects recoverable in separate groups', () => {
@@ -374,7 +577,7 @@ describe('folder-style project sidebar', () => {
     expect(projectHtml).toMatch(
       /class="project-personal-tool active" aria-current="page" aria-label="To-do list"/u,
     );
-    expect(projectHtml).toContain('>Board</button>');
+    expect(projectHtml).toContain('<span class="sidebar-row-label"><span>Board</span>');
     expect(projectHtml).not.toMatch(/class="active"[^>]*>[^<]*(?:<[^>]+>)*Board<\/button>/u);
   });
 

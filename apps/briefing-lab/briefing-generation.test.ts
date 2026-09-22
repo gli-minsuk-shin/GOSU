@@ -3,8 +3,14 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultAssistantPreferences, defaultLiveSettings } from '@gosu/briefing-core';
+import { defaultModelRouting } from '@gosu/contracts';
 import { BriefingGeneration } from './briefing-generation';
-import { BriefingGenerationStore } from './briefing-generation-store';
+import {
+  BriefingGenerationStore,
+  generationScheduled,
+  nextGenerationDueAt,
+} from './briefing-generation-store';
+import { BriefingGuidanceStore } from './briefing-guidance-store';
 import { BriefingWorkspaceStore } from './briefing-workspace-store';
 import { briefingClientContext } from './briefing-client-context';
 import { createHash } from 'node:crypto';
@@ -43,6 +49,8 @@ async function sourceFixture(
     mailAi?: boolean;
     calendarRead?: boolean;
     failedSource?: 'weather' | 'calendar' | 'email' | 'papers';
+    readIndex?: ConstructorParameters<typeof AppleMailConnection>[3];
+    providerId?: 'codex' | 'claude-code';
   } = {},
 ) {
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -106,7 +114,7 @@ async function sourceFixture(
       skipped: nativeMessages.length - messages.length,
     };
   });
-  const mail = new AppleMailConnection(mailNative);
+  const mail = new AppleMailConnection(mailNative, undefined, undefined, options.readIndex);
   const account = (await mail.discover(new AbortController().signal)).accounts[0]!;
   mailNative.mockClear();
   const nativeEvent = {
@@ -179,6 +187,7 @@ async function sourceFixture(
   };
   const preferences = {
     ...defaultAssistantPreferences(),
+    ...(options.providerId ? { providerId: options.providerId } : {}),
     mailRead: options.mailRead ?? true,
     mailAi: options.mailAi ?? true,
     calendarRead: options.calendarRead ?? true,
@@ -253,7 +262,11 @@ async function sourceFixture(
     new BriefingMemoryStore(dir, key),
     workspace,
     new CalendarService(calendarNative),
-    async () => ({ modelId: 'fixture-model' }) as Awaited<ReturnType<typeof assistantModel>>,
+    // The resolver answers with the model it was asked for, as the real catalog lookup does.
+    async (preferences) =>
+      ({ modelId: preferences.modelId || 'fixture-model' }) as Awaited<
+        ReturnType<typeof assistantModel>
+      >,
   );
   const engine = service.enableGeneration(new BriefingGenerationStore(dir, key), false);
   const run = async () => {
@@ -442,7 +455,41 @@ it('does not perform background calendar reads for per-request approval scopes',
   }
 });
 
-it('keeps first daily weather/calendar, avoids duplicate summaries, and appends fresh email/paper on the next briefing', async () => {
+it('refreshes added, edited and deleted same-day calendar events without losing the old agenda on failure', async () => {
+  const f = await sourceFixture();
+  const agenda = async () =>
+    groupBriefingHistory(await f.workspace.history('four'))[0]!.snapshot!.calendar!;
+  try {
+    await f.run();
+    const added = {
+      ...f.nativeEvent,
+      nativeId: 'new-event',
+      title: 'New meeting',
+      start: '2026-09-12T05:00:00Z',
+      end: '2026-09-12T06:00:00Z',
+    };
+    f.calendarNative.mockResolvedValue({ events: [f.nativeEvent, added], limited: false });
+    await f.run();
+    expect((await agenda()).map((e) => e.title)).toEqual(['Fixture meeting', 'New meeting']);
+    f.calendarNative.mockResolvedValue({
+      events: [{ ...added, title: 'Updated meeting' }],
+      limited: false,
+    });
+    await f.run();
+    expect((await agenda()).map((e) => e.title)).toEqual(['Updated meeting']);
+    f.calendarNative.mockRejectedValueOnce(new Error('calendar_unavailable'));
+    await f.run();
+    expect((await agenda()).map((e) => e.title)).toEqual(['Updated meeting']);
+    f.calendarNative.mockResolvedValue({ events: [], limited: false });
+    await f.run();
+    expect(await agenda()).toEqual([]);
+    expect(f.providers.weather).toHaveBeenCalledOnce();
+    expect(f.analyzer).toHaveBeenCalledTimes(2);
+  } finally {
+    f.service.close();
+  }
+});
+it('keeps first daily weather, refreshes calendar, avoids duplicate summaries, and appends fresh email/paper on the next briefing', async () => {
   const f = await sourceFixture();
   try {
     await f.run();
@@ -466,7 +513,7 @@ it('keeps first daily weather/calendar, avoids duplicate summaries, and appends 
     ]);
     expect(await f.run()).toMatchObject({ newCount: 2, addedSummaries: { email: 1, papers: 1 } });
     expect(f.providers.weather).toHaveBeenCalledOnce();
-    expect(f.calendarNative).toHaveBeenCalledOnce();
+    expect(f.calendarNative).toHaveBeenCalledTimes(3);
     const history = await f.workspace.history('four');
     expect(history.flatMap((h) => h.items.map((i) => i.title)).sort()).toEqual([
       'Fixture email',
@@ -581,7 +628,576 @@ it('retains collected weather and Calendar when the summary model fails', async 
     const [group] = groupBriefingHistory(await f.workspace.history('four'));
     expect(group!.snapshot?.weather).toEqual(f.weather.weather);
     expect(group!.snapshot?.calendar).toHaveLength(1);
-    expect(group!.items).toEqual([]);
+    // No summary could be written, but the mail that arrived is not invisible: subject, sender and
+    // received time are kept with an empty summary (2026-09-21: "요약만 빠지게. 그래야 사용자가
+    // 적어도 이메일이 온건 알 수 있잖아"). Papers are not kept this way.
+    expect(group!.items).toHaveLength(1);
+    expect(group!.items[0]).toMatchObject({
+      kind: 'email',
+      title: 'Fixture email',
+      summary: '',
+      importance: 'uncertain',
+      mailSender: expect.stringContaining('sender@example.test'),
+      receivedAt: expect.any(String),
+    });
+  } finally {
+    f.service.close();
+  }
+});
+
+it('warns about a mailbox interval the read could not reach and closes it once a later read does', async () => {
+  const f = await sourceFixture();
+  try {
+    const base = f.mailNative.getMockImplementation()!;
+    let reached = false;
+    f.mailNative.mockImplementation(async (request, signal, progress) => {
+      const value = (await base(request, signal, progress)) as Record<string, unknown>;
+      if (request.action !== 'read') return value;
+      return {
+        ...value,
+        coverage: {
+          ordered: true,
+          floorReached: reached,
+          stoppedBy: reached ? 'floor' : 'budget',
+          newest: new Date(Date.now() - 60_000).toISOString(),
+          oldest: new Date(Date.now() - 3_600_000).toISOString(),
+          floor: request.stopAt ?? request.since,
+          examined: 2,
+          known: 0,
+        },
+      };
+    });
+    const first = await f.run();
+    expect(first).toMatchObject({ state: 'complete', mailCoverageGaps: 1 });
+    expect(first.error).toContain('메일 미확인 구간');
+    reached = true;
+    const second = await f.run();
+    const read = f.mailNative.mock.calls.filter(([q]) => q.action === 'read').at(-1)![0];
+    // The next read is floored at the recorded gap (minus overlap), never below the days window.
+    expect(read.action === 'read' && read.stopAt).toBeTruthy();
+    expect(second.mailCoverageGaps ?? 0).toBe(0);
+  } finally {
+    f.service.close();
+  }
+});
+
+it('keeps later summaries when one AI batch times out and reports the failed batch', async () => {
+  const f = await sourceFixture();
+  try {
+    const summarize = f.analyzer.getMockImplementation()!;
+    // The first batch (email) times out; the paper batch after it must still be summarized.
+    f.analyzer
+      .mockRejectedValueOnce(new Error('routine_timeout'))
+      .mockImplementation((...args) => summarize(...args));
+    const job = await f.run();
+    expect(f.analyzer).toHaveBeenCalledTimes(2);
+    expect(job).toMatchObject({ state: 'complete', summaryFailures: 1 });
+    expect(job.addedSummaries?.papers).toBeGreaterThan(0);
+    expect(job.error).toContain('요약 실패');
+    expect(job.error).toContain('시간이 초과');
+    // The email of the failed batch is in today's briefing without a summary, and the run says so.
+    expect(job.error).toContain('이메일 1통은 제목·보낸 사람·받은 시각만 브리핑에 남겼습니다');
+    const emails = async () =>
+      groupBriefingHistory(await owner(() => f.workspace.history('four')))[0]!.items.filter(
+        (item) => item.kind === 'email',
+      );
+    expect(await emails()).toEqual([
+      expect.objectContaining({ title: 'Fixture email', summary: '', importance: 'uncertain' }),
+    ]);
+    // It does not count as summarized: no notification claims it, and the next run summarizes it.
+    expect(job.addedSummaries?.email ?? 0).toBe(0);
+    vi.setSystemTime(new Date('2026-09-12T01:00:00Z'));
+    const next = await f.run();
+    expect(next.addedSummaries?.email).toBe(1);
+    const after = await emails();
+    // One entry for the mail, now with its summary: the empty one was replaced, not duplicated.
+    expect(after).toHaveLength(1);
+    expect(after[0]!.summary).toContain('Reply to the invitation before Friday.');
+  } finally {
+    f.service.close();
+  }
+});
+
+it('never keeps a sign-in code mail as an unsummarized entry, and keeps nothing for a cancelled run', async () => {
+  const f = await sourceFixture();
+  try {
+    f.nativeMessages.push({
+      ...f.nativeMessages[0]!,
+      id: '2',
+      title: 'Your one-time passcode for Example',
+      preview: 'Use 123456 to sign in.',
+      date: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const summarize = f.analyzer.getMockImplementation()!;
+    f.analyzer
+      .mockRejectedValueOnce(new Error('routine_timeout'))
+      .mockImplementation((...args) => summarize(...args));
+    await f.run();
+    const titles = async () =>
+      groupBriefingHistory(await owner(() => f.workspace.history('four')))[0]!
+        .items.filter((item) => item.kind === 'email')
+        .map((item) => item.title);
+    // The ordinary mail is shown without a summary; the code mail (its subject can hold the secret)
+    // is not written anywhere.
+    expect(await titles()).toEqual(['Fixture email']);
+    expect(JSON.stringify(await owner(() => f.workspace.history('four')))).not.toContain(
+      'one-time passcode',
+    );
+  } finally {
+    f.service.close();
+  }
+  const cancelled = await sourceFixture();
+  try {
+    // The user stops the run while the email batch is being summarized: nothing is kept for it.
+    cancelled.analyzer.mockImplementationOnce(async (_input, _items, _interest, signal) => {
+      await owner(() => cancelled.engine.cancel('four'));
+      if (signal.aborted) throw new Error('source_cancelled');
+      throw new Error('expected the run to be cancelled');
+    });
+    const job = await cancelled.run();
+    expect(job.state).toBe('cancelled');
+    const groups = groupBriefingHistory(await owner(() => cancelled.workspace.history('four')));
+    expect(groups.flatMap((group) => group.items).filter((item) => item.kind === 'email')).toEqual(
+      [],
+    );
+  } finally {
+    cancelled.service.close();
+  }
+});
+
+it('summarizes email batches three at a time and saves every batch', async () => {
+  const f = await sourceFixture();
+  try {
+    // The first read of an account is capped at three messages; the concurrency applies after it.
+    await f.run();
+    vi.setSystemTime(new Date('2026-09-12T01:00:00Z'));
+    for (let i = 2; i <= 14; i++)
+      f.nativeMessages.push({
+        ...f.nativeMessages[0]!,
+        id: String(i),
+        title: `Fixture email ${i}`,
+        date: new Date(Date.now() - i * 60_000).toISOString(),
+      });
+    const summarize = f.analyzer.getMockImplementation()!;
+    f.analyzer.mockClear();
+    let inFlight = 0,
+      peak = 0;
+    let release!: () => void;
+    const threeRunning = new Promise<void>((resolve) => (release = resolve));
+    f.analyzer.mockImplementation(async (...args) => {
+      peak = Math.max(peak, ++inFlight);
+      if (inFlight >= 3) release();
+      // Each call waits until three run together. A fixed 30 ms hold measured the machine instead:
+      // under load the third batch started after the first had finished, and the peak read 2.
+      await Promise.race([threeRunning, new Promise((resolve) => setTimeout(resolve, 3000))]);
+      inFlight--;
+      return summarize(...args);
+    });
+    const job = await f.run();
+    const emailCalls = f.analyzer.mock.calls.filter(([, items]) =>
+      items.every((item) => item.kind === 'email'),
+    );
+    expect(emailCalls.map(([, items]) => items.length).sort()).toEqual([1, 6, 6]);
+    expect(peak).toBe(3);
+    expect(job).toMatchObject({ state: 'complete', addedSummaries: { email: 13 } });
+    const [group] = groupBriefingHistory(await f.workspace.history('four'));
+    expect(group!.items.filter((item) => item.kind === 'email')).toHaveLength(14);
+  } finally {
+    f.service.close();
+  }
+});
+
+it('finishes the briefing when a sign-in code mail is among the new mail, and does not retry it', async () => {
+  // The real failure: one "one-time passcode" mail made its batch unsaveable, the run took that for
+  // a storage failure, stopped every other batch and never reached the papers. The mail stayed
+  // unhandled, so the same thing happened at every run until it aged out of the read window.
+  const f = await sourceFixture();
+  try {
+    f.nativeMessages.push({
+      ...f.nativeMessages[0]!,
+      id: '2',
+      title: 'Your one-time passcode for Example',
+      preview: 'Use 123456 to sign in.',
+      date: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const quick = vi.fn<NonNullable<typeof f.service.quickBriefingRunner>>(
+      async () =>
+        ({
+          answer: JSON.stringify({ headline: '새 메일 1통', points: ['Fixture email'] }),
+          model: 'fixture-quick-model',
+          providerId: 'codex',
+          reasoning: null,
+          nextDates: [],
+        }) as unknown as Awaited<ReturnType<NonNullable<typeof f.service.quickBriefingRunner>>>,
+    );
+    f.service.quickBriefingRunner = quick;
+    const job = await f.run();
+    expect(job).toMatchObject({ state: 'complete', addedSummaries: { email: 1, papers: 1 } });
+    // A completed run reports its notices in the same line as other warnings.
+    expect(job.error).toContain('인증 코드·일회용 비밀번호·비밀번호 재설정 메일 1통');
+    expect(job.error).not.toContain('briefing_memory_unavailable');
+    // Neither the detailed summary nor the quick briefing ever saw the code mail.
+    const sent = f.analyzer.mock.calls.flatMap(([, items]) => items.map((item) => item.title));
+    expect(sent).toContain('Fixture email');
+    expect(sent).not.toContain('Your one-time passcode for Example');
+    const payload = JSON.stringify(quick.mock.calls[0]![3]!.structuredJob!.prompt);
+    expect(payload).not.toContain('123456');
+    expect(payload).not.toContain('one-time passcode');
+    const [group] = groupBriefingHistory(await f.workspace.history('four'));
+    expect(group!.items.filter((item) => item.kind === 'email').map((i) => i.title)).toEqual([
+      'Fixture email',
+    ]);
+    // It counts as handled: the next briefing does not pick it up again.
+    vi.setSystemTime(new Date('2026-09-12T01:00:00Z'));
+    f.analyzer.mockClear();
+    const next = await f.run();
+    expect(next).toMatchObject({ state: 'complete', error: null });
+    expect(f.analyzer.mock.calls.flatMap(([, items]) => items.map((i) => i.title))).not.toContain(
+      'Your one-time passcode for Example',
+    );
+  } finally {
+    f.service.close();
+  }
+});
+
+it('runs a routine scheduled by its delivery times alone, without an interval', async () => {
+  // The run's own guard still required an interval, so such a routine stopped at every automatic
+  // run with "설정 또는 권한 확인이 필요해…" although nothing had changed.
+  const f = await sourceFixture();
+  try {
+    const schedule = {
+      frequency: 'daily' as const,
+      interval: 1,
+      anchorDate: '2026-09-01',
+      timeZone: 'Asia/Seoul',
+      times: ['10:00'],
+      weekdays: [],
+      monthDay: 1,
+    };
+    await owner(() => f.engine.configure('four', 0, new AbortController().signal, schedule));
+    // 2026-09-12 10:00 KST is 01:00Z.
+    vi.setSystemTime(new Date('2026-09-12T01:00:30Z'));
+    await f.engine.tick();
+    await f.engine.wait('four');
+    const status = await owner(() => f.engine.status('four'));
+    expect(status.scheduleError).toBeNull();
+    expect(status.job).toMatchObject({ state: 'complete', error: null });
+  } finally {
+    f.service.close();
+  }
+});
+
+it('runs a scheduled briefing through the real generation, not only a manual one', async () => {
+  // The scheduler stores the schedule digest (generationProfileDigest, "v2:…"); the run's own guard
+  // compared it with a different digest (generationRunDigest), so every scheduled run failed.
+  const f = await sourceFixture();
+  try {
+    await owner(() => f.engine.configure('four', 1, new AbortController().signal));
+    vi.setSystemTime(new Date(Date.now() + 3600000 + 1000));
+    await f.engine.tick();
+    await f.engine.wait('four');
+    const status = await owner(() => f.engine.status('four'));
+    expect(status.scheduleError).toBeNull();
+    expect(status.job).toMatchObject({ state: 'complete', error: null });
+  } finally {
+    f.service.close();
+  }
+});
+
+it('finishes the briefing when Mail never answers, and reads the mail ten minutes later instead of at the next interval', async () => {
+  // 2026-09-21: Mail was swapped out on a Mac that was out of memory when GOSU started. The email
+  // section stayed "조회 미완료" until the next interval, four hours later.
+  const f = await sourceFixture();
+  try {
+    await owner(() => f.engine.configure('four', 4, new AbortController().signal));
+    vi.setSystemTime(new Date(Date.now() + 4 * 3600000 + 1000));
+    f.mailNative.mockRejectedValueOnce(Error('mail_timeout_account'));
+    await f.engine.tick();
+    await f.engine.wait('four');
+    let status = await owner(() => f.engine.status('four'));
+    expect(status.job).toMatchObject({ state: 'complete', emailSourceState: 'failed' });
+    expect(status.job?.error).toContain('Apple Mail이 5분 동안 응답하지 않아');
+    expect(status.job?.error).toContain('자동으로 다시 확인합니다');
+    expect(Date.parse(status.nextDueAt!) - Date.now()).toBe(10 * 60_000);
+    // The paper was still summarized; only the email waits.
+    expect(f.analyzer.mock.calls.flatMap(([, items]) => items.map((i) => i.kind))).toEqual([
+      'papers',
+    ]);
+
+    vi.setSystemTime(new Date(Date.parse(status.nextDueAt!) + 1000));
+    await f.engine.tick();
+    await f.engine.wait('four');
+    status = await owner(() => f.engine.status('four'));
+    expect(status.job).toMatchObject({ state: 'complete', error: null, emailSourceState: 'ready' });
+    expect(f.analyzer.mock.calls.flatMap(([, items]) => items.map((i) => i.kind))).toEqual([
+      'papers',
+      'email',
+    ]);
+    expect(Date.parse(status.nextDueAt!) - Date.now()).toBeGreaterThan(3 * 3600000);
+  } finally {
+    f.service.close();
+  }
+});
+
+it('summarizes on the model Settings → Agent assigns, whatever provider the routine stored', async () => {
+  // 2026-09-21: the role models were on Codex while the routine still stored Claude. 0.58.130 failed
+  // the whole run, 0.58.133 ran the stored model and said so; the user asked for Settings → Agent to
+  // be the only place that decides, so the assigned model runs and nothing is left to explain.
+  const f = await sourceFixture();
+  try {
+    const policy = defaultModelRouting();
+    const other = {
+      providerId: 'claude-code' as const,
+      modelId: 'other-provider-model',
+      reasoningOptionId: 'low',
+    };
+    policy.fast = { ...other };
+    policy.lightweight = { ...other };
+    policy.strong = { ...other };
+    f.service.modelRouting = async () => policy;
+    const job = await f.run();
+    expect(job).toMatchObject({ state: 'complete' });
+    expect(f.analyzer.mock.calls.length).toBeGreaterThan(0);
+    for (const [input] of f.analyzer.mock.calls)
+      expect(input).toMatchObject({
+        providerId: 'claude-code',
+        modelId: 'other-provider-model',
+        reasoning: 'low',
+      });
+    expect(job.error ?? '').not.toContain('역할 모델');
+    // The routine's stored selection is left alone: it is the fallback while a role has no model.
+    expect((await owner(() => f.workspace.profile('four')))!.preferences.providerId).toBe('codex');
+  } finally {
+    f.service.close();
+  }
+});
+
+// Every model a user can assign to the briefing role must run the email summary, whichever provider
+// the routine stored before Briefing lost its own model picker.
+const ROLE_MODELS = [
+  { providerId: 'codex', modelId: 'gpt-5.6-luna', reasoningOptionId: 'low' },
+  { providerId: 'codex', modelId: 'gpt-6-astra', reasoningOptionId: null },
+  { providerId: 'claude-code', modelId: 'claude-haiku-4-5', reasoningOptionId: 'off' },
+  { providerId: 'claude-code', modelId: 'claude-sonnet-5', reasoningOptionId: 'medium' },
+  { providerId: 'claude-code', modelId: 'claude-opus-5', reasoningOptionId: 'xhigh' },
+] as const;
+it.each(
+  (['codex', 'claude-code'] as const).flatMap((routineProvider) =>
+    ROLE_MODELS.map((role) => ({ routineProvider, role })),
+  ),
+)(
+  'summarizes email with the role model $role.modelId on a routine that stored $routineProvider',
+  async ({ routineProvider, role }) => {
+    const f = await sourceFixture({ providerId: routineProvider });
+    try {
+      const policy = defaultModelRouting();
+      policy.fast = { ...role };
+      policy.lightweight = { ...role };
+      policy.strong = { ...role };
+      f.service.modelRouting = async () => policy;
+      const job = await f.run();
+      expect(job.state).toBe('complete');
+      expect(job.summaryFailures ?? 0).toBe(0);
+      const emailCalls = f.analyzer.mock.calls.filter(([, items]) =>
+        items.some((item) => item.kind === 'email'),
+      );
+      expect(emailCalls.length).toBeGreaterThan(0);
+      for (const [input] of emailCalls)
+        expect(input).toMatchObject({
+          providerId: role.providerId,
+          modelId: role.modelId,
+          reasoning: role.reasoningOptionId,
+        });
+      const history = await owner(() => f.workspace.history('four'));
+      expect(JSON.stringify(history)).toContain('Reply to the invitation before Friday.');
+      expect(job.error ?? '').not.toContain('역할 모델');
+    } finally {
+      f.service.close();
+    }
+  },
+);
+
+it("keeps the routine's stored model while Settings → Agent assigns none, and refuses other providers", async () => {
+  const f = await sourceFixture({ providerId: 'claude-code' });
+  try {
+    f.service.modelRouting = async () => defaultModelRouting();
+    const job = await f.run();
+    expect(job.state).toBe('complete');
+    for (const [input] of f.analyzer.mock.calls) expect(input.providerId).toBe('claude-code');
+    // A provider nobody chose (not stored, not assigned in Settings → Agent) gets no private data.
+    expect(await owner(() => f.workspace.canPrivateAi('four', 'claude-code'))).toBe(true);
+    expect(await owner(() => f.workspace.canPrivateAi('four', 'codex'))).toBe(false);
+    const policy = defaultModelRouting();
+    policy.fast = { providerId: 'codex', modelId: 'gpt-5.6-luna', reasoningOptionId: 'low' };
+    f.service.modelRouting = async () => policy;
+    expect(await owner(() => f.workspace.canPrivateAi('four', 'codex'))).toBe(true);
+  } finally {
+    f.service.close();
+  }
+});
+
+it('shows a metadata-only quick first briefing while the detailed summaries continue', async () => {
+  const f = await sourceFixture();
+  try {
+    const quick = vi.fn<NonNullable<typeof f.service.quickBriefingRunner>>(
+      async () =>
+        ({
+          answer: JSON.stringify({
+            headline: '새 메일 1통 · **Sender**에게 금요일 전 답장이 필요해 보입니다(추정).',
+            points: ['오늘 10시 Fixture meeting', '새 논문 1편'],
+          }),
+          model: 'fixture-quick-model',
+          providerId: 'codex',
+          reasoning: null,
+          nextDates: [],
+        }) as unknown as Awaited<ReturnType<NonNullable<typeof f.service.quickBriefingRunner>>>,
+    );
+    f.service.quickBriefingRunner = quick;
+    const job = await f.run();
+    expect(job).toMatchObject({ state: 'complete', error: null });
+    expect(job.quickBriefingAt).toEqual(expect.any(String));
+    expect(quick).toHaveBeenCalledOnce();
+    const [request, , , options] = quick.mock.calls[0]!;
+    expect(request).toMatchObject({ providerId: 'codex', modelId: 'fixture-model' });
+    const payload = JSON.parse(options!.structuredJob!.prompt);
+    expect(payload).toMatchObject({
+      newEmailCount: 1,
+      emails: [{ subject: 'Fixture email', sender: 'Sender <sender@example.test>' }],
+      papers: ['Fixture paper'],
+      agenda: [{ title: 'Fixture meeting' }],
+    });
+    expect(options!.timeoutMs).toBeLessThanOrEqual(120_000);
+    expect(options!.structuredJob!.thinking).toBe('disabled');
+    // The detailed summaries still ran for every item.
+    expect(job.addedSummaries).toMatchObject({ email: 1, papers: 1 });
+    const history = await f.workspace.history('four');
+    const [group] = groupBriefingHistory(history);
+    expect(group!.snapshot?.quickBriefing).toMatchObject({ emailCount: 1, paperCount: 1 });
+    const html = renderToStaticMarkup(createElement(BriefingHistoryFeed, { history }));
+    expect(html).toContain('빠른 1차 브리핑');
+    expect(html).toContain('금요일 전 답장이 필요해 보입니다');
+    // Each open source section can be closed from its left accent bar.
+    expect(html).toContain('aria-label="이메일 섹션 접기"');
+    expect(html).toContain('aria-label="연구 논문 섹션 접기"');
+
+    // A failed quick briefing is a warning; the detailed summaries are unaffected.
+    vi.setSystemTime(new Date('2026-09-12T01:00:00Z'));
+    f.nativeMessages.push({
+      ...f.nativeMessages[0]!,
+      id: '2',
+      title: 'Second email',
+      date: new Date().toISOString(),
+    });
+    quick.mockRejectedValueOnce(new Error('routine_timeout'));
+    const second = await f.run();
+    expect(second).toMatchObject({ state: 'complete', addedSummaries: { email: 1 } });
+    expect(second.error).toContain('빠른 1차 브리핑을 만들지 못했습니다');
+  } finally {
+    f.service.close();
+  }
+});
+
+it('gives the routine guidance to the quick briefing and the detailed email summary', async () => {
+  const f = await sourceFixture();
+  try {
+    f.service.guidance = new BriefingGuidanceStore(f.dir, f.key);
+    await f.service.guidance.add('four', 'example.test 메일은 반드시 요약에 포함');
+    const quick = vi.fn<NonNullable<typeof f.service.quickBriefingRunner>>(
+      async () =>
+        ({
+          answer: JSON.stringify({ headline: '새 메일 1통', points: [] }),
+          model: 'fixture-quick-model',
+          providerId: 'codex',
+          reasoning: null,
+          nextDates: [],
+        }) as unknown as Awaited<ReturnType<NonNullable<typeof f.service.quickBriefingRunner>>>,
+    );
+    f.service.quickBriefingRunner = quick;
+    const job = await f.run();
+    expect(job).toMatchObject({ state: 'complete', error: null });
+    const options = quick.mock.calls[0]![3]!;
+    const payload = JSON.parse(options.structuredJob!.prompt);
+    expect(payload.userGuidance).toEqual(['example.test 메일은 반드시 요약에 포함']);
+    expect(payload.emails[0]).toMatchObject({ matchesUserGuidance: true });
+    expect(options.structuredJob!.instructions).toContain('userGuidance');
+    const emailCall = f.analyzer.mock.calls.find(([, items]) =>
+      items.every((item) => item.kind === 'email'),
+    )!;
+    expect(emailCall[10]?.map((g) => g.text)).toEqual(['example.test 메일은 반드시 요약에 포함']);
+  } finally {
+    f.service.close();
+  }
+});
+
+it('saves the valid summaries of a batch, retries the rejected mail next time and reports progress per kind', async () => {
+  const f = await sourceFixture();
+  try {
+    f.nativeMessages.push({
+      ...f.nativeMessages[0]!,
+      id: '2',
+      title: 'Second email',
+      date: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const summarize = f.analyzer.getMockImplementation()!;
+    let rejectedId = '';
+    f.analyzer.mockImplementationOnce(async (input, items, ...rest) => {
+      const result = await summarize(input, items, ...rest);
+      const second = items.find((item) => item.title === 'Second email')!;
+      rejectedId = second.id;
+      return {
+        ...result,
+        items: result.items.filter((entry) => entry.id !== second.id),
+        rejectedItems: [{ id: second.id, code: 'briefing_analysis_quote_unverified' }],
+      };
+    });
+    const job = await f.run();
+    expect(job).toMatchObject({
+      state: 'complete',
+      summaryRejectedItems: 1,
+      addedSummaries: { email: 1, papers: 1 },
+    });
+    expect(job.error).toContain('1통 요약 검증 실패');
+    expect(job.summaryKinds).toEqual([
+      { kind: 'email', total: 2, saved: 1, failed: 1, running: [], state: 'done' },
+      { kind: 'papers', total: 1, saved: 1, failed: 0, running: [], state: 'done' },
+    ]);
+    let [group] = groupBriefingHistory(await f.workspace.history('four'));
+    // The rejected mail is shown without a summary; the valid one keeps its summary.
+    expect(
+      group!.items
+        .filter((item) => item.kind === 'email')
+        .map((item) => [item.title, Boolean(item.summary)])
+        .sort(),
+    ).toEqual([
+      ['Fixture email', true],
+      ['Second email', false],
+    ]);
+
+    // The rejected mail was not marked handled, so the next briefing reads and summarizes it again.
+    vi.setSystemTime(new Date('2026-09-12T01:00:00Z'));
+    const next = await f.run();
+    expect(next.addedSummaries?.email).toBe(1);
+    expect(f.analyzer.mock.calls.at(-1)?.[1].map((item) => item.id)).toContain(rejectedId);
+    [group] = groupBriefingHistory(await f.workspace.history('four'));
+    const emails = group!.items.filter((item) => item.kind === 'email');
+    expect(emails).toHaveLength(2);
+    expect(emails.every((item) => item.summary.trim())).toBe(true);
+  } finally {
+    f.service.close();
+  }
+});
+
+it('warns in the run header when Mail was read without its index', async () => {
+  const f = await sourceFixture({
+    readIndex: () => {
+      throw new Error('mail_index_permission_required');
+    },
+  });
+  try {
+    const job = await f.run();
+    expect(job).toMatchObject({ state: 'complete', mailIndexFallback: true });
+    expect(job.error).toContain('전체 디스크 접근 권한');
+    expect(f.mailNative.mock.calls.filter(([q]) => q.action === 'read')).toHaveLength(1);
   } finally {
     f.service.close();
   }
@@ -589,8 +1205,11 @@ it('retains collected weather and Calendar when the summary model fails', async 
 
 it('does not read Calendar or send email to AI when those individual permissions are off', async () => {
   const f = await sourceFixture({ calendarRead: false, mailAi: false });
+  const quick = vi.fn();
+  f.service.quickBriefingRunner = quick;
   try {
     expect(await f.run()).toMatchObject({ error: null });
+    expect(quick).not.toHaveBeenCalled();
     expect(f.calendarNative).not.toHaveBeenCalled();
     expect(f.mailNative.mock.calls.some(([q]) => q.action === 'read')).toBe(true);
     expect(f.analyzer.mock.calls.flatMap(([, items]) => items.map((i) => i.kind))).toEqual([
@@ -624,9 +1243,11 @@ async function fixture() {
     ),
   );
   let now = Date.parse('2026-09-10T00:00:00Z');
-  const run = vi.fn(async (_p, _signal, update) => {
-    update({ newCount: 1 });
-  });
+  const run = vi.fn<ConstructorParameters<typeof BriefingGeneration>[1]>(
+    async (_p, _signal, update) => {
+      update({ newCount: 1 });
+    },
+  );
   const make = () =>
     new BriefingGeneration(
       workspace,
@@ -672,6 +1293,221 @@ it('persists encrypted interval/authority, runs after restart without a browser,
   expect(f.run).toHaveBeenCalledTimes(2);
   expect((await owner(() => restarted.status('r'))).job?.state).toBe('complete');
   restarted.close();
+});
+it('runs at the routine delivery times, next to the interval, and once after a missed time', async () => {
+  const f = await fixture();
+  // 08:00 and 18:00 every day in the routine's timezone, as the routine settings hold them.
+  const schedule = {
+    frequency: 'daily' as const,
+    interval: 1,
+    anchorDate: '2026-09-01',
+    timeZone: 'Asia/Seoul',
+    times: ['08:00', '18:00'],
+    weekdays: [],
+    monthDay: 1,
+  };
+  // 2026-09-10T00:00Z is 09:00 KST, so the next delivery time is 18:00 KST (09:00Z).
+  const saved = await owner(() =>
+    f.engine.configure('r', 0, new AbortController().signal, schedule),
+  );
+  expect(saved.routineSchedule).toEqual(schedule);
+  expect(saved.intervalHours).toBe(0);
+  expect(saved.nextDueAt).toBe('2026-09-10T09:00:00.000Z');
+  await f.engine.tick();
+  expect(f.run).not.toHaveBeenCalled();
+  f.advance(9);
+  await f.engine.tick();
+  await f.engine.wait('r');
+  expect(f.run).toHaveBeenCalledOnce();
+  expect((await owner(() => f.engine.status('r'))).nextDueAt).toBe('2026-09-10T23:00:00.000Z');
+
+  // Adding the interval keeps the times: whichever comes first runs next.
+  const both = await owner(() => f.engine.configure('r', 4, new AbortController().signal));
+  expect(both.routineSchedule).toEqual(schedule);
+  expect(both.nextDueAt).toBe('2026-09-10T13:00:00.000Z');
+  f.advance(4);
+  await f.engine.tick();
+  await f.engine.wait('r');
+  expect(f.run).toHaveBeenCalledTimes(2);
+  expect((await owner(() => f.engine.status('r'))).nextDueAt).toBe('2026-09-10T17:00:00.000Z');
+
+  // A whole day asleep runs once on the next check, not once per missed time.
+  f.advance(24);
+  await f.engine.tick();
+  await f.engine.wait('r');
+  await f.engine.tick();
+  expect(f.run).toHaveBeenCalledTimes(3);
+
+  // Turning the times off leaves the interval, and turning both off stops everything.
+  const intervalOnly = await owner(() =>
+    f.engine.configure('r', 4, new AbortController().signal, null),
+  );
+  expect(intervalOnly.routineSchedule).toBeNull();
+  expect(intervalOnly.nextDueAt).not.toBeNull();
+  const off = await owner(() => f.engine.configure('r', 0, new AbortController().signal, null));
+  expect(off.nextDueAt).toBeNull();
+  f.advance(48);
+  await f.engine.tick();
+  expect(f.run).toHaveBeenCalledTimes(3);
+  f.engine.close();
+});
+it('looks at a Mail that did not answer again ten minutes later, once, and never resumes a schedule the user has not', async () => {
+  const f = await fixture();
+  await owner(() => f.engine.configure('r', 4, new AbortController().signal));
+  // 2026-09-21: Mail was swapped out when GOSU started and the email section stayed empty until
+  // the next interval, four hours later.
+  f.run.mockImplementation(async () => ({ emailKeys: [], retryMailInMs: 10 * 60_000 }));
+  f.advance(4);
+  await f.engine.tick();
+  await f.engine.wait('r');
+  let status = await owner(() => f.engine.status('r'));
+  expect(status.nextDueAt).toBe('2026-09-10T04:10:00.000Z');
+  expect(status.job).toMatchObject({ state: 'complete' });
+  expect(status.job?.error).toContain('Apple Mail은 13:10쯤 자동으로 다시 확인합니다.');
+
+  // The follow-up still finds Mail silent: the ordinary interval continues, not another ten minutes.
+  f.advance(10 / 60);
+  await f.engine.tick();
+  await f.engine.wait('r');
+  expect(f.run).toHaveBeenCalledTimes(2);
+  status = await owner(() => f.engine.status('r'));
+  expect(status.nextDueAt).toBe('2026-09-10T08:10:00.000Z');
+  expect(status.job?.error ?? '').not.toContain('다시 확인합니다');
+
+  // A later failure gets its own single follow-up, and a run that reads Mail needs none.
+  f.advance(4);
+  await f.engine.tick();
+  await f.engine.wait('r');
+  expect((await owner(() => f.engine.status('r'))).nextDueAt).toBe('2026-09-10T08:20:00.000Z');
+  f.run.mockImplementation(async () => ({ emailKeys: [] }));
+  f.advance(10 / 60);
+  await f.engine.tick();
+  await f.engine.wait('r');
+  expect((await owner(() => f.engine.status('r'))).nextDueAt).toBe('2026-09-10T12:20:00.000Z');
+
+  // A manual run of a routine nothing runs automatically plans nothing.
+  await owner(() => f.engine.configure('r', 0, new AbortController().signal, null));
+  f.run.mockImplementation(async () => ({ emailKeys: [], retryMailInMs: 10 * 60_000 }));
+  await owner(() => f.engine.start('r'));
+  await f.engine.wait('r');
+  status = await owner(() => f.engine.status('r'));
+  expect(status.nextDueAt).toBeNull();
+  expect(status.job?.error ?? '').not.toContain('다시 확인합니다');
+  f.engine.close();
+});
+it('refuses routine-time scheduling while requests need per-request confirmation', async () => {
+  const f = await fixture();
+  await owner(() =>
+    f.workspace.save(
+      {
+        ...f.profile,
+        preferences: { ...f.profile.preferences, confirmationPolicy: 'ask' },
+      },
+      async () => undefined,
+    ),
+  );
+  await expect(
+    owner(() =>
+      f.engine.configure('r', 0, new AbortController().signal, {
+        frequency: 'daily',
+        interval: 1,
+        anchorDate: '2026-09-01',
+        timeZone: 'Asia/Seoul',
+        times: ['08:00'],
+        weekdays: [],
+        monthDay: 1,
+      }),
+    ),
+  ).rejects.toThrow('generation_always_required');
+  expect((await owner(() => f.engine.status('r'))).routineSchedule).toBeNull();
+  f.engine.close();
+});
+
+it('keeps the saved interval across new approved clients and model/UI preference updates', async () => {
+  const f = await fixture();
+  await owner(() => f.engine.configure('r', 4, new AbortController().signal));
+  await briefingClientContext.run('f'.repeat(64), () =>
+    f.workspace.save(
+      { ...f.profile, preferences: { ...f.profile.preferences, modelId: 'new-model' } },
+      async () => undefined,
+    ),
+  );
+  f.advance(4);
+  const restarted = f.make();
+  await restarted.tick();
+  await restarted.wait('r');
+  expect(f.run).toHaveBeenCalledOnce();
+  expect((await owner(() => restarted.status('r'))).intervalHours).toBe(4);
+  restarted.close();
+  f.engine.close();
+});
+it('migrates an exact legacy schedule after an approved client was appended', async () => {
+  const f = await fixture();
+  await owner(() => f.engine.configure('r', 2, new AbortController().signal));
+  const p = (await f.workspace.profile('r'))!;
+  const old = createHash('sha256')
+    .update(
+      JSON.stringify([p.timeZone, p.live, p.interest, p.preferences, p.approvedScope, p.owners]),
+    )
+    .digest('hex');
+  await f.store.update('r', (r) => {
+    r.profileDigest = old;
+  });
+  await briefingClientContext.run('f'.repeat(64), () =>
+    f.workspace.save({ ...p }, async () => undefined),
+  );
+  f.advance(2);
+  await f.engine.tick();
+  await f.engine.wait('r');
+  expect(f.run).toHaveBeenCalledOnce();
+  expect((await f.store.record('r'))?.profileDigest).toMatch(/^v2:/);
+  f.engine.close();
+});
+it('does not erase the interval on a transient startup/storage error and resumes on the next retry', async () => {
+  const f = await fixture();
+  await owner(() => f.engine.configure('r', 4, new AbortController().signal));
+  f.advance(4);
+  vi.spyOn(f.workspace, 'profile').mockRejectedValueOnce(
+    new Error('temporary_keychain_unavailable'),
+  );
+  await f.engine.tick();
+  expect((await f.store.record('r'))?.intervalHours).toBe(4);
+  expect(f.run).not.toHaveBeenCalled();
+  f.advance(1 / 60);
+  await f.engine.tick();
+  await f.engine.wait('r');
+  expect(f.run).toHaveBeenCalledOnce();
+  expect((await f.store.record('r'))?.scheduleError).toBeNull();
+  f.engine.close();
+});
+it('preserves explicit off after restart and never treats a real source permission change as a harmless update', async () => {
+  const f = await fixture();
+  await owner(() => f.engine.configure('r', 4, new AbortController().signal));
+  await owner(() =>
+    f.workspace.save(
+      {
+        ...f.profile,
+        preferences: {
+          ...f.profile.preferences,
+          calendarRead: true,
+          calendarIds: ['new-calendar'],
+        },
+      },
+      async () => undefined,
+    ),
+  );
+  f.advance(4);
+  await f.engine.tick();
+  expect(f.run).not.toHaveBeenCalled();
+  expect(await f.store.record('r')).toMatchObject({ intervalHours: 4, nextDueAt: null });
+  await owner(() => f.engine.configure('r', 0, new AbortController().signal));
+  const reopened = f.make();
+  f.advance(48);
+  await reopened.tick();
+  expect((await owner(() => reopened.status('r'))).intervalHours).toBe(0);
+  expect(f.run).not.toHaveBeenCalled();
+  reopened.close();
+  f.engine.close();
 });
 it('deduplicates manual double clicks and aborts an active job when automatic generation is disabled', async () => {
   const f = await fixture();
@@ -764,12 +1600,34 @@ it('requires ownership and always-allow policy, and pauses schedules after setti
   await f.engine.tick();
   expect(f.run).not.toHaveBeenCalled();
   const status = await owner(() => f.engine.status('r'));
-  expect(status.intervalHours).toBe(0);
+  expect(status.intervalHours).toBe(1);
   expect(status.scheduleError).toContain('설정 또는 권한');
+  // The pause names the actual reason: per-request confirmation, not a vague "check settings".
+  expect(status.scheduleError).toContain('요청마다 확인');
   await expect(
     owner(() => f.engine.configure('r', 2, new AbortController().signal)),
   ).rejects.toThrow('generation_always_required');
-  expect((await f.store.record('r'))?.ownerToken).toBeNull();
+  expect((await f.store.record('r'))?.ownerToken).toBe('e'.repeat(64));
+  expect((await f.store.record('r'))?.nextDueAt).toBeNull();
+});
+it('names the approved scope items when a schedule pauses after the AI provider changes', async () => {
+  const f = await fixture();
+  await owner(() => f.engine.configure('r', 1, new AbortController().signal));
+  const provider = f.profile.preferences.providerId === 'codex' ? 'claude-code' : 'codex';
+  await owner(() =>
+    f.workspace.save(
+      { ...f.profile, preferences: { ...f.profile.preferences, providerId: provider } },
+      async () => undefined,
+    ),
+  );
+  f.advance(2);
+  await f.engine.tick();
+  expect(f.run).not.toHaveBeenCalled();
+  const status = await owner(() => f.engine.status('r'));
+  expect(status.scheduleError).toContain('AI 제공자');
+  expect(status.scheduleError).toContain('같은 간격을 다시 선택');
+  expect(status.scheduleError).not.toContain('요청마다 확인');
+  f.engine.close();
 });
 it('keeps partial-source failures distinct from a successful empty briefing', async () => {
   const f = await fixture();
@@ -779,4 +1637,35 @@ it('keeps partial-source failures distinct from a successful empty briefing', as
   const result = await owner(() => f.engine.status('r'));
   expect(result.job?.detail).toContain('일부 자료 확인 필요');
   expect(result.job?.detail).not.toContain('새 항목 없음');
+});
+
+it('picks the earliest of the routine time and the interval, and nothing when both are off', () => {
+  const now = Date.parse('2026-09-20T02:00:00Z'); // 11:00 KST
+  const daily = {
+    frequency: 'daily' as const,
+    interval: 1,
+    anchorDate: '2026-09-01',
+    timeZone: 'Asia/Seoul',
+    times: ['08:00', '18:00'],
+    weekdays: [],
+    monthDay: 1,
+  };
+  // 18:00 KST today is 09:00Z; a 12-hour interval would be 14:00Z, so the routine time wins.
+  expect(nextGenerationDueAt({ intervalHours: 12, routineSchedule: daily }, now)).toBe(
+    '2026-09-20T09:00:00.000Z',
+  );
+  expect(nextGenerationDueAt({ intervalHours: 4, routineSchedule: daily }, now)).toBe(
+    '2026-09-20T06:00:00.000Z',
+  );
+  expect(nextGenerationDueAt({ intervalHours: 0, routineSchedule: daily }, now)).toBe(
+    '2026-09-20T09:00:00.000Z',
+  );
+  // Weekly Monday 09:00 KST from a Sunday: the next Monday, not today.
+  const weekly = { ...daily, frequency: 'weekly' as const, times: ['09:00'], weekdays: [1] };
+  expect(nextGenerationDueAt({ intervalHours: 0, routineSchedule: weekly }, now)).toBe(
+    '2026-09-21T00:00:00.000Z',
+  );
+  expect(nextGenerationDueAt({ intervalHours: 0, routineSchedule: null }, now)).toBeNull();
+  expect(generationScheduled({ intervalHours: 0, routineSchedule: null })).toBe(false);
+  expect(generationScheduled({ intervalHours: 0, routineSchedule: daily })).toBe(true);
 });

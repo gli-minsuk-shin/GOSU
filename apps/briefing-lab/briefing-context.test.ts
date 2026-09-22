@@ -1,9 +1,10 @@
 import { expect, it, vi } from 'vitest';
 import { createCodexModelCatalog } from '@gosu/contracts';
 import {
+  compactConversationNow,
+  conversationDigest,
   historyPlan,
   prepareConversationContext,
-  conversationDigest,
   searchConversationRecords,
 } from './briefing-context';
 import { codexTokenUsage, claudeTokenUsage } from './briefing-token-usage';
@@ -94,6 +95,98 @@ it('uses a token budget instead of the six-message cap and does not compact a fi
   expect(result.history[0]?.text).toContain('fact 0');
   expect(result.report.omittedMessages).toBe(0);
   expect(compact).not.toHaveBeenCalled();
+  expect(save).not.toHaveBeenCalled();
+});
+it('compacts a fitting conversation when the reader asks for it, and keeps the latest exchange raw', async () => {
+  const original = JSON.stringify(messages);
+  const compact = vi.fn(async (older: readonly unknown[], previous: string) => {
+    expect(previous).toBe('');
+    return `Summary of ${older.length} messages.`;
+  });
+  const save = vi.fn();
+
+  const result = await compactConversationNow(
+    model(1050000),
+    messages,
+    'fixed instructions',
+    undefined,
+    compact,
+    save,
+  );
+
+  expect(result.compacted).toBe(true);
+  expect(result.summarizedMessages).toBe(messages.length - 4);
+  expect(compact).toHaveBeenCalledOnce();
+  expect(compact.mock.calls[0]?.[0]).toHaveLength(messages.length - 4);
+  expect(save).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ through: messages.length - 4, summary: 'Summary of 196 messages.' }),
+  );
+  expect(result.plan.report.compressedMessages).toBe(messages.length - 4);
+  expect(result.plan.report.includedMessages).toBe(4);
+  expect(result.plan.report.omittedMessages).toBe(0);
+  expect(JSON.stringify(result.plan.history)).toContain('Summary of 196 messages.');
+  expect(JSON.stringify(messages)).toBe(original);
+
+  // Asked again with nothing new since: no model call, and the same checkpoint stays.
+  const again = await compactConversationNow(
+    model(1050000),
+    messages,
+    'fixed instructions',
+    save.mock.calls[0]![0],
+    compact,
+    save,
+  );
+  expect(again.compacted).toBe(false);
+  expect(again.summarizedMessages).toBe(0);
+  expect(compact).toHaveBeenCalledOnce();
+  expect(save).toHaveBeenCalledOnce();
+});
+it('extends an earlier summary instead of summarizing the whole conversation again', async () => {
+  const save = vi.fn();
+  const first = await compactConversationNow(
+    model(1050000),
+    messages.slice(0, 100),
+    'fixed',
+    undefined,
+    async () => 'First summary.',
+    save,
+  );
+  const compact = vi.fn(
+    async (_older: readonly unknown[], previous: string) => `${previous} Second part.`,
+  );
+
+  const second = await compactConversationNow(
+    model(1050000),
+    messages,
+    'fixed',
+    first.plan.checkpoint,
+    compact,
+    save,
+  );
+
+  expect(compact.mock.calls[0]?.[0]).toHaveLength(100);
+  expect(compact.mock.calls[0]?.[1]).toBe('First summary.');
+  expect(second.plan.checkpoint?.summary).toBe('First summary. Second part.');
+  expect(second.plan.checkpoint?.through).toBe(196);
+  // Only the part the earlier summary did not cover counts as newly summarized.
+  expect(second.summarizedMessages).toBe(100);
+});
+it('does not save a summary the engine would refuse, and says when there is too little to compact', async () => {
+  const save = vi.fn();
+  await expect(
+    compactConversationNow(model(1050000), messages, 'fixed', undefined, async () => '  ', save),
+  ).rejects.toThrow('assistant_compaction_invalid');
+  expect(save).not.toHaveBeenCalled();
+
+  const short = await compactConversationNow(
+    model(1050000),
+    messages.slice(0, 4),
+    'fixed',
+    undefined,
+    async () => 'unused',
+    save,
+  );
+  expect(short.compacted).toBe(false);
   expect(save).not.toHaveBeenCalled();
 });
 it('compacts only under pressure, preserves raw records, and resumes a validated checkpoint', async () => {

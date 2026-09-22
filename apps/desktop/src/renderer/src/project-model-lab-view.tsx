@@ -3,6 +3,7 @@ import { uiText, useUiText } from '@gosu/ui/language';
 import { useEffect, useRef, useState } from 'react';
 import { typographyMessage, type UiTextSize } from '@gosu/ui/typography';
 import './project-model-lab-view.css';
+import { trustedAiActivity, type AiActivityMessage } from '@gosu/ui/ai-activity';
 import { isProjectModelLabLocation } from '../../shared/model-lab-contracts';
 import { ModelLabChatHandoffSchema } from '../../../../model-lab/model-reference-contracts';
 
@@ -28,11 +29,15 @@ export function projectModelLabSessionIds(
 
 /** One live view per visited project; switching tabs does not discard an agent turn or draft. */
 export function ProjectModelLabWorkspaces({
+  onAiActivity,
+  onAiReset,
   projects,
   activeProjectId,
   textSize = 'default',
   onReferenceModel,
 }: {
+  onAiActivity?: (scope: string, event: AiActivityMessage) => void;
+  onAiReset?: (scope: string) => void;
   projects: readonly { id: string; name: string }[];
   activeProjectId: string | null;
   textSize?: UiTextSize;
@@ -53,6 +58,8 @@ export function ProjectModelLabWorkspaces({
       {visibleIds.map((id) => (
         <div className="project-model-lab-session" key={id} hidden={id !== activeProjectId}>
           <ProjectModelLabView
+            {...(onAiActivity ? { onAiActivity } : {})}
+            {...(onAiReset ? { onAiReset } : {})}
             {...(onReferenceModel ? { onReferenceModel } : {})}
             textSize={textSize}
             projectId={id}
@@ -65,11 +72,15 @@ export function ProjectModelLabWorkspaces({
 }
 
 export function ProjectModelLabView({
+  onAiActivity,
+  onAiReset,
   projectId,
   projectName,
   textSize = 'default',
   onReferenceModel,
 }: {
+  onAiActivity?: (scope: string, event: AiActivityMessage) => void;
+  onAiReset?: (scope: string) => void;
   projectId: string;
   projectName: string;
   textSize?: UiTextSize;
@@ -80,6 +91,18 @@ export function ProjectModelLabView({
   const [error, setError] = useState(false);
   const [retry, setRetry] = useState(0);
   const iframe = useRef<HTMLIFrameElement>(null);
+  useEffect(() => {
+    if (!onAiActivity) return;
+    const receive = (event: MessageEvent) => {
+      const value = trustedAiActivity(event, iframe.current?.contentWindow ?? null, url);
+      if (value?.workload === 'model-lab') onAiActivity?.(`project:${projectId}:model-lab`, value);
+    };
+    window.addEventListener('message', receive);
+    return () => {
+      window.removeEventListener('message', receive);
+    };
+  }, [url, projectId, onAiActivity]);
+  useEffect(() => () => onAiReset?.(`project:${projectId}:model-lab`), [projectId, onAiReset]);
   useEffect(() => {
     if (!onReferenceModel || !url) return;
     const receive = (event: MessageEvent) => {
@@ -123,7 +146,15 @@ export function ProjectModelLabView({
       {url ? (
         <iframe
           ref={iframe}
-          onLoad={sendTextSize}
+          onLoad={() => {
+            onAiReset?.(`project:${projectId}:model-lab`);
+            sendTextSize();
+            if (onAiActivity)
+              iframe.current?.contentWindow?.postMessage(
+                { type: 'gosu-ai-activity-sync' },
+                new URL(url).origin,
+              );
+          }}
           className="project-model-lab__frame"
           title={uiText('{projectName} · Model Lab', { projectName: projectName })}
           src={url}

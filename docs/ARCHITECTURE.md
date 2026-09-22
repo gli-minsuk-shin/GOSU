@@ -150,7 +150,7 @@ flowchart LR
 | Reference & Literature       | Desktop Literature workspace와 Zotero read-only connector                                                        | Semantic Scholar 우선·Crossref fallback/supplement·Hugging Face Papers additive source의 policy-v3 3-layer discovery, arXiv canonical identity, 누적 evidence table, JSON/CSV/BibTeX transfer, provider abstract 기반 AI topic·keyword 정리와 Project Chat search 구현; Zotero 앱 연결은 계획됨                                                                               |
 | Obsidian Knowledge           | Desktop Research Notes service, bounded Vault adapter, Markdown/LaTeX reader                                     | Vault root 복원·프로젝트별 owned folder·기본 note 구조·v2 공통 Markdown metadata envelope·Literature/Papers projection·Lecture canonical LaTeX artifact·durable 저장 receipt/reconciliation·안전한 rename·GFM/wiki-link/raster preview·읽기/자동 생성 분리 grant 구현                                                                                                         |
 | Lecture                      | Desktop Lecture Studio service, SQLCipher storage, Research Notes artifact port, Manuscript·external-source port | 여러 project의 captured Manuscript/Overleaf checkpoint·reviewed Literature metadata·Experiment lineage·사용자 `.tex/.md/.pdf` snapshot 선택, canonical article/Beamer LaTeX 생성, app 내 paired source edit, Studio figure library, sandbox PDF compile, 독립 chat, append-only revision, recoverable Trash와 `.tex`/PDF export 구현; PPTX와 OCR·paper-figure ingest는 계획됨 |
-| Usage Analytics              | Desktop model usage collector·SQLCipher ledger·Usage renderer                                                    | 이 Mac에서 provider가 보고한 Codex/Hermes turn token을 project·Lecture generation·connection·model·workload별로 일/주/월 집계; 비용 추정·과거 backfill·Hosted Sync는 하지 않음                                                                                                                                                                                                |
+| Usage Analytics              | Desktop model usage collector·SQLCipher ledger·Usage renderer                                                    | 이 Mac에서 provider가 보고한 Codex/Hermes turn token을 project·Lecture generation·connection·model·workload별로 일/주/월 집계하고, 공개 가격표가 있을 때 API 표준 단가 기준 환산 금액(추정, 청구 아님)을 모델별·기능별로 표시; 과거 backfill·Hosted Sync는 하지 않음                                                                                                          |
 | AI Gateway                   | GOSU Agent Runtime, Desktop Project Chat provider router, Codex App Server와 선택형 BYO-Hermes ACP adapter       | provider-neutral durable run/node graph·bounded session working memory·context plan, 다중 chat session·session-scoped durable turn queue·최대 4개 session 병렬 turn·provider별 동적 model provenance·Codex native harness/tool 경계·Hermes ACP text/reasoning-only worker 경계·Codex→Hermes 명시적 child-node 위임·동적 branch title·Research Notes final persistence 구현    |
 | Integration Hub              | Desktop Git Workspace·승인형 SSH·Manuscript connector, `packages/integrations` registry                          | GitHub HTTPS clone·bounded Git·OpenSSH grant·provider-neutral manuscript operation registry·Overleaf Git private connector 구현; schema-driven provider onboarding, GitHub App와 native LaTeX provider는 계획됨                                                                                                                                                               |
 | Sync, Audit & Notification   | Sync memory store, PostgreSQL audit·outbox schema                                                                | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                                                                                                                                                                                                                                                                                      |
@@ -1673,6 +1673,24 @@ DOI, work type, citation count와 HTTPS source URL allowlist로 즉시 정규화
   screening할 수 있게 한다. Core impact/relevance gate나 서지 identity가 부족한 이유도 typed reason으로
   함께 저장한다.
 
+2026-09-22 ([0.58.142](releases/0.58.142.md)): SSH dynamic tool은 provider와 무관하게 catalog에 들어간다(Hermes 제외). Claude Code는 한 턴이 CLI 프로세스
+하나이고 절대 마감을 가지므로 Project Chat은 `projectChatTurnTimeoutMs`(10분 + 가장 긴 도구 대기의 두 배, adapter 상한 30분)를 넘기고 agentic turn 상한은 40이다.
+서버별 사용자 지침은 `ssh-agent-notes.v1.json`에 두고 `list_ssh_workspaces`의 `userNote`로만 전달한다(connection profile의 version은 trusted-access 승인에 묶여
+있어 profile에 넣지 않는다). 제목 표시줄의 일일 격언은 `DailyQuoteService`(`daily-quote.v1.json`)가 Settings → Agent의 lightweightTasks 모델로 하루에 한 번
+만들고 사용량 종류 `daily_quote`로 기록한다.
+
+2026-09-22, policy version 4 ([0.58.141](releases/0.58.141.md)): 어느 layer든 논문 자체의 제목·초록·provider
+topic·venue가 검색어의 주제어(`shared/literature-query.ts`의 `literatureQueryTerms`)를 언급해야만 저장한다.
+주제어가 3개 이하면 1개, 4개 이상이면 2개가 나와야 하고, citation·recent 정렬 lane에만 나온 후보는 주제어의
+절반 이상을 언급해야 한다. Broad는 이 gate를 통과한 후보로만 채우므로 요청한 수보다 적게, 또는 하나도 선택하지
+않을 수 있다. 예전에는 provider의 순위 위치만이 relevance였고 Broad를 50편까지 채웠기 때문에, provider가 읽지
+못하는 문장(한국어 요청 등)을 넣으면 무관한 논문 50편이 저장됐다. Core·Rising gate는 version 3과 같아서
+version 3 label은 legacy로 표시하지 않는다. Semantic Scholar의 relevance 요청은 rate limit·timeout·오류에
+최대 3번 시도하며, 탈락 원인은 저장하지 않고 receipt의 `providerFailures`로만 전달한다(저장된 run은 엄격하게
+parse되므로 새 enum 값은 downgrade한 build가 library를 열지 못하게 만든다). 문장·질문·비라틴 문자는 화면이
+`LiteratureAiService.planSearch`로 영어 keyword query 1~3개로 바꾼 뒤 차례로 검색하고, 주제어가 없는
+검색어("논문 검색")는 run을 만들기 전에 `literature_query_without_topic`으로 거절한다.
+
 저자 h-index와 journal·venue 존재 여부는 이름 allowlist나 venue prestige 판정이 아니라 표시·보조
 metadata일 뿐이다. 코드에 유명 학자·저널 이름을 넣지 않으며 author나 venue signal만으로 Core나
 Rising이 되지 않는다. venue가 없는 주요 conference paper·preprint도 충분한 citation 근거가 있으면 Core
@@ -1851,7 +1869,10 @@ legacy JSON v1·기존 CSV는 빈 search tag로 안전하게 import한다. JSON/
 interchange이고 CSV는 spreadsheet formula injection을 방지한다. BibTeX는 provider `keywords`와 분리된
 `gosusearchtopics`·`gosusearchkeywords` custom field로 tag를 왕복한다. citation key는 안정적으로 생성하고 project 내 collision에 suffix를
 붙인다. parser는 `%` line comment와 `@string`·`@preamble`·`@comment` special entry를 건너뛰지만 external
-macro `#` concatenation은 지원하지 않고 명시적으로 거절한다. export에는 source metadata와 사람이 검토한
+macro `#` concatenation은 지원하지 않고 명시적으로 거절한다. LaTeX가 verbatim으로 읽는 `doi`·`url`은
+escape하지 않고 공백·중괄호·backslash만 지워 그대로 내보낸다(`\_`가 들어가면 `\url{}`·`\doi{}` 링크가
+깨진다). 나머지 field는 계속 escape하고, import는 이전 버전이 내보낸 escaped 형식과 verbatim 형식을 같은
+DOI·URL로 읽는다. export에는 source metadata와 사람이 검토한
 field만 포함하고 AI annotation, provider raw
 ID, project ID, local version·삭제 상태는 제외한다. import는 DOI strong match를 우선하고 strong identity가
 없는 candidate와 row 사이에서만 fingerprint fallback을 사용한다. strong identity가 없어서 어느 DOI
@@ -2832,7 +2853,9 @@ flowchart LR
   `GPT 5.6 Sol`, `Claude Opus 5`로 읽기 쉽게 병기하되 raw resolved ID도 함께 보여 주고, 알 수 없는 ID는
   추측해 이름을 바꾸지 않는다.
 - 이 화면은 **이 Mac에서 GOSU가 관측한 provider-reported token usage**다. provider 청구서, 계정 전체
-  quota, 구독 사용량이나 비용 추정치가 아니다. 추적 기능 도입 전 호출은 역산하지 않으며
+  quota나 구독 사용량이 아니다. 금액은 공개 가격표(LiteLLM, 하루 한 번 갱신)의 표준 단가를 보고된 token에 곱한 **API 환산 추정**일 뿐
+  실제 청구가 아니며, 가격표에 없는 model은 추측하지 않고 "가격 미확인"으로 합계에서 뺀다. 기능의 금액은 그 기능을 실행한 model별 금액의 합이고
+  (`byWorkloadModel`), 화면의 모든 금액은 이 집계 하나에서 계산한다. 같은 집계로 기능마다 어떤 model이 얼마나 썼는지를 기능 막대의 model별 구간과 이름·비중으로 보여 준다. model 막대는 입력·출력 구간으로 나뉘고(별도 model 카드는 0.58.140에서 제거), 논문 요약은 `paper_summary`로 따로 기록되며 Briefing·논문 요약은 날짜·model별 탭(`byDayWorkloadModel`)이 있다. 추적 기능 도입 전 호출은 역산하지 않으며
   `trackingStartedAt`보다 오래된 기간은 기록되지 않았다고 표시한다. provider가 input/output을 보내지
   않은 terminal turn도 0으로 만들지 않고 `Not reported` coverage에 포함한다. 실제로 보고된 0만 숫자
   0으로 표시한다.

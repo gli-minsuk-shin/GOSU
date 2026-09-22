@@ -1,0 +1,275 @@
+/* Where the tokens and the money went: two quiet ranked lists, by model and by feature. */
+.usage-distribution {
+  display: grid;
+  gap: 10px;
+  padding: 14px 17px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: linear-gradient(145deg, var(--surface), var(--surface-soft));
+}
+.usage-distribution > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: space-between;
+  gap: 10px;
+}
+.usage-distribution h3 {
+  margin: 2px 0 0;
+  font-size: var(--font-title);
+}
+.usage-distribution-metric {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.usage-distribution-metric button {
+  min-height: 26px;
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--font-control);
+  cursor: pointer;
+}
+.usage-distribution-metric button[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--green) 12%, var(--surface));
+  color: var(--text);
+}
+.usage-distribution-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 22px;
+}
+.usage-distribution-list h4 {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: var(--font-control);
+  font-weight: 600;
+}
+.usage-distribution-list ol {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* A long model id must be cut with an ellipsis, never widen the list past its column. */
+.usage-distribution-list li {
+  min-width: 0;
+}
+/* Fixed value columns, so the numbers of one list line up and do not jump when the order changes. */
+.usage-distribution-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 58px;
+  gap: 10px;
+  align-items: baseline;
+  font-size: var(--font-control);
+}
+.usage-distribution-row:has(.cost) {
+  grid-template-columns: minmax(0, 1fr) 58px 92px;
+}
+.usage-distribution-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-distribution-name small {
+  color: var(--subtle);
+  font-size: var(--font-caption);
+}
+.usage-distribution-value {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.usage-distribution-value[data-active] {
+  color: var(--text);
+}
+.usage-distribution-value.cost:not([data-state='known']) {
+  color: var(--subtle);
+  font-size: var(--font-caption);
+}
+.usage-distribution-bar {
+  display: block;
+  height: 5px;
+  margin-top: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--green) 9%, var(--surface-raised));
+}
+.usage-distribution-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--green);
+}
+/* A feature bar split by the models that ran it. One tone per model, the same in the model list
+   (its swatches are the legend) and under every feature. Red is left out: it means a warning here. */
+.usage-distribution {
+  --usage-tone-0: var(--blue);
+  --usage-tone-1: var(--orange);
+  --usage-tone-2: light-dark(#7a4fb3, #b99cff);
+  --usage-tone-3: light-dark(#1f7a7a, #5fd3cf);
+  --usage-tone-4: light-dark(#8a6d00, #e0c04a);
+  --usage-tone-5: light-dark(#a8407d, #f08bc0);
+  --usage-tone-6: light-dark(#4a5f8a, #9db4e6);
+  --usage-tone-7: var(--subtle);
+  /* Green is the screen's own color: a model bar is input (light) and output (full). */
+  --usage-io-input: color-mix(in srgb, var(--green) 38%, var(--surface-raised));
+  --usage-io-output: var(--green);
+}
+.usage-distribution-bar[data-split] > span {
+  display: flex;
+  gap: 1px;
+  height: 100%;
+  overflow: hidden;
+  border-radius: inherit;
+}
+.usage-distribution-segment {
+  display: block;
+  flex: 0 1 auto;
+  min-width: 2px;
+  height: 100%;
+  border-radius: 0;
+}
+.usage-distribution-swatch {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  margin-right: 5px;
+  border-radius: 2px;
+  vertical-align: 1px;
+}
+.usage-distribution-segment[data-tone='0'],
+.usage-distribution-swatch[data-tone='0'] {
+  background: var(--usage-tone-0);
+}
+.usage-distribution-segment[data-tone='1'],
+.usage-distribution-swatch[data-tone='1'] {
+  background: var(--usage-tone-1);
+}
+.usage-distribution-segment[data-tone='2'],
+.usage-distribution-swatch[data-tone='2'] {
+  background: var(--usage-tone-2);
+}
+.usage-distribution-segment[data-tone='3'],
+.usage-distribution-swatch[data-tone='3'] {
+  background: var(--usage-tone-3);
+}
+.usage-distribution-segment[data-tone='4'],
+.usage-distribution-swatch[data-tone='4'] {
+  background: var(--usage-tone-4);
+}
+.usage-distribution-segment[data-tone='5'],
+.usage-distribution-swatch[data-tone='5'] {
+  background: var(--usage-tone-5);
+}
+.usage-distribution-segment[data-tone='6'],
+.usage-distribution-swatch[data-tone='6'] {
+  background: var(--usage-tone-6);
+}
+.usage-distribution-segment[data-tone='7'],
+.usage-distribution-swatch[data-tone='7'] {
+  background: var(--usage-tone-7);
+}
+/* A model bar split into input and output, its legend in the list heading, its numbers below. */
+.usage-distribution-io-segment {
+  display: block;
+  flex: 0 1 auto;
+  min-width: 2px;
+  height: 100%;
+  border-radius: 0;
+}
+.usage-distribution-io-segment[data-io='input'],
+.usage-distribution-io-swatch[data-io='input'],
+.usage-distribution-io-legend > i[data-io='input'] {
+  background: var(--usage-io-input);
+}
+.usage-distribution-io-segment[data-io='output'],
+.usage-distribution-io-swatch[data-io='output'],
+.usage-distribution-io-legend > i[data-io='output'] {
+  background: var(--usage-io-output);
+}
+.usage-distribution-io-swatch,
+.usage-distribution-io-legend > i {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 4px;
+  border-radius: 2px;
+  vertical-align: 1px;
+}
+.usage-distribution-io-legend {
+  margin-left: 10px;
+  color: var(--subtle);
+  font-size: var(--font-caption);
+  font-weight: 400;
+}
+.usage-distribution-io-legend > i:not(:first-child) {
+  margin-left: 8px;
+}
+.usage-distribution-io {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px 10px;
+  margin-top: 3px;
+  color: var(--subtle);
+  font-size: var(--font-caption);
+  font-variant-numeric: tabular-nums;
+}
+.usage-distribution-io > span {
+  white-space: nowrap;
+}
+/* The models of a feature, named under its bar: small and muted, wrapping instead of cutting. */
+.usage-distribution-parts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px 10px;
+  margin-top: 3px;
+  color: var(--subtle);
+  font-size: var(--font-caption);
+  font-variant-numeric: tabular-nums;
+}
+.usage-distribution-parts > span {
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
+}
+.usage-distribution-part-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  margin-right: 4px;
+  color: var(--muted);
+  text-overflow: ellipsis;
+}
+/* An unknown value has no bar at all: a dashed track, so it never reads as zero. */
+.usage-distribution-list li[data-unknown] .usage-distribution-bar {
+  height: 0;
+  margin-top: 5px;
+  border-top: 1px dashed var(--line-strong);
+  border-radius: 0;
+  background: none;
+}
+.usage-distribution-excluded,
+.usage-distribution-more,
+.usage-distribution-note {
+  margin: 2px 0 0;
+  color: var(--subtle);
+  font-size: var(--font-caption);
+}
+@container usage-dashboard (max-width: 720px) {
+  .usage-distribution-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+}

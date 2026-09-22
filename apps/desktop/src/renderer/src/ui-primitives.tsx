@@ -17,7 +17,14 @@ export function CollapseChevron({ direction }: { direction: keyof typeof COLLAPS
   );
 }
 
-export function RuntimeCard({ runtime }: { runtime: RuntimeReadiness | null }) {
+export function RuntimeCard({
+  runtime,
+  pendingCount = 0,
+}: {
+  runtime: RuntimeReadiness | null;
+  /** Local changes waiting for a sync that is switched off; shown here since the title bar dropped it. */
+  pendingCount?: number;
+}) {
   const state = runtime?.status ?? 'checking';
   return (
     <article className={`runtime-card ${state}`} aria-live="polite">
@@ -57,7 +64,11 @@ export function RuntimeCard({ runtime }: { runtime: RuntimeReadiness | null }) {
         />
         <RuntimeCheck
           label={uiText('Sync API')}
-          value={uiText(runtime?.syncApi.ready ? 'Reachable' : 'Offline')}
+          value={`${uiText(runtime?.syncApi.ready ? 'Reachable' : 'Offline')}${
+            pendingCount > 0
+              ? ` · ${uiText('{count} queued locally', { count: pendingCount })}`
+              : ''
+          }`}
           ready={Boolean(runtime?.syncApi.ready)}
         />
       </div>
@@ -175,6 +186,12 @@ export function describeError(error: unknown) {
       'Research Notes are available only while this project is active. Restore it first.',
     research_notes_vault_not_selected:
       'Choose an Obsidian Vault before opening this project’s Research Notes.',
+    research_notes_vault_missing:
+      'The saved Obsidian Vault folder was not found at its path. It may have been moved, renamed or be on a disk that is not mounted. Your setting is kept; retry, or choose the Vault again.',
+    research_notes_vault_permission_denied:
+      'macOS did not let GOSU read the saved Obsidian Vault folder. Allow GOSU under System Settings → Privacy & Security → Files and Folders, then retry. Your setting is kept.',
+    research_notes_vault_unreadable:
+      'GOSU could not read the saved Obsidian Vault folder. Your setting is kept; retry, or choose the Vault again.',
     research_notes_vault_changed:
       'The selected Obsidian Vault changed. GOSU kept the existing project notes untouched.',
     research_notes_folder_conflict:

@@ -35,6 +35,29 @@ const argumentSchemas: Readonly<Record<string, z.ZodType>> = {
     })
     .strict(),
   read_local_note: z.object({ noteId: z.string().regex(/^[0-9a-f]{64}$/u), ...readRange }).strict(),
+  read_calendar: z
+    .object({ from: z.string().max(40).optional(), to: z.string().max(40).optional() })
+    .strict(),
+  search_email: z
+    .object({
+      query: z.string().max(300).optional(),
+      sender: z.string().max(300).optional(),
+      subject: z.string().max(300).optional(),
+      account: z.string().max(300).optional(),
+      from: z.string().max(40).optional(),
+      to: z.string().max(40).optional(),
+    })
+    .strict(),
+  read_briefings: z
+    .object({ query: z.string().max(300).optional(), historyId: z.string().max(200).optional() })
+    .strict(),
+  read_paper_summaries: z
+    .object({
+      query: z.string().max(300).optional(),
+      historyId: z.string().max(200).optional(),
+      paperId: z.string().max(300).optional(),
+    })
+    .strict(),
   list_ssh_workspaces: z.object({}).strict(),
   read_ssh_workspace_resources: z.object({ grantId: z.string().uuid() }).strict(),
   list_ssh_workspace_files: z
@@ -201,7 +224,13 @@ export function projectToolStartedActivity(
       ...(tool === 'read_workspace'
         ? { section: args.section as ProjectToolActivity['section'] }
         : {}),
-      ...(['list_local_notes', 'search_literature'].includes(tool)
+      ...([
+        'list_local_notes',
+        'search_literature',
+        'search_email',
+        'read_briefings',
+        'read_paper_summaries',
+      ].includes(tool)
         ? { query: displayText(args.query, 160) }
         : {}),
       ...(['read_ssh_workspace_file', 'read_manuscript_checkpoint_file'].includes(tool)

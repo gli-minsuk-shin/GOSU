@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rename, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -144,6 +144,25 @@ describe('read-only Obsidian vault', () => {
     await expect(reader.readAttachment('note.md', './large.webp')).rejects.toThrow(
       'vault_attachment_too_large',
     );
+  });
+
+  it('keeps the vault connected when one folder inside it cannot be read', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'gosu-vault-unreadable-'));
+    temporaryDirectories.push(root);
+    await mkdir(join(root, 'open'));
+    await mkdir(join(root, 'locked'));
+    await writeFile(join(root, 'open', 'kept.md'), '# kept');
+    await writeFile(join(root, 'locked', 'hidden.md'), '# hidden');
+    await chmod(join(root, 'locked'), 0o000);
+    try {
+      const reader = await VaultReader.open(root);
+      // Listing used to reject as a whole, which left the saved vault silently unconnected.
+      await expect(reader.listDocuments()).resolves.toEqual(['open/kept.md']);
+    } finally {
+      await chmod(join(root, 'locked'), 0o700);
+    }
+    // The vault folder itself must still open.
+    await expect(VaultReader.open(join(root, 'absent'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('bounds directory and entry traversal independently from file count', async () => {

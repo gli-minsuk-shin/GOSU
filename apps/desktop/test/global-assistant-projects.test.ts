@@ -132,3 +132,47 @@ it('rechecks deletion after confirmation and rejects foreign projects before rea
   await expect(bridge('request', a, 'change', signal)).rejects.toThrow('project_unavailable');
   expect(deps.send).not.toHaveBeenCalled();
 });
+it('adds a model to the exact active project Model Lab, with the parser reason on failure and no dialog of its own', async () => {
+  const { deps, bridge, signal } = setup();
+  const modelLabWrite = vi.fn(async (_projectId: string, input: { requestId: string }) => ({
+    requestId: input.requestId,
+    modelId: 'gcsa',
+    modelName: 'GCSA',
+    status: 'queued' as const,
+  }));
+  const withWriter = createGlobalAssistantProjects({ ...deps, modelLabWrite });
+  const recheck = vi.fn(async () => undefined);
+  const requestId = 'abcdef01-2345-6789-abcd-ef0123456789';
+  const result = await withWriter(
+    'model-lab-add',
+    a,
+    JSON.stringify({ requestId, pseudocode: 'MODEL gcsa' }),
+    signal,
+    recheck,
+  );
+  expect(result).toMatchObject({ projectId: a, projectName: 'A', modelId: 'gcsa', added: false });
+  expect(modelLabWrite).toHaveBeenCalledExactlyOnceWith(a, { requestId, pseudocode: 'MODEL gcsa' });
+  expect(recheck).toHaveBeenCalledOnce();
+  // The confirmation policy is applied by Briefing Lab; this bridge shows no dialog for it.
+  expect(deps.confirm).not.toHaveBeenCalled();
+  modelLabWrite.mockRejectedValueOnce(new Error('model_lab_pseudocode_invalid: Unknown BLOCK b2'));
+  expect(
+    await withWriter(
+      'model-lab-add',
+      a,
+      JSON.stringify({ requestId, pseudocode: 'MODEL broken' }),
+      signal,
+    ),
+  ).toMatchObject({
+    added: false,
+    error: 'model_lab_pseudocode_invalid',
+    reason: 'Unknown BLOCK b2',
+  });
+  modelLabWrite.mockRejectedValueOnce(new Error('Model copy inbox is full'));
+  await expect(
+    withWriter('model-lab-add', a, JSON.stringify({ requestId, pseudocode: 'MODEL x' }), signal),
+  ).rejects.toThrow('model_lab_inbox_full');
+  await expect(
+    bridge('model-lab-add', a, JSON.stringify({ requestId, pseudocode: 'MODEL x' }), signal),
+  ).rejects.toThrow('assistant_model_lab_unavailable');
+});

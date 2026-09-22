@@ -68,8 +68,10 @@ describe('Git blob batch reader', () => {
       await chmod(executable, 0o700);
       const reader = createGitBlobBatchReader(executable);
 
+      // The script must have started before the timeout kills it: macOS scans every newly written
+      // executable, and a brand-new script took 0.26-0.54 s to start on a busy Mac (2026-09-21).
       await expect(
-        reader(root, [{ objectId, expectedSize: 1 }], { ...limits, timeoutMs: 500 }),
+        reader(root, [{ objectId, expectedSize: 1 }], { ...limits, timeoutMs: 2_000 }),
       ).rejects.toMatchObject({ kind: 'timeout' });
 
       const pid = Number(await readFile(pidFile, 'utf8'));

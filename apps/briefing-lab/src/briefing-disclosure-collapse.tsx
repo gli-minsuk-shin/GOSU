@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 /** Close only this disclosure. Keep its contents mounted and focus the visible title. */
 export function collapseReadingBlock(button: HTMLElement) {
   const block = button.closest<HTMLDetailsElement>('details');
@@ -22,9 +23,33 @@ export function collapseReadingBlock(button: HTMLElement) {
   return true;
 }
 
-export function BriefingBottomCollapse({ label }: { label: string }) {
+/** The open section's left accent bar closes it too, like the − icon, and returns to its title. */
+export function BriefingSectionRail({ label, className }: { label: string; className?: string }) {
+  return (
+    <button
+      type="button"
+      className={className ? `briefing-section-rail ${className}` : 'briefing-section-rail'}
+      aria-label={label}
+      title={label}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        collapseReadingBlock(event.currentTarget);
+      }}
+    />
+  );
+}
+
+export function BriefingBottomCollapse({
+  label,
+  leadingAction,
+}: {
+  label: string;
+  leadingAction?: ReactNode;
+}) {
   return (
     <div className="briefing-bottom-collapse">
+      {leadingAction}
       <button
         type="button"
         aria-label={label}

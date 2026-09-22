@@ -4,6 +4,7 @@ export const PROJECT_CHAT_IPC_CHANNELS = {
   createSession: 'gosu:project-chat:create-session',
   branchSession: 'gosu:project-chat:branch-session',
   renameSession: 'gosu:project-chat:rename-session',
+  compactSession: 'gosu:project-chat:compact-session',
   updateProfile: 'gosu:project-chat:update-profile',
   send: 'gosu:project-chat:send',
   updateQueuedTurn: 'gosu:project-chat:update-queued-turn',

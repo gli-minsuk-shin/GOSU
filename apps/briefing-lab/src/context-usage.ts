@@ -13,6 +13,7 @@ export const NativeTokenUsageSchema = z.object({
 });
 export type NativeTokenUsage = z.infer<typeof NativeTokenUsageSchema>;
 export const ContextUsageSchema = z.object({
+  selectionMode: z.enum(['minimal', 'focused', 'full']).optional(),
   contextConfigurationKey: z.string().max(128).optional(),
   requestedWindowTokens: count.positive().optional(),
   modelDefaultWindowTokens: count.positive().optional(),

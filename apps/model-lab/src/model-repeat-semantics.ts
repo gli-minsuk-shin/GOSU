@@ -12,45 +12,67 @@ export type RepeatOperationFamily =
 
 export const NON_REPEAT_SEMANTIC_MODULE_MAX_STATEMENTS = 12;
 
-export function repeatedModuleStepStatements(module: Pick<ModelModule, 'transform'>) {
+export type RepeatedStepEntry = Readonly<{
+  statement: string;
+  /** Enclosing if/elif/else/while/with headers (by indentation), outermost first. */
+  context: readonly string[];
+}>;
+
+export function repeatedModuleStepEntries(
+  module: Pick<ModelModule, 'transform'>,
+): readonly RepeatedStepEntry[] {
   const source = module.transform.trim();
   if (!source) return [];
-  const physicalLines = source
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  let statements: string[];
-  if (physicalLines.length > 1) {
+  const rawLines = module.transform.split(/\r?\n/u).filter((line) => line.trim());
+  let entries: RepeatedStepEntry[];
+  if (rawLines.length > 1) {
     const pendingAnnotations: string[] = [];
-    statements = [];
-    for (const line of physicalLines) {
-      if (/^(?:for|For)\b.*:\s*$/u.test(line)) continue;
+    const headers: { indent: number; header: string }[] = [];
+    entries = [];
+    for (const rawLine of rawLines) {
+      const line = rawLine.trim();
       if (line.startsWith('#')) {
         const annotation = line.replace(/^#+\s*/u, '').trim();
         if (annotation) pendingAnnotations.push(annotation);
         continue;
       }
-      statements.push(
-        pendingAnnotations.length > 0 ? `${line} # ${pendingAnnotations.join(' · ')}` : line,
-      );
+      const indent = rawLine.length - rawLine.trimStart().length;
+      while (headers.length > 0 && headers.at(-1)!.indent >= indent) headers.pop();
+      if (/^(?:for|For)\b.*:\s*$/u.test(line)) continue;
+      entries.push({
+        statement:
+          pendingAnnotations.length > 0 ? `${line} # ${pendingAnnotations.join(' · ')}` : line,
+        context: headers.map((entry) => entry.header),
+      });
       pendingAnnotations.length = 0;
+      if (/^(?:if|elif|else|while|with)\b.*:\s*$/u.test(line)) {
+        headers.push({ indent, header: line.replace(/:\s*$/u, '') });
+      }
     }
   } else {
-    statements = source
+    entries = source
       .replace(/^for each iteration:\s*/iu, '')
       .split(/;\s*/u)
       .map((line) => line.trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      .map((statement) => ({ statement, context: [] }));
   }
-  return statements
-    .map((statement) => statement.replace(/^(?:[-*•]|\d+[.)])\s*/u, '').trim())
-    .map((statement) => {
-      const inlineLoop = statement.match(/^for\b[^:]*:\s*(.+)$/iu);
-      return inlineLoop?.[1]?.trim() ?? statement;
+  return entries
+    .map((entry) => ({
+      ...entry,
+      statement: entry.statement.replace(/^(?:[-*•]|\d+[.)])\s*/u, '').trim(),
+    }))
+    .map((entry) => {
+      const inlineLoop = entry.statement.match(/^for\b[^:]*:\s*(.+)$/iu);
+      return { ...entry, statement: inlineLoop?.[1]?.trim() ?? entry.statement };
     })
-    .filter((statement) => !/^for\b/iu.test(statement))
-    .filter((statement) => !/^stop\s*=\s*min\s*\(/iu.test(statement))
-    .filter((statement) => statement.length > 1);
+    .filter(({ statement }) => !/^for\b/iu.test(statement))
+    .filter(({ statement }) => !/^stop\s*=\s*min\s*\(/iu.test(statement))
+    .filter(({ statement }) => statement.length > 1);
+}
+
+export function repeatedModuleStepStatements(module: Pick<ModelModule, 'transform'>) {
+  return repeatedModuleStepEntries(module).map((entry) => entry.statement);
 }
 
 function operationCode(statement: string) {

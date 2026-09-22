@@ -1,10 +1,15 @@
 import { uiText } from '@gosu/ui/language';
 
-import { useState, type Ref } from 'react';
+import { useEffect, useRef, useState, type Ref, type DragEvent } from 'react';
 
 import type { WorkspaceTabId } from './workspace-views';
 import { FUTURE_MODULES } from './workspace-views';
-import { toggleProjectFolder, type ProjectNavigationState } from './project-navigation-state';
+import {
+  toggleProjectFolder,
+  orderedSidebarProjects,
+  reorderSidebarProject,
+  type ProjectNavigationState,
+} from './project-navigation-state';
 import {
   activeProjects,
   archivedProjects,
@@ -12,6 +17,8 @@ import {
 } from './project-portfolio-model';
 import { CollapseChevron } from './ui-primitives';
 import { SidebarIcon } from './sidebar-icon';
+import { aiActivityStatus, combineAiActivity, type AiActivityState } from '@gosu/ui/ai-activity';
+import { AiActivityStar } from './sidebar-ai-activity';
 import {
   EMPTY_NOTIFICATION_CENTER,
   NotificationCenter,
@@ -62,6 +69,8 @@ const GLOBAL_TABS: ReadonlyArray<{
 ];
 
 export interface ProjectSidebarProps {
+  aiActivity?: AiActivityState;
+  onAcknowledgeAi?: (scope: string) => void;
   briefingView?: 'history' | 'papers' | 'manage' | 'assistant';
   onOpenAssistant?: () => void;
   onSelectBriefingView?: (view: 'history' | 'papers' | 'manage') => void;
@@ -117,6 +126,8 @@ export function ProjectSidebarToggle({
 }
 
 export function ProjectSidebar({
+  aiActivity = {},
+  onAcknowledgeAi,
   briefingView = 'history',
   onSelectBriefingView,
   onOpenAssistant,
@@ -141,12 +152,33 @@ export function ProjectSidebar({
   onOpenSettings,
   onNewProject,
 }: ProjectSidebarProps) {
-  const [briefingExpanded, setBriefingExpanded] = useState(false);
+  const draggedProject = useRef<string | null>(null);
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; position: 'before' | 'after' } | null>(
+    null,
+  );
+  const clearDrag = () => {
+    draggedProject.current = null;
+    setDragging(null);
+    setDropTarget(null);
+  };
   const hiddenIds = new Set(navigationState.hiddenProjectIds);
-  const working = activeProjects(projects);
+  const working = activeProjects(orderedSidebarProjects(projects, navigationState));
   const visible = working.filter((project) => !hiddenIds.has(project.id));
   const hidden = working.filter((project) => hiddenIds.has(project.id));
   const archived = archivedProjects(projects);
+  const dragIsValid =
+    !!dragging &&
+    !disabled &&
+    navigationState.activeGroupExpanded &&
+    visible.some((p) => p.id === dragging);
+  useEffect(() => {
+    if (dragging && !dragIsValid) {
+      draggedProject.current = null;
+      setDragging(null);
+      setDropTarget(null);
+    }
+  }, [dragging, dragIsValid]);
 
   const updateGroup = (
     key: 'activeGroupExpanded' | 'hiddenGroupExpanded' | 'archivedGroupExpanded',
@@ -165,9 +197,16 @@ export function ProjectSidebar({
           className={`project-quick-action${!settingsActive && activeTab === 'briefing-lab' && briefingView === 'assistant' ? ' active' : ''}`}
           aria-label="AI 비서"
           title="AI 비서 · 일정, 메일, 논문, 프로젝트"
-          onClick={onOpenAssistant}
+          onClick={() => {
+            onAcknowledgeAi?.('assistant');
+            onOpenAssistant?.();
+          }}
         >
-          <SidebarIcon name="assistant" />
+          <SidebarIcon
+            name="assistant"
+            activity={aiActivityStatus(aiActivity, 'assistant')}
+            starBesideIcon
+          />
         </button>
         {(['search'] as const).map((tab) => (
           <button
@@ -195,45 +234,56 @@ export function ProjectSidebar({
           <button
             key={id}
             type="button"
-            className={`project-personal-tool${!settingsActive && activeTab === id ? ' active' : ''}`}
-            aria-current={!settingsActive && activeTab === id ? 'page' : undefined}
+            className={`project-personal-tool${!settingsActive && activeTab === id && (id !== 'briefing-lab' || briefingView === 'history') ? ' active' : ''}`}
+            aria-current={
+              !settingsActive &&
+              activeTab === id &&
+              (id !== 'briefing-lab' || briefingView === 'history')
+                ? 'page'
+                : undefined
+            }
             aria-label={label}
-            aria-expanded={id === 'briefing-lab' ? briefingExpanded : undefined}
             onClick={() => {
-              if (id === 'briefing-lab') setBriefingExpanded((value) => !value);
-              onSelectGlobalTab(id);
+              if (id === 'briefing-lab') onAcknowledgeAi?.('briefing');
+              if (id === 'briefing-lab' && onSelectBriefingView) onSelectBriefingView('history');
+              else onSelectGlobalTab(id);
             }}
           >
-            <SidebarIcon name={id} />
-            <span>{label}</span>
-            {id === 'briefing-lab' && (
-              <CollapseChevron direction={briefingExpanded ? 'down' : 'right'} />
-            )}
+            <SidebarIcon
+              name={id}
+              activity={
+                id === 'briefing-lab' ? aiActivityStatus(aiActivity, 'briefing') : undefined
+              }
+            />
+            <span className="sidebar-row-label">
+              <span>{label}</span>
+              <AiActivityStar
+                status={
+                  id === 'briefing-lab' ? aiActivityStatus(aiActivity, 'briefing') : undefined
+                }
+              />
+            </span>
           </button>
         ))}
-        {briefingExpanded && (
-          <div className="briefing-subnavigation" role="group" aria-label="Briefing Lab 하위 세션">
-            {(
-              [
-                { view: 'history', label: '개인 연구 브리핑' },
-                { view: 'papers', label: '논문 요약' },
-                { view: 'manage', label: '루틴 관리' },
-              ] as const
-            ).map(({ view, label }) => (
-              <button
-                key={view}
-                aria-current={
-                  !settingsActive && activeTab === 'briefing-lab' && briefingView === view
-                    ? 'page'
-                    : undefined
-                }
-                onClick={() => onSelectBriefingView?.(view)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
+        <button
+          type="button"
+          className={`project-personal-tool${!settingsActive && activeTab === 'briefing-lab' && briefingView === 'papers' ? ' active' : ''}`}
+          aria-current={
+            !settingsActive && activeTab === 'briefing-lab' && briefingView === 'papers'
+              ? 'page'
+              : undefined
+          }
+          onClick={() => {
+            onAcknowledgeAi?.('papers');
+            onSelectBriefingView?.('papers');
+          }}
+        >
+          <SidebarIcon name="literature" activity={aiActivityStatus(aiActivity, 'papers')} />
+          <span className="sidebar-row-label">
+            <span>{uiText('Paper summaries')}</span>
+            <AiActivityStar status={aiActivityStatus(aiActivity, 'papers')} />
+          </span>
+        </button>
       </div>
       <div className="project-navigation-heading">
         <button
@@ -243,8 +293,24 @@ export function ProjectSidebar({
           aria-expanded={navigationState.activeGroupExpanded}
           onClick={() => updateGroup('activeGroupExpanded', !navigationState.activeGroupExpanded)}
         >
-          <CollapseChevron direction={navigationState.activeGroupExpanded ? 'down' : 'right'} />
-          <strong>{uiText('Projects')}</strong>
+          <span className="project-folder-chevron">
+            <CollapseChevron direction={navigationState.activeGroupExpanded ? 'down' : 'right'} />
+          </span>
+          <span className="sidebar-row-label">
+            <strong>{uiText('Projects')}</strong>
+            <AiActivityStar
+              status={
+                navigationState.activeGroupExpanded
+                  ? undefined
+                  : combineAiActivity(
+                      busyProjectIds.size ? 'running' : undefined,
+                      ...Object.keys(aiActivity)
+                        .filter((k) => k.startsWith('project:'))
+                        .map((k) => aiActivityStatus(aiActivity, k)),
+                    )
+              }
+            />
+          </span>
           <em>{working.length}</em>
         </button>
         <button
@@ -268,38 +334,120 @@ export function ProjectSidebar({
                 : uiText('All active projects are hidden')}
             </p>
           ) : (
-            visible.map((project) => {
+            visible.map((project, projectIndex) => {
               const expanded = navigationState.expandedProjectIds.includes(project.id);
               const selected = activeProjectId === project.id;
               const busy = busyProjectIds.has(project.id);
+              const acceptDrop = (event: DragEvent<HTMLDivElement>) => {
+                const source = draggedProject.current;
+                if (
+                  disabled ||
+                  !source ||
+                  source === project.id ||
+                  !visible.some((p) => p.id === source)
+                )
+                  return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'move';
+                const rect = event.currentTarget.getBoundingClientRect();
+                setDropTarget({
+                  id: project.id,
+                  position: event.clientY < rect.top + rect.height / 2 ? 'before' : 'after',
+                });
+              };
               return (
                 <section
-                  className={`project-folder ${selected ? 'selected' : ''}`}
+                  className={`project-folder ${selected ? 'selected' : ''}${dragging === project.id ? ' project-dragging' : ''}`}
                   key={project.id}
                 >
-                  <div className="project-folder-row">
+                  <div
+                    className="project-folder-row"
+                    data-project-id={project.id}
+                    data-drop-position={
+                      dropTarget?.id === project.id ? dropTarget.position : undefined
+                    }
+                    onDragEnter={acceptDrop}
+                    onDragOver={acceptDrop}
+                    onDragLeave={(event) => {
+                      if (
+                        !(event.relatedTarget instanceof Node) ||
+                        !event.currentTarget.contains(event.relatedTarget)
+                      )
+                        setDropTarget(null);
+                    }}
+                    onDrop={(event) => {
+                      const source = draggedProject.current;
+                      if (!disabled && source && visible.some((p) => p.id === source)) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        onNavigationStateChange(
+                          reorderSidebarProject(
+                            navigationState,
+                            projects.map((p) => p.id),
+                            source,
+                            project.id,
+                            event.clientY < rect.top + rect.height / 2 ? 'before' : 'after',
+                          ),
+                        );
+                      }
+                      clearDrag();
+                    }}
+                  >
                     <button
                       type="button"
                       className="project-folder-button"
                       aria-expanded={expanded}
                       aria-current={selected ? 'page' : undefined}
-                      title={project.name}
+                      title={uiText('{name} · Drag to reorder · Right-click for actions', {
+                        name: project.name,
+                      })}
                       disabled={disabled}
+                      draggable={!disabled}
+                      onContextMenu={(event) => {
+                        // The usual gesture for "what can I do with this project": it opens the
+                        // same ••• menu that holds Hide, Move to archive and Project settings.
+                        event.preventDefault();
+                        const menu =
+                          event.currentTarget.parentElement?.querySelector<HTMLDetailsElement>(
+                            'details.project-folder-menu',
+                          );
+                        if (menu) menu.open = true;
+                      }}
+                      onDragStart={(event) => {
+                        if (disabled) {
+                          event.preventDefault();
+                          return;
+                        }
+                        draggedProject.current = project.id;
+                        setDragging(project.id);
+                        event.dataTransfer.effectAllowed = 'move';
+                        event.dataTransfer.setData('application/x-gosu-project-order', project.id);
+                      }}
+                      onDragEnd={clearDrag}
                       onClick={() => {
                         onSelectProject(project.id);
                         onNavigationStateChange(toggleProjectFolder(navigationState, project.id));
                       }}
                     >
-                      <span className="project-folder-chevron" aria-hidden="true">
+                      <span className="project-folder-chevron">
                         <CollapseChevron direction={expanded ? 'down' : 'right'} />
                       </span>
-                      <strong>{project.name}</strong>
-                      {busy && (
-                        <i
-                          className="project-running-indicator"
-                          title={uiText('Codex is running')}
+                      <span className="sidebar-row-label">
+                        <strong>{project.name}</strong>
+                        <AiActivityStar
+                          status={
+                            expanded
+                              ? undefined
+                              : combineAiActivity(
+                                  busy ? 'running' : undefined,
+                                  ...Object.keys(aiActivity)
+                                    .filter((k) => k.startsWith(`project:${project.id}:`))
+                                    .map((k) => aiActivityStatus(aiActivity, k)),
+                                )
+                          }
                         />
-                      )}
+                      </span>
                     </button>
                     <details className="project-folder-menu">
                       <summary
@@ -309,6 +457,46 @@ export function ProjectSidebar({
                         •••
                       </summary>
                       <div role="menu">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          disabled={disabled || projectIndex === 0}
+                          onClick={() => {
+                            const target = visible[projectIndex - 1];
+                            if (target)
+                              onNavigationStateChange(
+                                reorderSidebarProject(
+                                  navigationState,
+                                  projects.map((p) => p.id),
+                                  project.id,
+                                  target.id,
+                                  'before',
+                                ),
+                              );
+                          }}
+                        >
+                          {uiText('Move project up')}
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          disabled={disabled || projectIndex === visible.length - 1}
+                          onClick={() => {
+                            const target = visible[projectIndex + 1];
+                            if (target)
+                              onNavigationStateChange(
+                                reorderSidebarProject(
+                                  navigationState,
+                                  projects.map((p) => p.id),
+                                  project.id,
+                                  target.id,
+                                  'after',
+                                ),
+                              );
+                          }}
+                        >
+                          {uiText('Move project down')}
+                        </button>
                         <button
                           type="button"
                           role="menuitem"
@@ -335,7 +523,7 @@ export function ProjectSidebar({
                           }
                           onClick={() => onArchiveProject(project)}
                         >
-                          {uiText('Archive')}
+                          {uiText('Move to archive')}
                         </button>
                         <button
                           type="button"
@@ -353,23 +541,42 @@ export function ProjectSidebar({
                       className="project-folder-children"
                       aria-label={uiText('{name} sections', { name: project.name })}
                     >
-                      {PROJECT_TABS.map((tab) => (
-                        <button
-                          type="button"
-                          key={tab.id}
-                          className={
-                            selected && activeTab === tab.id && !settingsActive ? 'active' : ''
-                          }
-                          aria-current={
-                            selected && activeTab === tab.id && !settingsActive ? 'page' : undefined
-                          }
-                          disabled={disabled}
-                          onClick={() => onSelectProjectTab(project.id, tab.id)}
-                        >
-                          <SidebarIcon name={tab.id} />
-                          {uiText(tab.label)}
-                        </button>
-                      ))}
+                      {PROJECT_TABS.map((tab) => {
+                        const tabActivity = combineAiActivity(
+                          tab.id === 'chat' &&
+                            busy &&
+                            aiActivityStatus(aiActivity, `project:${project.id}:review`) !==
+                              'running'
+                            ? 'running'
+                            : undefined,
+                          aiActivityStatus(aiActivity, `project:${project.id}:${tab.id}`),
+                        );
+                        return (
+                          <button
+                            type="button"
+                            key={tab.id}
+                            className={
+                              selected && activeTab === tab.id && !settingsActive ? 'active' : ''
+                            }
+                            aria-current={
+                              selected && activeTab === tab.id && !settingsActive
+                                ? 'page'
+                                : undefined
+                            }
+                            disabled={disabled}
+                            onClick={() => {
+                              onAcknowledgeAi?.(`project:${project.id}:${tab.id}`);
+                              onSelectProjectTab(project.id, tab.id);
+                            }}
+                          >
+                            <SidebarIcon name={tab.id} activity={tabActivity} />
+                            <span className="sidebar-row-label">
+                              <span>{uiText(tab.label)}</span>
+                              <AiActivityStar status={tabActivity} />
+                            </span>
+                          </button>
+                        );
+                      })}
                       {FUTURE_MODULES.map(([label]) => (
                         <button
                           type="button"
@@ -463,10 +670,16 @@ export function ProjectSidebar({
             key={tab.id}
             className={!settingsActive && activeTab === tab.id ? 'active' : ''}
             aria-current={!settingsActive && activeTab === tab.id ? 'page' : undefined}
-            onClick={() => onSelectGlobalTab(tab.id)}
+            onClick={() => {
+              onAcknowledgeAi?.(tab.id);
+              onSelectGlobalTab(tab.id);
+            }}
           >
-            <SidebarIcon name={tab.id} />
-            {uiText(tab.label)}
+            <SidebarIcon name={tab.id} activity={aiActivityStatus(aiActivity, tab.id)} />
+            <span className="sidebar-row-label">
+              <span>{uiText(tab.label)}</span>
+              <AiActivityStar status={aiActivityStatus(aiActivity, tab.id)} />
+            </span>
           </button>
         ))}
         <button

@@ -1,8 +1,9 @@
+import { readFileSync } from 'node:fs';
 import { useState } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, expect, it, vi } from 'vitest';
 import { BriefingApp } from './briefing-app';
-import { BriefingChat } from './briefing-chat';
+import { BriefingChat, isNearLatestMessage } from './briefing-chat';
 import { initialRealWorkspace } from './workspace-defaults';
 import {
   defaultAssistantPreferences,
@@ -455,7 +456,8 @@ it('keeps recommendation clicks non-destructive, blocks hidden sends, and still 
   await click('AI 비서');
   await click('추천 질문 닫기');
   expect(signal.aborted).toBe(false);
-  expect(button('Briefing 모델 변경').props.disabled).toBe(true);
+  // The header only shows the model; Settings → Agent is where it changes, so nothing is locked.
+  expect(button('AI 비서 모델 · 설정 → Agent에서 변경').props.disabled).toBeUndefined();
   await click('상세 사이드바 최소화');
   await act(() => chat.findByType('form').props.onSubmit({ preventDefault: vi.fn() }));
   expect(workspaceStream).toHaveBeenCalledTimes(1);
@@ -544,4 +546,184 @@ it('restores the conversation scroll position and focuses the existing composer 
   expect(composer.focus).toHaveBeenNthCalledWith(2, { preventScroll: true });
   expect(node.scrollTop).toBe(137);
   expect(workspaceStream).toHaveBeenCalledOnce();
+});
+it('puts the reader back after the desktop hid the whole Lab frame and showed it again', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  vi.mocked(workspaceStream).mockResolvedValue(result('Frame-test answer'));
+  let resized: () => void = () => undefined;
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      constructor(listener: () => void) {
+        resized = listener;
+      }
+      observe() {}
+      disconnect() {}
+    },
+  );
+  const routine = initialRealWorkspace('2026-09-10T00:00:00Z').routines[0]!;
+  const node = {
+    scrollHeight: 1200,
+    clientHeight: 300,
+    scrollTop: 0,
+    scrollTo: ({ top }: { top: number }) => {
+      node.scrollTop = Math.min(top, 900);
+    },
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  };
+  const props = { routine, onSettings: vi.fn() };
+  await act(() => {
+    ui = create(<BriefingChat {...props} />, {
+      createNodeMock: (e) =>
+        (e.props as { className?: string }).className === 'briefing-chat-log' ? node : null,
+    });
+  });
+  await send('Frame test');
+  node.scrollTop = 410;
+  const log = () => ui.root.findByProps({ 'aria-label': '브리핑 대화 기록' });
+  await act(() => log().props.onScroll({ currentTarget: node }));
+
+  // display: none on the frame: no box, scroll position reset by the browser, no React update.
+  node.clientHeight = 0;
+  node.scrollTop = 0;
+  resized();
+  await act(() => log().props.onScroll({ currentTarget: node }));
+  node.clientHeight = 300;
+  resized();
+
+  expect(node.scrollTop).toBe(410);
+  // The value written while the position is being put back is not recorded as the reader's.
+  node.scrollTop = 5;
+  await act(() => log().props.onScroll({ currentTarget: node }));
+  node.clientHeight = 0;
+  resized();
+  node.clientHeight = 300;
+  resized();
+  expect(node.scrollTop).toBe(410);
+  vi.unstubAllGlobals();
+});
+it('offers the Project Chat "latest" control only while the newest message is out of view', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const routine = initialRealWorkspace('2026-09-10T00:00:00Z').routines[0]!;
+  const scrolls: { top: number; behavior?: string }[] = [];
+  const node = {
+    scrollHeight: 2400,
+    clientHeight: 400,
+    scrollTop: 2000,
+    scrollTo: (target: { top: number; behavior?: string }) => {
+      scrolls.push(target);
+      node.scrollTop = Math.min(target.top, node.scrollHeight - node.clientHeight);
+    },
+  };
+  await act(() => {
+    ui = create(<BriefingChat routine={routine} onSettings={vi.fn()} />, {
+      createNodeMock: (e) =>
+        (e.props as { className?: string }).className === 'briefing-chat-log' ? node : null,
+    });
+  });
+  const jump = () => ui.root.findAllByProps({ className: 'briefing-chat-jump' });
+  const scrollTo = async (top: number) => {
+    node.scrollTop = top;
+    await act(() =>
+      ui.root
+        .findByProps({ 'aria-label': '브리핑 대화 기록' })
+        .props.onScroll({ currentTarget: node }),
+    );
+  };
+  // Reading the newest message: no control. The same 96px tolerance as Project Chat applies.
+  expect(jump()).toHaveLength(0);
+  await scrollTo(1910);
+  expect(jump()).toHaveLength(0);
+  expect(isNearLatestMessage({ scrollTop: 1903, scrollHeight: 2400, clientHeight: 400 })).toBe(
+    false,
+  );
+  // Scrolled up into the history: the control appears, labelled like the Project Chat one.
+  await scrollTo(600);
+  expect(jump()).toHaveLength(1);
+  expect(jump()[0]!.props['aria-label']).toBe('최신 메시지로 이동');
+  expect(JSON.stringify(ui.toJSON())).toContain('최신');
+  // One click returns to the newest message and the control goes away.
+  await act(() => jump()[0]!.props.onClick());
+  expect(scrolls.at(-1)).toEqual({ top: 2400, behavior: 'smooth' });
+  expect(jump()).toHaveLength(0);
+  const css = readFileSync(new URL('./workspace.css', import.meta.url), 'utf8');
+  expect(css).toMatch(/\.briefing-chat-log-region\s*\{[^}]*position: relative;/u);
+  expect(css).toMatch(
+    /\.briefing-chat-jump\s*\{[^}]*position: absolute;[^}]*border-radius: 999px;/u,
+  );
+});
+it('finishes a hidden AI assistant response without cancelling or sending it twice', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  let finish!: (value: unknown) => void;
+  vi.mocked(workspaceStream).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const props = {
+    routine: initialRealWorkspace('2026-09-10T00:00:00Z').routines[0]!,
+    onSettings: vi.fn(),
+  };
+  await act(() => {
+    ui = create(<BriefingChat {...props} />);
+  });
+  await send('Finish even while hidden');
+  const signal = vi.mocked(workspaceStream).mock.calls[0]![2] as AbortSignal;
+  await act(() => ui.update(<BriefingChat {...props} visible={false} />));
+  expect(signal.aborted).toBe(false);
+  await act(() => finish(result('Completed in background')));
+  await act(() => ui.update(<BriefingChat {...props} visible />));
+  expect(text()).toContain('Completed in background');
+  expect(workspaceStream).toHaveBeenCalledOnce();
+});
+it('keeps only the input above the composer: restore note in the log, no duplicate progress line, context as a chip', async () => {
+  const messages = [{ role: 'user', text: 'Before update', createdAt: '2026-09-13T00:00:00Z' }];
+  vi.mocked(sourceRequest).mockImplementation(async (path) =>
+    path === '/assistant/conversation/get' ? { messages, otherScopeMessages: 38 } : {},
+  );
+  await mount();
+  let resolve!: (value: unknown) => void;
+  vi.mocked(workspaceStream).mockImplementationOnce(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
+  await click('AI 비서');
+  const chat = activeChat();
+  const within = (node: ReturnType<typeof activeChat>) =>
+    JSON.stringify(node.children.map((c) => (typeof c === 'string' ? c : c.props)));
+  const log = () => chat.findByProps({ 'aria-label': '브리핑 대화 기록' });
+  const form = () => chat.findByType('form');
+  // The restore note belongs to the restored conversation, not to the space above the input.
+  expect(
+    JSON.stringify(
+      log()
+        .findAllByProps({ role: 'note' })
+        .map((n) => n.children),
+    ),
+  ).toContain('38');
+  expect(
+    form()
+      .findAll((n) => n.props.role === 'note' || n.props.role === 'status')
+      .map(within)
+      .join(''),
+  ).not.toContain('이전 설정의 대화');
+  // The context meter is a chip in the action row with the send button, not a line of its own.
+  const actions = form().findByProps({ className: 'briefing-chat-composer-actions' });
+  expect(actions.findAllByProps({ className: 'briefing-context-empty' })).toHaveLength(1);
+  await send('Long question');
+  // While a turn runs the progress is shown once, in the conversation, with the elapsed time.
+  expect(chat.findAllByProps({ className: 'briefing-chat-status' })).toHaveLength(0);
+  const bubble = chat.findByProps({ className: 'briefing-chat-message assistant thinking' });
+  expect(bubble.findByType('header').findByType('span').children.join('')).toMatch(
+    /turn active · \d+초/,
+  );
+  await act(() => resolve(result('Done answer')));
+  // Completion and failure messages keep their line.
+  expect(chat.findByProps({ className: 'briefing-chat-status' }).children.join('')).toContain(
+    '답변 완료',
+  );
 });

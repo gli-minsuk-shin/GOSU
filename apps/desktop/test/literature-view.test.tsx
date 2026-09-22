@@ -181,14 +181,17 @@ describe('Literature workspace', () => {
       },
     });
 
-    expect(notice).toContain('Deep search complete: 25 selected');
+    expect(notice).toContain('Search complete: 25 candidates screened, 25 selected.');
+    expect(notice).toContain('23 added, 0 updated, 1 already saved.');
     expect(notice).toContain('1 ambiguous result was skipped');
     expect(notice).toContain('without changing saved papers');
     expect(notice).toContain('arxiv:2608.00001');
     expect(notice).toContain('DOI 10.1000/gosu.conflict');
-    expect(notice).toContain('Reduced signal coverage');
-    expect(notice).toContain('Semantic Scholar Unavailable');
-    expect(notice).toContain('available: Relevance, Citation Authority');
+    expect(notice).toContain(
+      'Partly missing: Semantic Scholar did not respond; Crossref newest-first list missing.',
+    );
+    expect(notice).toContain('Signals used: Relevance, Citation authority.');
+    expect(notice).not.toMatch(/Unavailable|Deep search/u);
   });
 
   it('bounds conflict identifiers while reporting the omitted count', () => {
@@ -246,8 +249,9 @@ describe('Literature workspace', () => {
     expect(html).toContain('leaving both fields blank uses the normalized search query');
     expect(html).toContain('aria-label="Search tag filter"');
     expect(html).toContain('All search tags');
-    expect(html).toContain('Fixed policy v3');
-    expect(html).toContain('Search guidance · ranking policy v3');
+    expect(html).toContain('Fixed policy v4');
+    expect(html).toContain('Search guidance · ranking policy v4');
+    expect(html).toContain('never topped up with unrelated works');
     expect(html).toContain('<details class="literature-search-guidance">');
     expect(html).not.toContain('One search screens relevance');
     expect(html).toContain('Core is a maximum, never a quota');
@@ -557,16 +561,23 @@ describe('Literature workspace', () => {
         ...rawPaper,
         discovery: rawPaper.discovery ? { ...rawPaper.discovery, policyVersion: 1 } : null,
       }),
-    ).toBe('Legacy policy v1 — search again to apply v3');
+    ).toBe('Legacy policy v1 — search again to apply v4');
+    expect(
+      literatureCoreGateSummary({
+        ...rawPaper,
+        discovery: rawPaper.discovery ? { ...rawPaper.discovery, policyVersion: 5 } : null,
+      }),
+    ).toBe('Policy balanced-three-layer v5 — current v4 Core gate is not interpreted');
+    // Version 4 kept the Core and Rising gates of version 3, so a v3 label is explained, not retired.
     expect(
       literatureCoreGateSummary({
         ...rawPaper,
         discovery: rawPaper.discovery ? { ...rawPaper.discovery, policyVersion: 4 } : null,
       }),
-    ).toBe('Policy balanced-three-layer v4 — current v3 Core gate is not interpreted');
+    ).toBe(literatureCoreGateSummary(rawPaper));
   });
 
-  it('separates current v3 Core counts from historical or other-policy labels', () => {
+  it('separates current Core counts (v3 and v4 share the gates) from historical or other-policy labels', () => {
     const legacy = {
       ...rawPaper,
       id: '44444444-4444-4444-8444-444444444444',

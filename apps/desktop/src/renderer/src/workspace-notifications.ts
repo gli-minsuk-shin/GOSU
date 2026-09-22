@@ -5,6 +5,7 @@ import type { ProjectChatEvent } from '../../shared/project-chat-contracts';
 import type { BriefingNotificationSnapshot } from '../../../../briefing-lab/src/briefing-notifications';
 
 export type NotificationTarget =
+  | Readonly<{ kind: 'personal-task'; taskId: string; dueDate: string }>
   | Readonly<{ kind: 'task'; projectId: string; taskId: string; dueDate: string }>
   | Readonly<{ kind: 'chat'; projectId: string; sessionId: string }>
   | Readonly<{ kind: 'connections' }>
@@ -165,7 +166,8 @@ export function buildWorkspaceNotifications(
     input.projects.filter((p) => !p.archivedAt && !p.trashedAt).map((p) => [p.id, p]),
   );
   const deadlines = input.tasks.flatMap((task): WorkspaceNotification[] => {
-    const project = projects.get(task.projectId);
+    const project =
+      task.projectId === null ? { id: '', name: '개인 할 일' } : projects.get(task.projectId);
     const due = task.dueDate ? dayNumber(task.dueDate) : null;
     if (!project || task.archivedAt || task.status === 'done' || due === null || due - today > 7)
       return [];
@@ -180,7 +182,10 @@ export function buildWorkspaceNotifications(
         detail: '',
         projectName: project.name,
         severity: days < 0 ? 'error' : days <= 1 ? 'warning' : 'info',
-        target: { kind: 'task', projectId: project.id, taskId: task.id, dueDate: task.dueDate! },
+        target:
+          task.projectId === null
+            ? { kind: 'personal-task', taskId: task.id, dueDate: task.dueDate! }
+            : { kind: 'task', projectId: project.id, taskId: task.id, dueDate: task.dueDate! },
         dueDate: task.dueDate!,
         daysUntilDue: days,
         phase,

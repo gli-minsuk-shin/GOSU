@@ -26,6 +26,9 @@
   --model-amber: #b86c0b;
   --model-red: #b63d37;
   --model-purple: #7755ae;
+  /* AI work is violet, the one hue nothing else on a card uses, so it reads from across the canvas. */
+  --model-ai: #6a3fd6;
+  --model-ai-soft: #ebe4fb;
   --model-health-good: #4f8b16;
   --model-health-low: #c08311;
   --model-health-bad: #c23f38;
@@ -116,7 +119,7 @@ textarea:focus-visible {
   position: sticky;
   top: 16px;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   height: calc(100dvh - 32px);
   min-width: 0;
   overflow: hidden;
@@ -219,7 +222,7 @@ textarea:focus-visible {
 .model-tree-folder-row {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 28px;
+  grid-template-columns: minmax(0, 1fr) auto 28px;
   align-items: center;
   min-width: 0;
 }
@@ -458,6 +461,7 @@ textarea:focus-visible {
 .model-session-sidebar--collapsed > .model-session-tree,
 .model-session-sidebar--collapsed > .model-trash-panel,
 .model-session-sidebar--collapsed > .model-session-modules,
+.model-session-sidebar--collapsed > .panel-resizer--session-footer,
 .model-session-sidebar--collapsed > footer {
   display: none;
 }
@@ -489,6 +493,24 @@ textarea:focus-visible {
 
 .panel-resizer--model-sessions {
   grid-column: 2;
+}
+
+/* The horizontal separator between the model tree and the sidebar footer. */
+.panel-resizer--session-footer {
+  grid-column: 1;
+  width: auto;
+  min-height: 0;
+  height: 7px;
+  cursor: row-resize;
+}
+
+.panel-resizer--session-footer::before {
+  inset: 3px 0;
+}
+
+.panel-resizer--session-footer:hover::before,
+.panel-resizer--session-footer:focus-visible::before {
+  inset: 2px 0;
 }
 
 .panel-resizer::before {
@@ -775,15 +797,65 @@ textarea:focus-visible {
 
 .model-session-sidebar:not(.model-session-sidebar--collapsed) > footer {
   display: grid;
-  gap: 8px;
-  padding: 10px;
-  border-top: 1px solid var(--model-border);
+  align-content: start;
+  gap: 6px;
+  min-height: 0;
+  padding: 8px 10px 10px;
+  overflow-y: auto;
   background: var(--model-surface);
 }
 
-.model-session-sidebar:not(.model-session-sidebar--collapsed) > footer .attachment-button {
-  justify-content: center;
-  width: 100%;
+/* Import status and builder LLM fold to one line each; the import button is a small pill beside
+   its note instead of a full-width bar. */
+.model-session-section > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 2px;
+  color: var(--model-text-muted);
+  font-size: var(--font-caption);
+  cursor: pointer;
+}
+
+.model-session-section > summary strong {
+  color: var(--model-green);
+  font-size: var(--font-caption);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.model-session-section > summary span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-session-section[open] > summary {
+  margin-bottom: 4px;
+}
+
+.model-session-section .model-import-activity > strong {
+  display: none;
+}
+
+.model-session-footer-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.model-session-footer-actions .attachment-button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: var(--font-control);
+}
+
+.model-session-footer-actions .model-import-boundary {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .model-builder-selection {
@@ -1344,6 +1416,12 @@ select {
   border-top: 1px solid var(--model-border);
   background: var(--model-surface);
 }
+.model-lab-grid.model-lab-grid--architecture {
+  grid-template-columns: minmax(0, 1fr);
+}
+.model-lab-grid--architecture > .module-inspector {
+  display: none;
+}
 
 .model-lab-workbench {
   display: grid;
@@ -1487,14 +1565,55 @@ select {
 
 .graph-toolbar {
   z-index: 3;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: 6px 8px;
+  min-height: 46px;
+  min-block-size: max-content;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--model-border);
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.graph-toolbar__primary,
+.graph-toolbar__diagnostics {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 8px;
-  min-height: 46px;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--model-border);
-  background: rgba(255, 255, 255, 0.88);
+  width: 100%;
+  min-width: 0;
+}
+
+.graph-toolbar__primary .focus-mode-toggle {
+  margin-left: auto;
+}
+
+.graph-toolbar .graph-toolbar__primary .segmented-control {
+  width: auto;
+  max-width: 100%;
+}
+
+.graph-toolbar .graph-toolbar__diagnostics label {
+  width: auto;
+  min-width: 0;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.graph-toolbar .graph-toolbar__diagnostics select {
+  width: 190px;
+  max-width: 100%;
+}
+
+.graph-toolbar .graph-toolbar__diagnostics .checkpoint-control {
+  margin-left: 0;
+}
+
+.graph-toolbar .graph-toolbar__diagnostics input {
+  width: 90px;
+  min-height: 28px;
 }
 
 .segmented-control {
@@ -1976,6 +2095,199 @@ select {
 .module-node__content:focus-visible {
   outline: 4px solid rgba(49, 104, 189, 0.45);
   outline-offset: -4px;
+}
+
+/* Architecture-first cards: equations and source code live in the detail dialog. */
+.module-node--story .module-node__content {
+  display: grid;
+  grid-template-rows: 18px 38px minmax(0, 1fr) 44px 24px;
+  gap: 8px;
+  height: 240px;
+  padding: 12px 14px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+.module-node--story.module-node--forward {
+  border-top-color: var(--model-green);
+}
+.module-node--story .module-node__topline {
+  margin: 0;
+  font-size: 10px;
+}
+.module-node__stage {
+  display: inline-block;
+  margin-right: 5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #edf3e6;
+  color: #456521;
+}
+.module-node__loop {
+  border-radius: 5px;
+  padding: 1px 6px;
+  background: #eee8f5;
+  color: #714c98;
+}
+.module-node__topline-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+/* This module (or a step inside it) has a saved Model Copilot discussion. */
+/* A module Model Copilot has explained: a filled violet tag in the top line and a violet ring around
+   the whole card, so the marks can be found without reading the cards. */
+.module-node__ai-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--model-ai);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0.03em;
+  text-transform: none;
+  white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(64, 32, 140, 0.35);
+}
+
+.module-node__ai-badge > span[aria-hidden='true'] {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.module-node--explained {
+  border-color: var(--model-ai);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--model-ai) 45%, transparent),
+    0 8px 22px rgba(46, 57, 48, 0.11);
+}
+
+.module-node--explained.module-node--selected {
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--model-ai) 45%, transparent),
+    0 0 0 5px rgba(79, 127, 0, 0.22),
+    0 10px 24px rgba(46, 57, 48, 0.13);
+}
+
+.module-node--composite.module-node--explained {
+  border-color: var(--model-ai);
+}
+
+.module-node--composite.module-node--explained.module-node--selected {
+  box-shadow:
+    7px -7px 0 -1px var(--model-surface),
+    7px -7px 0 0 color-mix(in srgb, var(--model-green) 55%, var(--model-border)),
+    14px -14px 0 -1px var(--model-surface),
+    14px -14px 0 0 color-mix(in srgb, var(--model-green) 30%, var(--model-border)),
+    0 0 0 2px color-mix(in srgb, var(--model-ai) 45%, transparent),
+    0 0 0 5px rgba(79, 127, 0, 0.22),
+    0 14px 30px rgba(46, 57, 48, 0.16);
+}
+.module-node--story .module-node__story-title {
+  margin: 0;
+  font-size: 15px;
+  line-height: 19px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.module-node__purpose {
+  margin: 0;
+  color: var(--model-text-muted);
+  font-size: 12px;
+  line-height: 16px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.module-node__reasoning {
+  min-height: 0;
+  overflow: hidden;
+}
+.module-node__reasoning .module-node__purpose {
+  -webkit-line-clamp: 1;
+}
+.module-node__key-equation {
+  max-height: 30px;
+  overflow: hidden;
+  color: var(--model-green);
+  font-size: 14px;
+}
+.module-node__key-equation .katex-display {
+  margin: 3px 0;
+  text-align: left;
+}
+.module-node__shape-notes {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--model-text-muted);
+}
+.module-node__story-footer > small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.module-node__io {
+  display: grid;
+  gap: 3px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: var(--model-surface-soft);
+}
+.module-node__io > span {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 5px;
+  align-items: center;
+}
+.module-node__io small {
+  color: var(--model-text-muted);
+  font-size: 10px;
+}
+.module-node__io code {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: #3e6593;
+}
+.module-node__story-footer {
+  display: flex;
+  gap: 6px;
+  justify-content: space-between;
+  align-items: center;
+  border-top: 1px solid var(--model-border);
+  padding-top: 5px;
+  font-size: 10px;
+}
+.module-node__story-footer small {
+  font-size: 10px;
+  color: var(--model-text-muted);
+}
+.module-node__story-footer b {
+  flex-shrink: 0;
+  color: var(--model-green);
+}
+.module-node__story-footer .module-node__dimension-warning {
+  color: #a05e24;
+  font-weight: 600;
+}
+.signal-edge__label {
+  max-width: 110px;
+  overflow: hidden;
+}
+.signal-edge__label > span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .module-node--selected {
@@ -2635,6 +2947,26 @@ select {
   max-height: calc(100dvh - 40px);
 }
 
+/* With the Copilot discussion beside it, the dialog is wider and tall enough to read an answer. */
+.module-detail-dialog--copilot {
+  width: min(1420px, calc(100vw - 40px));
+}
+
+.module-detail-dialog--copilot > article {
+  height: min(900px, calc(100dvh - 40px));
+}
+
+.module-detail-dialog__columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+}
+
+.module-detail-dialog--copilot .module-detail-dialog__columns {
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 440px);
+}
+
 .module-detail-dialog__header {
   display: flex;
   align-items: center;
@@ -2660,6 +2992,78 @@ select {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.module-detail-nav {
+  display: flex;
+  gap: 6px;
+}
+
+.module-detail-nav__slot {
+  position: relative;
+}
+
+.module-detail-nav__button {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--model-border-strong);
+  border-radius: 12px;
+  background: var(--model-surface);
+  font-size: var(--font-title);
+  line-height: 1;
+}
+
+.module-detail-nav__button:hover:not([aria-disabled='true']) {
+  border-color: var(--model-green);
+  color: var(--model-green);
+}
+
+.module-detail-nav__button[aria-disabled='true'] {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.module-detail-nav__menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 2;
+  display: grid;
+  min-width: 240px;
+  max-width: min(360px, 80vw);
+  max-height: 320px;
+  margin: 0;
+  padding: 6px;
+  overflow: auto;
+  list-style: none;
+  border: 1px solid var(--model-border-strong);
+  border-radius: 12px;
+  background: var(--model-surface);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 14%);
+}
+
+.module-detail-nav__menu button {
+  display: grid;
+  width: 100%;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+}
+
+.module-detail-nav__menu button:hover,
+.module-detail-nav__menu button:focus-visible {
+  background: var(--model-green-soft);
+}
+
+.module-detail-nav__menu small {
+  color: var(--model-text-muted);
+  overflow-wrap: anywhere;
 }
 
 .module-detail-evidence-summary {
@@ -2688,7 +3092,9 @@ select {
 .module-detail-dialog__body {
   display: grid;
   grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  align-content: start;
   gap: 18px;
+  min-height: 0;
   padding: 22px 24px 26px;
   overflow: auto;
 }
@@ -2706,14 +3112,421 @@ select {
 }
 
 .module-detail-notes p {
-  margin: 12px 0 0;
+  margin: 8px 0 0;
   color: var(--model-text-muted);
   line-height: 1.65;
+  white-space: pre-line;
+}
+
+.module-detail-notes h4 {
+  margin: 16px 0 0;
+  color: var(--model-text);
+  font-size: var(--font-control);
+  font-weight: 780;
+}
+
+.module-detail-notes__list,
+.module-detail-notes__steps {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--model-text-muted);
+  line-height: 1.6;
+}
+
+.module-detail-notes__steps li {
+  padding-left: 2px;
+}
+
+.module-detail-notes__steps code {
+  display: block;
+  color: var(--model-text);
+  font-size: var(--font-meta);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.module-detail-notes__steps span {
+  display: block;
+}
+
+.module-detail-notes__caveat {
+  display: block;
+  margin-top: 14px;
+  color: var(--model-text-muted);
+  line-height: 1.5;
+}
+
+/* The saved Model Copilot explanation, first in the explanation box (it was only in the Copilot
+   panel after 0.58.128). Same violet as the card mark. */
+.module-detail-notes__ai {
+  margin: 10px 0 4px;
+  padding: 12px 14px 14px;
+  border: 1px solid color-mix(in srgb, var(--model-ai) 35%, var(--model-border));
+  border-left: 4px solid var(--model-ai);
+  border-radius: 0 12px 12px 0;
+  background: var(--model-surface);
+}
+
+.module-detail-notes .module-detail-notes__ai-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  color: var(--model-ai);
+}
+
+.module-detail-notes__ai-title small {
+  color: var(--model-text-muted);
+  font-weight: 600;
+}
+
+.module-detail-notes__ai-mark {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.module-detail-notes .module-detail-notes__ai-question {
+  margin-top: 12px;
+  color: var(--model-text);
+  white-space: pre-wrap;
+}
+
+.module-detail-notes__ai .module-detail-ai__answer {
+  margin-top: 10px;
+  color: var(--model-text);
 }
 
 .module-detail-formula {
   grid-column: 1 / -1;
   background: var(--model-surface);
+}
+
+.module-detail-flow,
+.module-detail-parent {
+  min-width: 0;
+  margin: 0;
+  padding: 18px;
+  border: 1px solid var(--model-border);
+  border-radius: 16px;
+  background: var(--model-surface-soft);
+}
+
+.module-detail-parent {
+  grid-column: 1 / -1;
+}
+
+.module-detail-flow__columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.module-detail-flow ul {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.module-detail-flow li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  color: var(--model-text-muted);
+  font-size: var(--font-control);
+}
+
+.module-detail-flow li code {
+  color: var(--model-text);
+  font-weight: 750;
+}
+
+.module-detail-flow p {
+  margin: 8px 0 0;
+  color: var(--model-text-muted);
+  font-size: var(--font-control);
+}
+
+.module-detail-flow__link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--model-green);
+  font-weight: 750;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+/* Model Copilot's discussion of the open module, beside the detail instead of under it. */
+.module-detail-copilot {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  border-left: 1px solid var(--model-border);
+  background: var(--model-surface-soft);
+}
+
+.module-detail-copilot__heading {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 18px 12px;
+  border-bottom: 1px solid var(--model-border);
+}
+
+.module-detail-copilot__heading h3 {
+  margin: 4px 0 0;
+  font-size: var(--font-body-large);
+}
+
+.module-detail-copilot__heading .quiet-button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.module-detail-copilot__thread {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0 18px 14px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.module-detail-copilot__status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.module-detail-copilot__status i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--model-green);
+  animation: module-detail-copilot-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes module-detail-copilot-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.module-detail-copilot__footer {
+  flex: 0 0 auto;
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--model-border);
+  background: var(--model-surface);
+}
+
+.module-detail-copilot__footer .module-detail-ai__error {
+  margin: 0 0 10px;
+  padding: 9px 11px;
+  border: 1px solid currentColor;
+  border-radius: 10px;
+  line-height: 1.5;
+}
+
+.module-detail-copilot__thread > p,
+.module-detail-parent > p {
+  margin: 12px 0 0;
+  color: var(--model-text-muted);
+  line-height: 1.65;
+  white-space: pre-line;
+}
+
+.module-detail-ai__answer {
+  margin-top: 12px;
+  line-height: 1.65;
+}
+
+.module-detail-ai__thread {
+  display: grid;
+  gap: 14px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.module-detail-ai__message {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--model-border);
+  border-radius: 12px;
+  background: var(--model-surface);
+}
+
+.module-detail-ai__message--user {
+  border-color: var(--model-green);
+  background: var(--model-green-soft);
+}
+
+/* Exchanges about the module that is open stand out from the rest of the conversation. */
+.module-detail-ai__message--current {
+  box-shadow: inset 3px 0 0 var(--model-green);
+}
+
+/* Which module a Copilot question was asked from, in the Copilot panel and the module panel. */
+.module-question-tag {
+  display: grid;
+  gap: 3px;
+  margin: 0 0 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--model-border);
+  border-radius: 10px;
+  background: var(--model-surface);
+}
+
+.module-question-tag--current {
+  border-color: var(--model-green);
+}
+
+.module-question-tag__eyebrow {
+  color: var(--model-text-muted);
+  font-size: var(--font-meta);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.module-question-tag__module {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 7px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--model-text);
+  font: inherit;
+  text-align: left;
+}
+
+button.module-question-tag__module {
+  color: var(--model-green);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.module-question-tag__module small {
+  color: var(--model-text-muted);
+}
+
+.module-question-tag p {
+  margin: 0;
+  color: var(--model-text-muted);
+  font-size: var(--font-control);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.module-detail-ai__role {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--model-text-muted);
+  font-size: var(--font-meta);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.module-detail-ai__message p {
+  margin: 0;
+  line-height: 1.6;
+  white-space: pre-line;
+}
+
+.module-detail-ai__message .module-detail-ai__answer {
+  margin-top: 0;
+}
+
+.module-detail-ai__ask {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.module-detail-ai__ask textarea {
+  flex: 1 1 auto;
+  min-height: 44px;
+  max-height: 160px;
+  padding: 11px 12px;
+  border: 1px solid var(--model-border-strong);
+  border-radius: 12px;
+  background: var(--model-surface);
+  font: inherit;
+  font-size: var(--font-control);
+  resize: vertical;
+}
+
+.module-detail-ai__ask button {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--model-green);
+  border-radius: 12px;
+  background: var(--model-green);
+  color: #fff;
+  font-weight: 750;
+}
+
+.module-detail-ai__ask button:disabled {
+  opacity: 0.5;
+}
+
+.module-detail-copilot__footer > small {
+  display: block;
+  margin-top: 8px;
+  color: var(--model-text-muted);
+}
+
+/* A medium window keeps the discussion on the right and puts the detail in one column. */
+@media (max-width: 1280px) {
+  .module-detail-dialog--copilot .module-detail-dialog__columns {
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+  }
+
+  .module-detail-dialog--copilot .module-detail-dialog__body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Only a narrow window stacks the discussion under the detail instead of squeezing both. */
+@media (max-width: 860px) {
+  .module-detail-dialog--copilot .module-detail-dialog__columns {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(280px, 50%);
+  }
+
+  .module-detail-copilot {
+    border-top: 1px solid var(--model-border);
+    border-left: 0;
+  }
+}
+
+.module-detail-ai__error {
+  color: var(--model-red, #b42318);
+}
+
+.module-detail-parent .formula {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--model-canvas);
 }
 
 .module-detail-formula .formula {
@@ -4458,6 +5271,93 @@ select {
   line-height: 1.35;
 }
 
+/* The "/new" and "/compact" autocomplete, above the composer row. */
+.model-chat__command-menu {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  padding: 3px;
+  border: 1px solid var(--model-border);
+  border-radius: 9px;
+  background: var(--model-surface-soft);
+  list-style: none;
+}
+
+.model-chat__command-menu button {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  min-height: 24px;
+  padding: 4px 7px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--model-text);
+  font-size: var(--font-meta);
+  font-weight: 400;
+  text-align: left;
+}
+
+.model-chat__command-menu button:hover,
+.model-chat__command-menu button:focus-visible {
+  background: var(--model-surface);
+}
+
+.model-chat__command-menu strong {
+  flex: 0 0 auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 400;
+}
+
+.model-chat__command-menu span {
+  overflow: hidden;
+  color: var(--model-text-muted);
+  font-size: var(--font-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-chat__command-status {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  color: var(--model-text-muted);
+  font-size: var(--font-meta);
+  line-height: 1.35;
+}
+
+.model-chat__command-status strong {
+  flex: 0 0 auto;
+  color: var(--model-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 400;
+}
+
+.model-chat__command-status--failed span {
+  color: var(--model-red);
+}
+
+/* Where "/new" cut the context: earlier messages stay readable above it. */
+.model-chat__context-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+  color: var(--model-text-muted);
+  font-size: var(--font-caption);
+  line-height: 1.3;
+}
+
+.model-chat__context-divider::before,
+.model-chat__context-divider::after {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--model-border);
+  content: '';
+}
+
 .model-chat__restore {
   display: none;
 }
@@ -4792,8 +5692,13 @@ select {
     padding: 14px;
   }
 
-  .module-detail-formula {
+  .module-detail-formula,
+  .module-detail-parent {
     grid-column: 1;
+  }
+
+  .module-detail-flow__columns {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .module-detail-facts,

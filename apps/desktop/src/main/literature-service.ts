@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { z } from 'zod';
 
 import {
   DeleteLiteratureRecordInputSchema,
   DeleteLiteratureRecordReceiptSchema,
+  LITERATURE_MAX_ABSTRACT_LENGTH,
   LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT,
   LITERATURE_MAX_AI_RECORDS,
   ListLiteratureInputSchema,
@@ -17,6 +19,8 @@ import {
   LiteratureSearchInputSchema,
   LiteratureSearchReceiptSchema,
   LiteratureSearchRunSchema,
+  UndoLiteratureSearchInputSchema,
+  UndoLiteratureSearchReceiptSchema,
   UpdateLiteratureAnnotationsInputSchema,
   type DeleteLiteratureRecordInput,
   type DeleteLiteratureRecordReceipt,
@@ -33,12 +37,26 @@ import {
   type LiteratureSearchInput,
   type LiteratureSearchReceipt,
   type LiteratureSearchRun,
+  type UndoLiteratureSearchInput,
+  type UndoLiteratureSearchReceipt,
   type UpdateLiteratureAnnotationsInput,
 } from '../shared/literature-contracts';
+import { canonicalLiteratureUrl } from '../shared/literature-canonical-url';
+import {
+  PAPER_LIBRARY_MAX_IMPORT,
+  PaperLibraryEntrySchema,
+  type PaperLibraryEntry,
+} from '../shared/paper-library-contracts';
+import { literatureQueryTerms } from '../shared/literature-query';
 import { resolveLiteratureSearchTags } from '../shared/literature-search-tags';
 import type { WorkspaceService } from './workspace-service';
 import { parseLiteratureBibtex, serializeLiteratureBibtex } from './literature-bibtex';
-import { LiteratureProviderError, type LiteratureProviderCandidate } from './literature-crossref';
+import {
+  literatureFingerprint,
+  LiteratureProviderError,
+  normalizeArxivCanonicalId,
+  type LiteratureProviderCandidate,
+} from './literature-crossref';
 import {
   BalancedLiteratureProvider,
   type LiteratureDiscoveryProvider,
@@ -47,6 +65,7 @@ import {
 import { LiteratureStorageError } from './literature-storage-error';
 import {
   LiteratureTransferError,
+  normalizeDoi,
   parseLiteratureCsv,
   parseLiteratureJson,
   serializeLiteratureCsv,
@@ -212,6 +231,55 @@ type LiteratureServiceOptions = Readonly<{
   now?: () => Date;
 }>;
 
+/** Public paper metadata the AI assistant observed in its own search, never model-written text. */
+export const AssistantLiteraturePaperSchema = z
+  .object({
+    title: z.string().trim().min(1).max(2_000),
+    authors: z.array(z.string().trim().min(1).max(300)).max(100),
+    publishedYear: z.number().int().min(1000).max(3000).nullable(),
+    venue: z.string().trim().max(1_000).nullable(),
+    abstractText: z.string().trim().max(LITERATURE_MAX_ABSTRACT_LENGTH).nullable(),
+    sourceUrl: z
+      .string()
+      .url()
+      .max(2_048)
+      .refine((value) => value.startsWith('https://'))
+      .nullable(),
+    doi: z.string().trim().max(512).nullable(),
+  })
+  .strict();
+export const AddAssistantLiteratureInputSchema = z
+  .object({
+    projectId: z.string().uuid(),
+    papers: z.array(AssistantLiteraturePaperSchema).min(1).max(12),
+  })
+  .strict();
+export type AddAssistantLiteratureInput = z.infer<typeof AddAssistantLiteratureInputSchema>;
+
+function assistantCandidate(
+  paper: z.infer<typeof AssistantLiteraturePaperSchema>,
+): LiteratureProviderCandidate {
+  const doi = normalizeDoi(paper.doi) ?? (paper.sourceUrl ? normalizeDoi(paper.sourceUrl) : null);
+  const canonicalId = normalizeArxivCanonicalId(paper.sourceUrl);
+  return {
+    provider: 'import',
+    ...(doi ? { doi } : {}),
+    ...(canonicalId ? { canonicalId } : {}),
+    fingerprint: literatureFingerprint(
+      paper.title,
+      paper.authors,
+      paper.publishedYear ?? undefined,
+    ),
+    title: paper.title,
+    authors: paper.authors,
+    ...(paper.venue ? { containerTitle: paper.venue } : {}),
+    ...(paper.publishedYear ? { publishedYear: paper.publishedYear } : {}),
+    ...(paper.abstractText ? { abstractText: paper.abstractText } : {}),
+    topics: [],
+    ...(paper.sourceUrl ? { sourceUrl: paper.sourceUrl } : {}),
+  };
+}
+
 export class LiteratureService {
   private readonly storage: LiteratureStorage;
   private readonly workspace: WorkspaceService;
@@ -264,6 +332,12 @@ export class LiteratureService {
     }
     const createdAt = this.now().toISOString();
     const searchTags = resolveLiteratureSearchTags(command.query, command.searchTags);
+    const providerQuery = literatureProviderQuery(command.query, searchTags);
+    // "논문 검색" or "find papers" names the act, not a topic. A provider still returns something
+    // for it, so refuse before a run is recorded instead of saving whatever came back.
+    if (literatureQueryTerms(providerQuery).length === 0) {
+      throw new LiteratureServiceError('literature_query_without_topic');
+    }
     const run = LiteratureSearchRunSchema.parse({
       schemaVersion: 1,
       id: randomUUID(),
@@ -300,17 +374,13 @@ export class LiteratureService {
     if (externalSignal?.aborted) controller.abort(externalSignal.reason);
     this.activeSearches.add(controller);
     try {
-      const providerResult = await this.provider.search(
-        literatureProviderQuery(command.query, searchTags),
-        run.requestedLimit,
-        {
-          signal: controller.signal,
-          fromYear: command.fromYear,
-          toYear: command.toYear,
-          authorQuery: command.authorQuery,
-          venueQuery: command.venueQuery,
-        },
-      );
+      const providerResult = await this.provider.search(providerQuery, run.requestedLimit, {
+        signal: controller.signal,
+        fromYear: command.fromYear,
+        toYear: command.toYear,
+        authorQuery: command.authorQuery,
+        venueQuery: command.venueQuery,
+      });
       const discovered = Array.isArray(providerResult)
         ? {
             candidates: providerResult as readonly LiteratureProviderCandidate[],
@@ -320,6 +390,8 @@ export class LiteratureService {
           }
         : (providerResult as LiteratureProviderSearchResult);
       const discoveryCoverage = 'coverage' in discovered ? discovered.coverage : undefined;
+      const providerFailures =
+        'providerFailures' in discovered ? (discovered.providerFailures ?? []) : [];
       await this.requireActiveProject(command.projectId);
       if (controller.signal.aborted) throw new LiteratureProviderError('cancelled');
       const receipt = await this.storage.completeLiteratureSearch(
@@ -343,6 +415,7 @@ export class LiteratureService {
         selectedCount: discovered.selectedCount,
         tierCounts: persistedTierCounts,
         ...(persistedCoverage ? { coverage: persistedCoverage } : {}),
+        ...(providerFailures.length > 0 ? { providerFailures: providerFailures.slice(0, 3) } : {}),
         run: {
           ...receipt.run,
           retrievedCount: discovered.retrievedCount,
@@ -429,6 +502,198 @@ export class LiteratureService {
     }
     await this.projectLiterature(command.projectId);
     return DeleteLiteratureRecordReceiptSchema.parse({ ...command, deleted: true });
+  }
+
+  /**
+   * The papers one search selected, best layer first, each with the canonical link GOSU would open.
+   * Project Chat hands these to the model so a reply can link real papers instead of naming them,
+   * which is also what lets the paper summary library verify and save them.
+   */
+  async papersOfSearch(input: Readonly<{ projectId: string; runId: string; limit: number }>) {
+    await this.requireActiveProject(input.projectId);
+    const tierOrder = { core: 0, rising: 1, broad: 2 } as const;
+    const selected = (await this.storage.listLiteratureRecords(input.projectId))
+      .filter((record) => record.discovery?.searchRunId === input.runId)
+      .sort(
+        (left, right) =>
+          tierOrder[left.discovery!.tier] - tierOrder[right.discovery!.tier] ||
+          left.discovery!.tierRank - right.discovery!.tierRank ||
+          left.title.localeCompare(right.title),
+      );
+    const limit = Math.max(0, Math.min(Math.trunc(input.limit), 50));
+    return {
+      papers: selected.slice(0, limit).map((record) => ({
+        title: record.title,
+        authors: record.authors.slice(0, 3),
+        year: record.publishedYear,
+        tier: record.discovery!.tier,
+        url: canonicalLiteratureUrl(record),
+      })),
+      omittedCount: Math.max(0, selected.length - limit),
+    };
+  }
+
+  /**
+   * Takes back the papers that the given searches created, as long as nobody has touched them: no
+   * review status, no manual note. AI organization alone does not protect a paper, because it runs
+   * by itself after a search. Removal is the same soft delete as "Delete paper", so a later search
+   * can bring a paper back.
+   */
+  async undoSearchAdditions(
+    input: UndoLiteratureSearchInput,
+  ): Promise<UndoLiteratureSearchReceipt> {
+    const command = UndoLiteratureSearchInputSchema.parse(input);
+    await this.requireActiveProject(command.projectId);
+    const runs = (await this.storage.listLiteratureSearchRuns(command.projectId)).filter(
+      (run) => command.runIds.includes(run.id) && run.status === 'complete' && run.completedAt,
+    );
+    if (runs.length !== new Set(command.runIds).size) {
+      throw new LiteratureServiceError('literature_record_not_found');
+    }
+    const completedAtByRun = new Map(runs.map((run) => [run.id, run.completedAt]));
+    const created = (await this.storage.listLiteratureRecords(command.projectId)).filter(
+      (record) =>
+        record.discovery !== null &&
+        record.discovery !== undefined &&
+        completedAtByRun.get(record.discovery.searchRunId) === record.createdAt,
+    );
+    const deletedAt = this.now().toISOString();
+    let removedCount = 0;
+    for (const record of created) {
+      const untouched =
+        record.reviewStatus === 'unreviewed' &&
+        record.manualAnnotations.topics.length === 0 &&
+        record.manualAnnotations.summary === '' &&
+        record.manualAnnotations.relevance === '';
+      if (
+        untouched &&
+        (await this.storage.deleteLiteratureRecord(
+          command.projectId,
+          record.id,
+          record.version,
+          deletedAt,
+        ))
+      ) {
+        removedCount += 1;
+      }
+    }
+    if (removedCount > 0) await this.projectLiterature(command.projectId);
+    return UndoLiteratureSearchReceiptSchema.parse({
+      projectId: command.projectId,
+      removedCount,
+      keptCount: created.length - removedCount,
+    });
+  }
+
+  /**
+   * Adds papers the global AI assistant found, as imported records. Existing records are matched by
+   * DOI, arXiv id or fingerprint (the same upsert as file import), so a repeat adds nothing.
+   */
+  async addFromAssistant(input: AddAssistantLiteratureInput) {
+    const command = AddAssistantLiteratureInputSchema.parse(input);
+    await this.requireActiveProject(command.projectId);
+    const added = await this.addImportedCandidates(
+      command.projectId,
+      command.papers.map(assistantCandidate),
+    );
+    return {
+      projectId: command.projectId,
+      importedCount: added.imported,
+      updatedCount: added.updated,
+      unchangedCount: added.skipped + added.alreadySaved,
+    };
+  }
+
+  /**
+   * Adds papers the user chose from the shared paper summary library. The library's own summary
+   * comes along as a labelled note and its tags as search tags; no abstract is invented.
+   */
+  async addLibraryPapers(
+    input: Readonly<{ projectId: string; papers: readonly PaperLibraryEntry[] }>,
+  ) {
+    const papers = z
+      .array(PaperLibraryEntrySchema)
+      .min(1)
+      .max(PAPER_LIBRARY_MAX_IMPORT)
+      .parse(input.papers);
+    await this.requireActiveProject(input.projectId);
+    const added = await this.addImportedCandidates(
+      input.projectId,
+      papers.map((paper) => ({
+        ...assistantCandidate({
+          title: paper.title,
+          authors: paper.authors,
+          publishedYear: paper.year,
+          venue: paper.venue,
+          abstractText: null,
+          sourceUrl: paper.sourceUrl,
+          doi: null,
+        }),
+        searchTags: { topics: paper.tags, keywords: paper.keywords },
+        ...(paper.summary
+          ? {
+              manualAnnotations: {
+                topics: [],
+                summary: `[논문 요약 보관함] ${paper.summary}`,
+                relevance: '',
+              },
+            }
+          : {}),
+      })),
+    );
+    return {
+      projectId: input.projectId,
+      importedCount: added.imported + added.updated,
+      alreadySavedCount: added.alreadySaved + added.skipped,
+    };
+  }
+
+  /**
+   * The shared tail of every "add these papers" path. Storage treats an `import` candidate as a
+   * review file: it replaces the manual notes of a record it matches. That is right for a file the
+   * user exported, and wrong for a paper an assistant or the paper library merely names again, so
+   * papers already in the table are left completely alone here.
+   */
+  private async addImportedCandidates(
+    projectId: string,
+    candidates: readonly LiteratureProviderCandidate[],
+  ) {
+    const existing = await this.storage.listLiteratureRecords(projectId);
+    const known = new Set(
+      existing.flatMap((record) => [
+        ...(record.doi ? [`doi:${record.doi.toLowerCase()}`] : []),
+        ...(record.canonicalId ? [`canonical:${record.canonicalId.toLowerCase()}`] : []),
+        `fingerprint:${record.fingerprint}`,
+      ]),
+    );
+    const fresh = candidates.filter(
+      (candidate) =>
+        !(
+          (candidate.doi && known.has(`doi:${candidate.doi.toLowerCase()}`)) ||
+          (candidate.canonicalId &&
+            known.has(`canonical:${candidate.canonicalId.toLowerCase()}`)) ||
+          known.has(`fingerprint:${candidate.fingerprint}`)
+        ),
+    );
+    const alreadySaved = candidates.length - fresh.length;
+    if (fresh.length === 0) return { imported: 0, updated: 0, skipped: 0, alreadySaved };
+    if (existing.length + fresh.length > LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT) {
+      throw new LiteratureServiceError('literature_record_limit_reached');
+    }
+    let summary: Awaited<ReturnType<LiteratureStorage['upsertLiteratureCandidates']>>;
+    try {
+      summary = await this.storage.upsertLiteratureCandidates(
+        projectId,
+        fresh,
+        this.now().toISOString(),
+      );
+    } catch (error) {
+      const persistenceError = storageFailure(error);
+      if (persistenceError) throw persistenceError;
+      throw error;
+    }
+    await this.projectLiterature(projectId);
+    return { ...summary, alreadySaved };
   }
 
   async importRecords(input: LiteratureImportRequest): Promise<LiteratureImportReceipt> {

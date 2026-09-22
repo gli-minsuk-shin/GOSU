@@ -7,6 +7,26 @@ import { workspaceStream } from './workspace-client';
 import { initialEvent } from './calendar-dates';
 import { initialWorkspace } from './fixtures';
 import { readFileSync } from 'node:fs';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { AssistantSettings } from './assistant-settings';
+import { defaultLiveSettings, defaultAssistantPreferences } from '@gosu/briefing-core';
+
+it.each([true, false])(
+  'shows email refresh availability separately from private AI consent (read=%s)',
+  (mailRead) => {
+    const routine = {
+      ...initialWorkspace().routines[0]!,
+      live: {
+        ...defaultLiveSettings(),
+        assistant: { ...defaultAssistantPreferences(), mailAi: true, mailRead },
+      },
+    };
+    const html = renderToStaticMarkup(<AssistantSettings routine={routine} onChange={vi.fn()} />);
+    expect(html.includes('메일 읽기가 꺼져 있어 이메일 조회·다시 요약은 실행되지 않습니다.')).toBe(
+      !mailRead,
+    );
+  },
+);
 vi.mock('./live-client', () => ({
   sourceRequest: vi.fn(async (path: string) =>
     path === '/calendar/catalog'
@@ -62,17 +82,6 @@ it.each(['최근 메일 중 중요한 내용 찾아줘', '오늘과 내일 일�
     expect(JSON.stringify(renderer.toJSON())).toContain('검토 필요');
   },
 );
-it('disables immediate suggestions while model settings are being saved', async () => {
-  await act(() => {
-    renderer = create(
-      <BriefingChat routine={initialWorkspace().routines[0]!} blocked onSettings={vi.fn()} />,
-    );
-  });
-  const suggestion = button('최근 메일 중 중요한 내용 찾아줘');
-  expect(suggestion.props.disabled).toBe(true);
-  await act(() => suggestion.props.onClick());
-  expect(workspaceStream).not.toHaveBeenCalled();
-});
 it('existing event metadata does not corrupt the draft and a direct Save executes once', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   const event = {
@@ -159,31 +168,6 @@ it('chat uses the shared backend agent endpoint, respects IME and does not creat
     '/assistant/queue/list',
   ]);
   expect(JSON.stringify(renderer.toJSON())).toContain('resolved');
-});
-it('preserves a draft and does not send while the title-bar model selection is being saved', async () => {
-  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
-  const routine = initialWorkspace().routines[0]!;
-  const onBusyChange = vi.fn();
-  await act(() => {
-    renderer = create(
-      <BriefingChat routine={routine} blocked onSettings={vi.fn()} onBusyChange={onBusyChange} />,
-    );
-  });
-  await act(() =>
-    renderer.root.findByType('textarea').props.onChange({ target: { value: 'Keep this draft' } }),
-  );
-  await act(() => renderer.root.findByType('form').props.onSubmit({ preventDefault: vi.fn() }));
-  expect(workspaceStream).not.toHaveBeenCalled();
-  expect(renderer.root.findByType('textarea').props.value).toBe('Keep this draft');
-  await act(() =>
-    renderer.update(
-      <BriefingChat routine={routine} onSettings={vi.fn()} onBusyChange={onBusyChange} />,
-    ),
-  );
-  expect(renderer.root.findByType('textarea').props.value).toBe('Keep this draft');
-  await act(() => renderer.root.findByType('form').props.onSubmit({ preventDefault: vi.fn() }));
-  expect(workspaceStream).toHaveBeenCalledOnce();
-  expect(onBusyChange.mock.calls.some((call) => call[0] === true)).toBe(true);
 });
 it('compact styles win the cascade and chat owns a bounded independent vertical scroller', () => {
   const app = readFileSync(new URL('./briefing-app.tsx', import.meta.url), 'utf8'),

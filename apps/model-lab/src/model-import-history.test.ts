@@ -24,6 +24,12 @@ const failedJob: ModelImportJob = {
   runLabel: 'Codex · GPT-5.6-Sol · high',
   events: ['AST selected MochiYuzuSolver.solve_path.', 'Audit rejected the final ModelIR.'],
 };
+it('persists an explicitly cancelled import without restoring it as running or complete', () => {
+  const storage = memoryStorage();
+  const job = { ...failedJob, phase: 'cancelled' as const, detail: 'Stopped by user' };
+  writeModelImportHistory(storage, [job]);
+  expect(readModelImportHistory(storage)).toEqual([job]);
+});
 
 describe('model import history', () => {
   it('persists the exact failed import receipt across a reload', () => {

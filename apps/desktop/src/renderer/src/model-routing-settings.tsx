@@ -3,6 +3,7 @@ import {
   defaultModelRouting,
   MODEL_ROUTING_USAGES,
   routedModel,
+  usageChoice,
   type ModelRouting,
 } from '@gosu/contracts';
 import type { CodexModel } from './connections-view';
@@ -10,20 +11,39 @@ import { resolveDefaultAiSelection } from './default-ai-selection';
 import './model-routing-settings.css';
 export const MODEL_USAGE_LABELS = {
   projectChat: 'Project Chat · 새 과학·연구 대화',
-  briefing: 'Briefing · 이메일·논문 요약',
+  briefing: 'Briefing · 이메일 요약',
   briefingAssistant: '전역 AI 비서 · 프로젝트·메일·일정 대화',
   lecture: '강의·문헌·실험 AI · 새 작업 기본값',
+  lightweightTasks: '가벼운 작업 · 이메일에서 일정·할 일 초안 만들기 · 오늘의 격언',
+  modelExtraction: 'Model Lab · 모델 구조 추출',
+  paperSummary: '논문 요약 AI · 논문 분석과 논문별 질의응답',
 };
+/** Briefing has no model picker of its own, so "existing" means what the routine ran before. */
+const BRIEFING_USAGES: ReadonlySet<string> = new Set([
+  'briefing',
+  'briefingAssistant',
+  'lightweightTasks',
+  'paperSummary',
+]);
 export function modelRoutingIssue(policy: ModelRouting, models: readonly CodexModel[]) {
-  for (const role of ['fast', 'strong'] as const) {
+  const extractionRole = policy.usage.modelExtraction ?? 'existing';
+  if (extractionRole !== 'existing' && !policy[extractionRole])
+    return '모델 구조 추출에 사용할 빠른 모델 또는 고성능 모델을 먼저 선택해주세요.';
+  if (routedModel(policy, 'modelExtraction')?.providerId === 'hermes')
+    return '모델 구조 추출은 Codex와 Claude Code 모델을 지원합니다.';
+  for (const role of ['lightweight', 'fast', 'strong'] as const) {
     const selection = policy[role];
     if (selection && resolveDefaultAiSelection(selection, models).issue)
-      return `${role === 'fast' ? '빠른 모델' : '고성능 모델'}의 모델 또는 추론 수준을 현재 연결에서 사용할 수 없습니다.`;
+      return `${role === 'lightweight' ? '아주 가벼운 모델' : role === 'fast' ? '빠른 모델' : '고성능 모델'}의 모델 또는 추론 수준을 현재 연결에서 사용할 수 없습니다.`;
   }
-  const lecture = routedModel(policy, 'lecture');
-  if (lecture && lecture.providerId !== 'codex')
-    return '현재 강의·문서 작업은 Codex 모델만 지원합니다. 해당 사용처를 다른 역할 또는 기존 설정으로 바꿔주세요.';
-  for (const usage of ['briefing', 'briefingAssistant'] as const)
+  if (routedModel(policy, 'lecture')?.providerId === 'hermes')
+    return '강의·문서 작업은 Codex와 Claude Code 모델을 지원합니다. 해당 사용처를 다른 역할 또는 기존 설정으로 바꿔주세요.';
+  for (const usage of [
+    'briefing',
+    'briefingAssistant',
+    'lightweightTasks',
+    'paperSummary',
+  ] as const)
     if (routedModel(policy, usage)?.providerId === 'hermes')
       return 'Briefing은 현재 Codex와 Claude Code만 지원합니다.';
   return null;
@@ -64,9 +84,14 @@ export function ModelRoutingSettings({
         </p>
       </header>
       <div className="model-routing-profiles">
-        {(['fast', 'strong'] as const).map((role) => {
+        {(['lightweight', 'fast', 'strong'] as const).map((role) => {
           const selection = draft[role],
-            label = role === 'fast' ? '빠른 모델' : '고성능 모델';
+            label =
+              role === 'lightweight'
+                ? '아주 가벼운 모델'
+                : role === 'fast'
+                  ? '빠른 모델'
+                  : '고성능 모델';
           const selected = models.find(
             (m) =>
               m.modelId === selection?.modelId &&
@@ -75,7 +100,13 @@ export function ModelRoutingSettings({
           const value = selection ? JSON.stringify([selection.providerId, selection.modelId]) : '';
           return (
             <fieldset key={role}>
-              <legend>{role === 'fast' ? '⚡ 빠른 모델' : '◈ 고성능 모델'}</legend>
+              <legend>
+                {role === 'lightweight'
+                  ? '⚡ 아주 가볍고 빠른 모델'
+                  : role === 'fast'
+                    ? '⚡ 빠른 모델'
+                    : '◈ 고성능 모델'}
+              </legend>
               <label>
                 {label} 선택
                 <select
@@ -93,7 +124,11 @@ export function ModelRoutingSettings({
                         ? {
                             providerId: model.providerId ?? 'codex',
                             modelId: model.modelId,
-                            reasoningOptionId: null,
+                            reasoningOptionId:
+                              role === 'lightweight' &&
+                              model.reasoningOptions.some((o) => o.id === 'low')
+                                ? 'low'
+                                : null,
                           }
                         : null,
                     });
@@ -153,7 +188,7 @@ export function ModelRoutingSettings({
             <span>{MODEL_USAGE_LABELS[usage]}</span>
             <select
               aria-label={MODEL_USAGE_LABELS[usage]}
-              value={draft.usage[usage]}
+              value={usageChoice(draft, usage)}
               disabled={loading || busy}
               onChange={(e) =>
                 setDraft({
@@ -166,16 +201,25 @@ export function ModelRoutingSettings({
               }
             >
               <option value="fast">빠른 모델</option>
+              {usage !== 'modelExtraction' && <option value="lightweight">아주 가벼운 모델</option>}
               <option value="strong">고성능 모델</option>
-              <option value="existing">기존 설정</option>
+              <option value="existing">
+                {BRIEFING_USAGES.has(usage) ? '기존 설정 · 루틴이 전에 쓰던 모델' : '기존 설정'}
+              </option>
             </select>
           </label>
         ))}
       </div>
       <p className="model-routing-note">
-        대화·루틴에서 직접 선택한 모델이 우선합니다. Briefing은 모델이 Auto일 때 적용됩니다. 다른
-        제공자로 바꿀 때는 Briefing 연결·전송 권한을 별도로 확인해야 합니다. 저장된 요약은 다시
-        생성하지 않습니다.
+        Model Lab 모델 구조 추출은 지정한 역할을 사용합니다. 기존 설정을 선택하면 Model Lab의 현재
+        모델 선택을 유지합니다. 저장된 구조를 재사용할 때는 새 AI 호출이 없습니다.
+      </p>
+      <p className="model-routing-note">
+        Briefing의 이메일 요약, 논문 요약 AI, 전역 AI 비서 대화, 빠른 1차 브리핑과 일정·할 일 초안은
+        모두 여기서 지정한 모델로 실행합니다. Briefing에는 모델을 따로 고르는 곳이 없습니다.
+        Briefing에서 AI 전달을 허용한 메일·일정 자료는 여기서 지정한 모델의 제공자에게 전달됩니다.
+        역할의 모델이 미지정이면 그 루틴이 전에 쓰던 모델로 실행합니다. Project Chat에서는 채팅에서
+        직접 고른 모델이 우선합니다. 저장된 요약은 다시 생성하지 않습니다.
       </p>
       {(error || message || (!loading && issue)) && (
         <p role="status">{error || message || issue}</p>

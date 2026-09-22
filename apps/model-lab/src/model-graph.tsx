@@ -1,4 +1,10 @@
-import { uiText, useUiText } from '@gosu/ui/language';
+import {
+  getUiLanguage,
+  uiText,
+  useUiLanguage,
+  useUiText,
+  type UiLanguage,
+} from '@gosu/ui/language';
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Background,
@@ -13,7 +19,7 @@ import {
   type Edge,
   type EdgeProps,
 } from '@xyflow/react';
-import { formulaDisplayRows } from './formula';
+import { englishGraphName } from './graph-presentation';
 import {
   classifyGradient,
   formatNorm,
@@ -28,6 +34,7 @@ import {
   type ModuleFlowNode,
   type SubgraphBoundaryFlowNode,
 } from './module-node';
+import { moduleExplanationKey } from './module-explanations';
 import type {
   GradientHealth,
   GradientObservationState,
@@ -39,8 +46,14 @@ import type {
 } from './model-lab-schema';
 import {
   homogeneousUnknownRepeatSignature,
+  repeatedModuleStepEntries,
   repeatedModuleStepStatements,
 } from './model-repeat-semantics';
+import {
+  pseudocodeStatementLatex,
+  pseudocodeStepName,
+  repeatStepExplanation,
+} from './repeat-step-description';
 export { repeatedModuleStepStatements } from './model-repeat-semantics';
 
 const nodeTypes = { module: ModuleNodeView, 'subgraph-boundary': SubgraphBoundaryNodeView };
@@ -64,6 +77,8 @@ type SignalFlowEdge = Edge<
     Pick<SignalReading, 'health' | 'quantity' | 'tensorName' | 'value'> & {
       changeKind: ModelGraphChangeKind | null;
       rowTransition: ForLoopRowTransition | null;
+      architectureOnly?: boolean;
+      bypassCards?: boolean;
     }
   >,
   'signal'
@@ -83,7 +98,7 @@ export function SignalEdgeView({
   data,
 }: EdgeProps<SignalFlowEdge>) {
   useUiText();
-  const [path, labelX, labelY] = getSmoothStepPath({
+  const [normalPath, labelX, labelY] = getSmoothStepPath({
     sourceX,
     sourceY,
     targetX,
@@ -93,10 +108,20 @@ export function SignalEdgeView({
     borderRadius: pathOptions?.borderRadius ?? 18,
     offset: pathOptions?.offset ?? 36,
   });
-  const renderedLabelX = data?.rowTransition
-    ? (sourceX + targetX) / 2 + (data.rowTransition.side === 'right' ? -92 : 92)
-    : labelX;
-  const renderedLabelY = data?.rowTransition ? (sourceY + targetY) / 2 : labelY;
+  const bypassY = Math.max(sourceY, targetY) + 180;
+  const path = data?.bypassCards
+    ? `M ${sourceX} ${sourceY} L ${sourceX + 24} ${sourceY} L ${sourceX + 24} ${bypassY} L ${targetX - 24} ${bypassY} L ${targetX - 24} ${targetY} L ${targetX} ${targetY}`
+    : normalPath;
+  const renderedLabelX = data?.bypassCards
+    ? (sourceX + targetX) / 2
+    : data?.rowTransition
+      ? (sourceX + targetX) / 2 + (data.rowTransition.side === 'right' ? -92 : 92)
+      : labelX;
+  const renderedLabelY = data?.bypassCards
+    ? bypassY
+    : data?.rowTransition
+      ? (sourceY + targetY) / 2
+      : labelY;
   return (
     <>
       <BaseEdge
@@ -113,8 +138,16 @@ export function SignalEdgeView({
             style={{
               transform: `translate(-50%, -50%) translate(${renderedLabelX}px, ${renderedLabelY}px)`,
             }}
-            title={`${data.tensorName}: ${data.quantity} ${data.value}`}
-            aria-label={`${data.tensorName}: ${data.quantity} ${data.value}`}
+            title={
+              data.architectureOnly
+                ? data.tensorName
+                : `${data.tensorName}: ${data.quantity} ${data.value}`
+            }
+            aria-label={
+              data.architectureOnly
+                ? data.tensorName
+                : `${data.tensorName}: ${data.quantity} ${data.value}`
+            }
           >
             {data.rowTransition ? (
               <span className="signal-edge__row-transition">
@@ -127,8 +160,8 @@ export function SignalEdgeView({
                 </strong>
               </span>
             ) : null}
-            <span>{data.quantity}</span>
-            <strong>{uiText(data.value)}</strong>
+            <span>{data.architectureOnly ? data.tensorName : data.quantity}</span>
+            {!data.architectureOnly && <strong>{uiText(data.value)}</strong>}
           </div>
         </EdgeLabelRenderer>
       ) : null}
@@ -217,10 +250,23 @@ type ModelGraphProps = Readonly<{
   focusMode: boolean;
   changeHighlight?: ModelGraphChangeHighlight | null;
   openModuleId: string | null;
+  /** `moduleExplanationKey`s with a saved Model Assistant discussion; those cards carry a mark. */
+  explainedKeys?: ReadonlySet<string>;
   onSelectModule: (moduleId: string) => void;
   onOpenModule: (module: ModelModule, graphModel: ModelSpec) => void;
   onToggleSubgraph: (moduleId: string) => void;
 }>;
+
+/**
+ * A drag on the canvas always moves the graph. Model Lab has no use for box selection, and React
+ * Flow turns a drag into a selection rectangle whenever it believes Shift is held (including a
+ * Shift whose key-up it never saw), so the selection key is disabled.
+ */
+export const MODEL_GRAPH_POINTER_OPTIONS = {
+  panOnDrag: true,
+  selectionOnDrag: false,
+  selectionKeyCode: null,
+} as const;
 
 export function modelGraphFitViewOptions(focusMode: boolean) {
   return focusMode
@@ -253,9 +299,7 @@ export function estimatedFormulaRowLines(row: string) {
 }
 
 export function estimatedModuleCardHeight(module: ModelModule) {
-  const rows = formulaDisplayRows(module.formula);
-  const visualFormulaLines = rows.reduce((total, row) => total + estimatedFormulaRowLines(row), 0);
-  return 132 + visualFormulaLines * 27 + (module.repeat ? 68 : 0);
+  return 248 + (module.subgraph ? 34 : 0);
 }
 
 export function formulaAwareGridPositions(modules: readonly ModelModule[]) {
@@ -840,7 +884,9 @@ export function repeatedStepName(statement: string, index: number) {
     case 'lasso-mlp-chain':
       return '2K → 4K → 2K correction MLP';
     case 'unknown':
-      return `Custom operation · step ${index + 1}`;
+      return (
+        pseudocodeStepName(repeatedStepCode(statement)) ?? `Custom operation · step ${index + 1}`
+      );
   }
 }
 
@@ -1053,7 +1099,11 @@ export function repeatedStepFormula(statement: string, index: number) {
   if (operation.type === 'lasso-mlp-chain') {
     return String.raw`H_3\leftarrow\operatorname{Linear}_{4K\to2K}\!\left(\operatorname{RMSNorm}_{4K}\!\left(\operatorname{GELU}\!\left(\operatorname{Linear}_{2K\to4K}(H_3)\right)\right)\right)`;
   }
-  return String.raw`\text{Equation not deterministically derived from step ${index + 1}}`;
+  // No exact operation parser consumed it: transcribe the statement itself, every operand kept.
+  return (
+    pseudocodeStatementLatex(repeatedStepCode(statement)) ??
+    String.raw`\text{Equation not deterministically derived from step ${index + 1}}`
+  );
 }
 
 function designOnlyStepGradient(): ModelConnection['gradient'] {
@@ -1211,9 +1261,14 @@ H_j=\widetilde H_j+C_j`,
   ];
 }
 
-function repeatedModuleDetail(model: ModelSpec, module: ModelModule): RepeatedBlockDetail | null {
+function repeatedModuleDetail(
+  model: ModelSpec,
+  module: ModelModule,
+  language: UiLanguage,
+): RepeatedBlockDetail | null {
   if (!module.repeat || module.block) return null;
-  const statements = repeatedModuleStepStatements(module);
+  const entries = repeatedModuleStepEntries(module);
+  const statements = entries.map((entry) => entry.statement);
   if (statements.length < 2) return null;
   const homogeneousUnknown = homogeneousUnknownRepeatSignature(module);
   const semanticSteps =
@@ -1282,10 +1337,16 @@ function repeatedModuleDetail(model: ModelSpec, module: ModelModule): RepeatedBl
           transform: operation,
           activation: repeatedStepActivation(statement),
           formula: repeatedStepFormula(statement, index),
-          explanation: [
-            `Operation inside one ${module.repeat?.label} iteration: ${operation}.`,
-            ...(annotation ? [`Pseudocode annotation: ${annotation}.`] : []),
-          ].join(' '),
+          explanation: repeatStepExplanation({
+            code: operation,
+            annotation: annotation.replace(/\s*#\s*/gu, ' · '),
+            repeatLabel: module.repeat!.label,
+            repeatCount: module.repeat!.count,
+            stepNumber: index + 1,
+            stepCount: statements.length,
+            context: entries[index]!.context,
+            language,
+          }),
           parameterCount: 0,
           codeReference: module.codeReference,
         };
@@ -1407,7 +1468,29 @@ function repeatedModuleDetail(model: ModelSpec, module: ModelModule): RepeatedBl
   };
 }
 
-export function composeRepeatedBlocks(model: ModelSpec): RepeatedBlockHierarchy {
+/**
+ * A module by id wherever the graph can show it: at the top level, or as a step or member inside
+ * one iteration of a repeated block. Null when the model no longer has it.
+ */
+export function findGraphModule(
+  model: ModelSpec,
+  moduleId: string,
+  language: UiLanguage = getUiLanguage(),
+): Readonly<{ module: ModelModule; graphModel: ModelSpec }> | null {
+  const hierarchy = composeRepeatedBlocks(model, language);
+  const top = hierarchy.model.modules.find((candidate) => candidate.id === moduleId);
+  if (top) return { module: top, graphModel: hierarchy.model };
+  for (const block of hierarchy.blocks) {
+    const inner = block.detailModel.modules.find((candidate) => candidate.id === moduleId);
+    if (inner) return { module: inner, graphModel: block.detailModel };
+  }
+  return null;
+}
+
+export function composeRepeatedBlocks(
+  model: ModelSpec,
+  language: UiLanguage = getUiLanguage(),
+): RepeatedBlockHierarchy {
   const grouped = new Map<string, ModelModule[]>();
   model.modules.forEach((module) => {
     if (!module.block) return;
@@ -1489,6 +1572,12 @@ export function composeRepeatedBlocks(model: ModelSpec): RepeatedBlockHierarchy 
       lane: Math.min(...members.map((module) => module.lane)),
       inputShape: entry.inputShape,
       outputShape: exit.outputShape,
+      ...(incoming.length
+        ? { inputPorts: incoming.map((c) => ({ name: `in:${c.id}`, shape: c.shape })) }
+        : {}),
+      ...(outgoing.length
+        ? { outputPorts: outgoing.map((c) => ({ name: `out:${c.id}`, shape: c.shape })) }
+        : {}),
       transform: `${members.length} internal modules per iteration`,
       activation: null,
       formula: String.raw`h^{(t+1)}=\mathcal B_{\theta}\!\left(h^{(t)}\right)`,
@@ -1503,7 +1592,7 @@ export function composeRepeatedBlocks(model: ModelSpec): RepeatedBlockHierarchy 
   });
 
   model.modules.forEach((module) => {
-    const detail = repeatedModuleDetail(model, module);
+    const detail = repeatedModuleDetail(model, module, language);
     if (detail) blocks.push(detail);
   });
 
@@ -1536,12 +1625,20 @@ export function composeRepeatedBlocks(model: ModelSpec): RepeatedBlockHierarchy 
         id: JSON.stringify(['block-edge', connection.id]),
         source: sourceBlock?.summaryModuleId ?? connection.source,
         target: targetBlock?.summaryModuleId ?? connection.target,
+        ...(sourceBlock ? { sourcePort: `out:${connection.id}` } : {}),
+        ...(targetBlock ? { targetPort: `in:${connection.id}` } : {}),
       },
     ];
   });
   const connectionByRoute = new Map<string, ModelConnection>();
   remappedConnections.forEach((connection) => {
-    const route = JSON.stringify([connection.source, connection.target]);
+    const route = JSON.stringify([
+      connection.source,
+      connection.sourcePort,
+      connection.target,
+      connection.targetPort,
+      connection.tensorName,
+    ]);
     if (!connectionByRoute.has(route)) connectionByRoute.set(route, connection);
   });
 
@@ -1913,12 +2010,17 @@ export const ModelGraph = memo(function ModelGraph({
   focusMode,
   changeHighlight,
   openModuleId,
+  explainedKeys,
   onSelectModule,
   onOpenModule,
   onToggleSubgraph,
 }: ModelGraphProps) {
   useUiText();
-  const hierarchy = useMemo(() => composeRepeatedBlocks(composition.model), [composition.model]);
+  const language = useUiLanguage();
+  const hierarchy = useMemo(
+    () => composeRepeatedBlocks(composition.model, language),
+    [composition.model, language],
+  );
   const [openBlockId, setOpenBlockId] = useState<string | null>(null);
   const [viewportResetNonce, setViewportResetNonce] = useState(0);
   const openBlock = hierarchy.blocks.find((block) => block.id === openBlockId) ?? null;
@@ -1990,6 +2092,11 @@ export const ModelGraph = memo(function ModelGraph({
   const nodes = useMemo<(ModuleFlowNode | SubgraphBoundaryFlowNode)[]>(() => {
     const openBlockPositions = formulaAwareGridPositions(graphModel.modules);
     const topLevelModules = graphModel.modules.filter((module) => !moduleExpansion.has(module.id));
+    const stageRanks = new Map(
+      [...new Set(topLevelModules.map((m) => m.stage))]
+        .sort((a, b) => a - b)
+        .map((stage, index) => [stage, index]),
+    );
     const lanePositions = formulaAwareLanePositions(topLevelModules);
     const moduleById = new Map(graphModel.modules.map((module) => [module.id, module] as const));
     const nestedPositions = new Map<string, { x: number; y: number }>();
@@ -2061,7 +2168,11 @@ export const ModelGraph = memo(function ModelGraph({
           ? openBlockPositions[moduleIndex]!
           : nested
             ? (nestedPositions.get(module.id) ?? { x: subgraphPadding, y: subgraphHeaderHeight })
-            : graphPosition(module.stage, module.lane, lanePositions),
+            : graphPosition(
+                stageRanks.get(module.stage) ?? module.stage,
+                module.lane,
+                lanePositions,
+              ),
         ...(nested ? { parentId: nested.expansion.boundaryId, extent: 'parent' as const } : {}),
         focusable: false,
         selected: compositeBlock
@@ -2069,6 +2180,9 @@ export const ModelGraph = memo(function ModelGraph({
           : moduleRepresentsSelection(module.id, selectedModuleId),
         data: {
           module,
+          stageLabel: openBlock
+            ? String(moduleIndex + 1).padStart(2, '0')
+            : `S${(stageRanks.get(module.stage) ?? module.stage) + 1}`,
           changeKind,
           health: moduleGradientHealth(graphModel, module.id, probe, checkpointIndex),
           signalMode,
@@ -2076,6 +2190,12 @@ export const ModelGraph = memo(function ModelGraph({
           selectionTargetId: compositeBlock?.memberModuleIds[0] ?? selectionTargetId(module.id),
           detailExpanded: openModuleId === module.id,
           detailDialogId: 'model-module-detail-dialog',
+          // A collapsed loop is marked when any step of its iteration has been discussed.
+          explained: explainedKeys
+            ? (compositeBlock?.detailModel.modules ?? [module]).some((candidate) =>
+                explainedKeys.has(moduleExplanationKey(candidate)),
+              )
+            : false,
           navigationTargets,
           compositeBlock: compositeBlock
             ? {
@@ -2119,6 +2239,7 @@ export const ModelGraph = memo(function ModelGraph({
     blockBySummaryModuleId,
     changedModuleIds,
     changedStepIds,
+    explainedKeys,
     graphModel,
     moduleExpansion,
     onOpenModule,
@@ -2150,6 +2271,8 @@ export const ModelGraph = memo(function ModelGraph({
       const reading = connectionSignalReading(connection, probe, checkpointIndex, signalMode);
       const sourceIndex = moduleIndexById.get(connection.source);
       const targetIndex = moduleIndexById.get(connection.target);
+      const sourceModule = graphModel.modules.find((m) => m.id === connection.source);
+      const targetModule = graphModel.modules.find((m) => m.id === connection.target);
       const rowTransition =
         openBlock && sourceIndex !== undefined && targetIndex !== undefined
           ? forLoopRowTransition(sourceIndex, targetIndex)
@@ -2187,6 +2310,16 @@ export const ModelGraph = memo(function ModelGraph({
           value: reading.value,
           changeKind,
           rowTransition,
+          architectureOnly: signalMode === 'forward',
+          bypassCards:
+            signalMode === 'forward' &&
+            !openBlock &&
+            Boolean(
+              sourceModule &&
+              targetModule &&
+              sourceModule.lane === targetModule.lane &&
+              targetModule.stage > sourceModule.stage + 1,
+            ),
         },
         markerEnd: {
           type: MarkerType.ArrowClosed,
@@ -2253,7 +2386,7 @@ export const ModelGraph = memo(function ModelGraph({
                 ? uiText('INSIDE REPEATED FOR-LOOP')
                 : uiText('INSIDE COMPOSITE BLOCK')}
             </small>
-            <strong>{openBlock.label}</strong>
+            <strong>{englishGraphName(openBlock.label, openBlock.id, 'Repeated Block')}</strong>
             <b>
               {uiText('One iteration · ')}
               {openBlock.memberModuleIds.length}
@@ -2300,11 +2433,13 @@ export const ModelGraph = memo(function ModelGraph({
               </em>
             ) : null}
             {signalMode === 'backward' ? <em>{backwardSignalNote(graphModel, probe)}</em> : null}
-            <em className="model-graph__order-note">
-              {uiText(
-                'Follow STEP numbers. Each NEXT ROW arrow turns down on the same side, then the next row runs in the opposite direction.',
-              )}
-            </em>
+            {graphModel.modules.length > subgraphColumns && (
+              <em className="model-graph__order-note">
+                {uiText(
+                  'Follow STEP numbers. Each NEXT ROW arrow turns down on the same side, then the next row runs in the opposite direction.',
+                )}
+              </em>
+            )}
           </span>
         </div>
       ) : null}
@@ -2368,6 +2503,7 @@ export const ModelGraph = memo(function ModelGraph({
           fitViewOptions={modelGraphFitViewOptions(focusMode)}
           minZoom={0.22}
           maxZoom={1.6}
+          {...MODEL_GRAPH_POINTER_OPTIONS}
           nodesDraggable
           nodesConnectable={false}
           nodesFocusable={false}
@@ -2400,37 +2536,39 @@ export const ModelGraph = memo(function ModelGraph({
           <Controls position="bottom-right" showInteractive={false} />
         </ReactFlow>
       </div>
-      <section
-        className="model-graph__readings"
-        aria-label={
-          signalMode === 'backward'
-            ? uiText('Gradient signal readings')
-            : uiText('Forward signal readings')
-        }
-      >
-        <div className="model-graph__readings-heading">
-          <strong>
-            {signalMode === 'backward' ? uiText('Gradient values') : uiText('Tensor values')}
-          </strong>
-          <span>{uiText('Kept outside module cards so every value remains readable.')}</span>
-        </div>
-        <ul {...signalStripAccessibilityProps(signalMode)}>
-          {signalReadings.map((reading) => (
-            <li
-              key={reading.id}
-              className={signalMode === 'backward' ? `signal-reading--${reading.health}` : ''}
-            >
-              <span>
-                {reading.tensorName}
-                {signalMode === 'backward' ? ` · ${gradientHealthLabel(reading.health)}` : ''}
-              </span>
-              <code>{reading.quantity}</code>
-              <strong>{reading.value}</strong>
-              <small>{reading.route}</small>
-            </li>
-          ))}
-        </ul>
-      </section>
+      {signalMode === 'backward' && (
+        <section
+          className="model-graph__readings"
+          aria-label={
+            signalMode === 'backward'
+              ? uiText('Gradient signal readings')
+              : uiText('Forward signal readings')
+          }
+        >
+          <div className="model-graph__readings-heading">
+            <strong>
+              {signalMode === 'backward' ? uiText('Gradient values') : uiText('Tensor values')}
+            </strong>
+            <span>{uiText('Kept outside module cards so every value remains readable.')}</span>
+          </div>
+          <ul {...signalStripAccessibilityProps(signalMode)}>
+            {signalReadings.map((reading) => (
+              <li
+                key={reading.id}
+                className={signalMode === 'backward' ? `signal-reading--${reading.health}` : ''}
+              >
+                <span>
+                  {reading.tensorName}
+                  {signalMode === 'backward' ? ` · ${gradientHealthLabel(reading.health)}` : ''}
+                </span>
+                <code>{reading.quantity}</code>
+                <strong>{reading.value}</strong>
+                <small>{reading.route}</small>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
     </div>
   );
 });

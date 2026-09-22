@@ -158,6 +158,7 @@ export function NotificationCenter({
           </div>
           <button
             type="button"
+            className="notification-mark-all"
             disabled={counts.unread === 0}
             onClick={() =>
               onMark(
