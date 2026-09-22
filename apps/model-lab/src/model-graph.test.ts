@@ -1505,7 +1505,9 @@ c=g(B)`;
     expect(appSource).not.toContain('<section className="prototype-boundary"');
     expect(appSource).not.toContain('<section className="workspace-bar"');
     expect(styles).toMatch(
-      /\.model-lab-header \{[\s\S]*?grid-template-columns: auto minmax\(0, 1fr\) auto;[\s\S]*?min-height: 58px;[\s\S]*?padding: 8px 12px;/u,
+      // The compactness pin moved into --model-lab-header-height, which the chat panel is also
+      // sized from, so the header's height is stated once instead of twice.
+      /\.model-lab-header \{[\s\S]*?grid-template-columns: auto minmax\(0, 1fr\) auto;[\s\S]*?min-height: var\(--model-lab-header-height\);[\s\S]*?padding: 8px 12px;/u,
     );
     expect(styles).toMatch(
       /\.graph-workspace \{[\s\S]*?height: calc\(100dvh - 76px\);[\s\S]*?grid-template-rows: auto minmax\(0, 1fr\) auto;/u,
@@ -1625,8 +1627,31 @@ c=g(B)`;
     const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
     const sidebar = /\.model-chat--sidebar \{[^}]*\}/u.exec(styles)?.[0] ?? '';
 
-    expect(sidebar).toContain('height: calc(100dvh - 32px)');
+    expect(sidebar).toContain('height: calc(100dvh - 20px - var(--model-lab-header-height))');
     expect(sidebar).not.toContain('max-height');
+  });
+
+  it('sizes the Model Assistant panel from where it actually starts, not from the top of the page', () => {
+    // Measured in a browser at a 900px window: the panel began at y=71, under a 61px header, but
+    // was sized as if it began at the top, so it ended 39px past the bottom of the window and the
+    // input row sat under the fold until the page was scrolled. Both the panel's `top` and its
+    // height now come from the header's own height, so the two cannot drift apart -- which is the
+    // whole defect: one number was written twice and only one of them was right.
+    const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+    const rule = (selector: string) =>
+      new RegExp(`\\${selector} \\{([^}]*)\\}`, 'u').exec(styles)?.[1] ?? '';
+
+    const shell = rule('.model-lab-shell');
+    const header = rule('.model-lab-header');
+    const chat = rule('.model-chat--sidebar');
+
+    expect(shell).toMatch(/--model-lab-header-height:\s*\d+px/u);
+    // The header holds that height and stays put, so the panel has a fixed place to start from.
+    expect(header).toContain('position: sticky');
+    expect(header).toContain('height: var(--model-lab-header-height)');
+    // Neither of the panel's two numbers may be spelled out on its own.
+    expect(chat).toContain('top: calc(10px + var(--model-lab-header-height))');
+    expect(chat).toContain('height: calc(100dvh - 20px - var(--model-lab-header-height))');
   });
 
   it('leaves the Model Assistant resize bar somewhere to move at GOSU pane widths', () => {

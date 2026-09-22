@@ -98,6 +98,11 @@ textarea:focus-visible {
   align-items: start;
   width: min(2140px, calc(100% - 32px));
   margin: 16px auto 44px;
+  /* One row, fixed: the header's three children are 34, 29 and 44px tall and its middle column
+     shrinks rather than wraps, measured stable at every width from 568 to 1408. The chat panel
+     below it is sized from this, so it is one variable rather than the same number written twice
+     -- and the two cannot drift apart, which is what left the input row cut off. */
+  --model-lab-header-height: 61px;
 }
 
 .model-lab-shell--sessions-collapsed {
@@ -1063,11 +1068,17 @@ textarea:focus-visible {
 }
 
 .model-lab-header {
+  /* Sticky so the panel beneath it has a fixed place to start from. Below the graph's own banner
+     and centre button (6 and 8) and far below menus and overlays (30 and up). */
+  position: sticky;
+  top: 10px;
+  z-index: 9;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px 18px;
-  min-height: 58px;
+  height: var(--model-lab-header-height);
+  min-height: var(--model-lab-header-height);
   padding: 8px 12px;
   border-top: 1px solid var(--model-border);
   border-radius: 0 16px 0 0;
@@ -4482,8 +4493,11 @@ button.module-question-tag__module {
 }
 
 .model-chat--sidebar {
+  /* Starts where the header ends, and reaches the bottom of the window from there. It used to be
+     sized as if it started at the top of the page while actually starting below the header, so at
+     scroll 0 it hung 39px past the bottom and the input row sat under the fold. */
   position: sticky;
-  top: 16px;
+  top: calc(10px + var(--model-lab-header-height));
   display: flex;
   flex-direction: column;
   align-self: start;
@@ -4491,7 +4505,7 @@ button.module-question-tag__module {
   /* The viewport is the only bound. A 900px cap used to stop here and leave the rest of a tall
      window empty -- measured at 429 wasted pixels below the panel in a 1400px window, while the
      conversation itself had 641. A chat gets taller when the window does. */
-  height: calc(100dvh - 32px);
+  height: calc(100dvh - 20px - var(--model-lab-header-height));
   min-height: 0;
   overflow: hidden;
   border-left: 1px solid var(--model-border);
