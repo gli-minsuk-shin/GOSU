@@ -7,6 +7,7 @@ export const BRIEFING_MODEL_USAGES = [
   'briefingAssistant',
   'lightweightTasks',
   'paperSummary',
+  'paperChat',
 ] as const;
 export type BriefingModelUsage = (typeof BRIEFING_MODEL_USAGES)[number];
 
@@ -34,16 +35,14 @@ export function routedBriefingPreferences(
 }
 
 /**
- * Which role a chat turn runs on. A question about one paper is the 논문 요약 AI's work, but only
- * once the user has given that role a model: while it is unset the turn keeps running on the
- * assistant's model, the way it did before the role existed. The role's own fallback is the
- * Briefing model, which is right for summarizing a paper and need not be right for a conversation.
+ * Which role a chat turn runs on. A question about one paper is 논문 분석·질의응답's work, which is a
+ * different job from 논문 요약: summarizing is a quick pass and this is the deep conversation, so the
+ * user assigns them separately. While the role is unset `usageChoice` sends it to the assistant's
+ * own role, so a turn runs on the model the user talks to, exactly as it did before either role
+ * existed.
  */
-export function briefingChatUsage(
-  policy: ModelRouting | undefined,
-  aboutPaper: boolean,
-): BriefingModelUsage {
-  return aboutPaper && policy?.usage.paperSummary ? 'paperSummary' : 'briefingAssistant';
+export function briefingChatUsage(aboutPaper: boolean): BriefingModelUsage {
+  return aboutPaper ? 'paperChat' : 'briefingAssistant';
 }
 
 /**

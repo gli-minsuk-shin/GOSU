@@ -198,6 +198,17 @@ it('says that Briefing runs on these models and has no picker of its own', async
       '루틴이 전에 쓰던 모델',
     );
     expect(JSON.stringify(label('Project Chat · 새 과학·연구 대화'))).toBe('"기존 설정"');
+    // Summarizing a paper and discussing one are separate rows, so they can run on different
+    // models: the quick pass on a fast one and the deep conversation on a strong one.
+    for (const usage of [
+      '논문 요약 AI · 논문 내용 빠른 요약',
+      '논문 분석·질의응답 AI · 논문별 심층 논의',
+    ])
+      expect(JSON.stringify(label(usage))).toContain('루틴이 전에 쓰던 모델');
+    expect(shown).toContain('논문 요약을 미지정으로 두면 Briefing 역할을 따르고');
+    expect(shown).toContain('전역 AI 비서 역할을 따릅니다');
+    // The one row that used to carry both jobs is gone.
+    expect(shown).not.toContain('논문 분석과 논문별 질의응답');
   } finally {
     await act(() => ui?.unmount());
     vi.unstubAllGlobals();

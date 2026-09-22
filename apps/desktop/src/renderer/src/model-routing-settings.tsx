@@ -16,7 +16,8 @@ export const MODEL_USAGE_LABELS = {
   lecture: '강의·문헌·실험 AI · 새 작업 기본값',
   lightweightTasks: '가벼운 작업 · 이메일에서 일정·할 일 초안 만들기 · 오늘의 격언',
   modelExtraction: 'Model Lab · 모델 구조 추출',
-  paperSummary: '논문 요약 AI · 논문 분석과 논문별 질의응답',
+  paperSummary: '논문 요약 AI · 논문 내용 빠른 요약',
+  paperChat: '논문 분석·질의응답 AI · 논문별 심층 논의',
 };
 /** Briefing has no model picker of its own, so "existing" means what the routine ran before. */
 const BRIEFING_USAGES: ReadonlySet<string> = new Set([
@@ -24,6 +25,7 @@ const BRIEFING_USAGES: ReadonlySet<string> = new Set([
   'briefingAssistant',
   'lightweightTasks',
   'paperSummary',
+  'paperChat',
 ]);
 export function modelRoutingIssue(policy: ModelRouting, models: readonly CodexModel[]) {
   const extractionRole = policy.usage.modelExtraction ?? 'existing';
@@ -43,6 +45,7 @@ export function modelRoutingIssue(policy: ModelRouting, models: readonly CodexMo
     'briefingAssistant',
     'lightweightTasks',
     'paperSummary',
+    'paperChat',
   ] as const)
     if (routedModel(policy, usage)?.providerId === 'hermes')
       return 'Briefing은 현재 Codex와 Claude Code만 지원합니다.';
@@ -215,11 +218,14 @@ export function ModelRoutingSettings({
         모델 선택을 유지합니다. 저장된 구조를 재사용할 때는 새 AI 호출이 없습니다.
       </p>
       <p className="model-routing-note">
-        Briefing의 이메일 요약, 논문 요약 AI, 전역 AI 비서 대화, 빠른 1차 브리핑과 일정·할 일 초안은
-        모두 여기서 지정한 모델로 실행합니다. Briefing에는 모델을 따로 고르는 곳이 없습니다.
-        Briefing에서 AI 전달을 허용한 메일·일정 자료는 여기서 지정한 모델의 제공자에게 전달됩니다.
-        역할의 모델이 미지정이면 그 루틴이 전에 쓰던 모델로 실행합니다. Project Chat에서는 채팅에서
-        직접 고른 모델이 우선합니다. 저장된 요약은 다시 생성하지 않습니다.
+        Briefing의 이메일 요약, 논문 요약, 논문 분석·질의응답, 전역 AI 비서 대화, 빠른 1차 브리핑과
+        일정·할 일 초안은 모두 여기서 지정한 모델로 실행합니다. Briefing에는 모델을 따로 고르는 곳이
+        없습니다. Briefing에서 AI 전달을 허용한 메일·일정 자료는 여기서 지정한 모델의 제공자에게
+        전달됩니다. 논문 요약을 미지정으로 두면 Briefing 역할을 따르고, 논문 분석·질의응답을
+        미지정으로 두면 전역 AI 비서 역할을 따릅니다. 요약은 빠르게 훑는 작업이고 분석과 질의응답은
+        깊이 파는 대화라서 서로 다른 모델을 지정할 수 있습니다. 역할의 모델이 미지정이면 그 루틴이
+        전에 쓰던 모델로 실행합니다. Project Chat에서는 채팅에서 직접 고른 모델이 우선합니다. 저장된
+        요약은 다시 생성하지 않습니다.
       </p>
       {(error || message || (!loading && issue)) && (
         <p role="status">{error || message || issue}</p>

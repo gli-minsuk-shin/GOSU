@@ -3421,7 +3421,7 @@ export class LiveSourceService {
           const assistantPreferences = routedBriefingPreferences(
             profile.preferences,
             policy,
-            briefingChatUsage(policy, Boolean(input.paperReference)),
+            briefingChatUsage(Boolean(input.paperReference)),
           );
           await this.workspace.appendConversation(profile, {
             role: 'user',

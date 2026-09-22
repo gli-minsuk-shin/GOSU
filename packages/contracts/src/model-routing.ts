@@ -12,6 +12,7 @@ export const MODEL_ROUTING_USAGES = [
   'lightweightTasks',
   'modelExtraction',
   'paperSummary',
+  'paperChat',
 ] as const;
 const opaque = z
   .string()
@@ -45,6 +46,7 @@ export const ModelRoutingSchema = z
         modelExtraction: z.enum(['fast', 'strong', 'existing']).optional(),
         /** Absent means the paper summary AI follows Briefing, which is what it did before. */
         paperSummary: role.optional(),
+        paperChat: role.optional(),
       })
       .strict(),
   })
@@ -57,6 +59,7 @@ export const ModelRoutingSchema = z
       'lightweightTasks',
       'modelExtraction',
       'paperSummary',
+      'paperChat',
     ] as const) {
       const choice = usageChoice(policy, usage),
         model = choice === 'existing' ? null : policy[choice];
@@ -100,7 +103,12 @@ export function usageChoice(
   const saved = policy.usage[usage];
   if (saved) return saved;
   if (usage === 'modelExtraction') return 'existing';
+  // Two different jobs on one paper. Summarizing is a quick pass, so it follows Briefing, which is
+  // where the user already tuned bulk summarizing. Analysis and the per-paper conversation follow the
+  // assistant instead: that is the model they talk to, and the Briefing model may be the fastest one
+  // they own for getting through mail.
   if (usage === 'paperSummary') return policy.usage.briefing;
+  if (usage === 'paperChat') return policy.usage.briefingAssistant;
   return 'lightweight';
 }
 export function routedModel(policy: ModelRouting, usage: ModelUsage): RoutedModel | null {
