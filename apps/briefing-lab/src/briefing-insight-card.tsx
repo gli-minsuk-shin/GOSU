@@ -3,6 +3,13 @@ import { PaperChatButton } from './paper-chat-reference';
 import { PaperSourceLink } from './paper-source-link';
 import { AssistantWebImage, AssistantWebLink } from './assistant-web-media';
 import remarkMath from 'remark-math';
+import {
+  MARKDOWN_KATEX_OPTIONS,
+  MARKDOWN_REMARK_MATH_OPTIONS,
+  remarkBoundedMath,
+  remarkDemoteProseMath,
+  repairUnclosedMathFence,
+} from '../../desktop/src/renderer/src/markdown-math-policy';
 import remarkGfm from 'remark-gfm';
 import rehypeKatex from 'rehype-katex';
 import katex from 'katex';
@@ -393,11 +400,15 @@ export function BriefingMarkdown({
       skipHtml
       remarkPlugins={[
         remarkGfm,
-        remarkMath,
+        [remarkMath, MARKDOWN_REMARK_MATH_OPTIONS],
+        // The same guards every other GOSU chat runs. Briefing had none: a model that opened a `$$`
+        // fence and closed it at the end of a line turned the rest of the answer into one formula.
+        remarkDemoteProseMath,
+        remarkBoundedMath,
         [remarkBriefingEmphasis, { titles: emphasizedTitles, keywords, enabled: restrained }],
         [remarkBriefingTitles, { titles: emphasizedTitles }],
       ]}
-      rehypePlugins={[[rehypeKatex, { trust: false, maxExpand: 1000, maxSize: 10 }]]}
+      rehypePlugins={[[rehypeKatex, MARKDOWN_KATEX_OPTIONS]]}
       components={{
         ...(inline ? inlineContainers : {}),
         a: ({ children, href }) =>
@@ -412,7 +423,7 @@ export function BriefingMarkdown({
           ) : null,
       }}
     >
-      {text}
+      {repairUnclosedMathFence(text)}
     </ReactMarkdown>
   );
 }

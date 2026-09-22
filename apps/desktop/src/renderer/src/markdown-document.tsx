@@ -15,6 +15,8 @@ import {
   MARKDOWN_REMARK_MATH_OPTIONS,
   markdownMathSanitizeAttributes,
   remarkBoundedMath,
+  remarkDemoteProseMath,
+  repairUnclosedMathFence,
 } from './markdown-math-policy';
 import type { ReadVaultAttachmentInput, VaultAttachment } from '../../shared/vault-contracts';
 
@@ -90,6 +92,7 @@ export function MarkdownDocument({
           remarkFrontmatter,
           remarkGfm,
           [remarkMath, MARKDOWN_REMARK_MATH_OPTIONS],
+          remarkDemoteProseMath,
           remarkBoundedMath,
           remarkObsidianWikiLinks,
         ]}
@@ -101,7 +104,7 @@ export function MarkdownDocument({
         urlTransform={safeMarkdownUrl}
         components={components}
       >
-        {source}
+        {repairUnclosedMathFence(source)}
       </Markdown>
     </div>
   );

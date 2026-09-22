@@ -13,6 +13,28 @@ function render(source: string) {
 }
 
 describe('Project Chat Markdown', () => {
+  it('does not let one unclosed $$ fence swallow the rest of the answer', () => {
+    // The same guard every GOSU chat runs, after Model Assistant lost a whole answer to it: a `$$`
+    // opened on its own line and closed at the end of a content line never closes, so everything
+    // after it became one formula and rendered as error text.
+    const html = render(
+      [
+        '차원을 계산하면,',
+        '',
+        '$$',
+        String.raw`[Q,h,N,K]\times[Q,h,K,P]\longrightarrow[Q,h,N,P]$$ 가 됩니다. 여기서 $k$의 축을 교환합니다.`,
+        '',
+        '이것은 조건부 검산이며 소스의 계산식이 아닙니다.',
+        '',
+        '- 입력은 데이터 포트에서 들어옵니다.',
+      ].join('\n'),
+    );
+
+    expect(html).not.toContain('katex-error');
+    expect(html).toContain('이것은 조건부 검산이며 소스의 계산식이 아닙니다.');
+    expect(html).toContain('<li>입력은 데이터 포트에서 들어옵니다.</li>');
+  });
+
   it('renders single-dollar inline math and double-dollar display math with MathML', () => {
     const html = render(`Mass and energy satisfy $E = mc^2$.
 

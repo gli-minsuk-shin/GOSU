@@ -6,6 +6,29 @@ import { BriefingMarkdown, BriefingInsightCard } from './briefing-insight-card';
 import type { LiveItem } from './live-types';
 import { BriefingHistoryItem } from './briefing-history-view';
 describe('compact evidence rendering', () => {
+  it('does not let one unclosed $$ fence swallow the rest of an answer', () => {
+    // Briefing ran no math guards at all until now. The same shape that lost a Model Assistant
+    // answer would have lost a briefing answer or a paper conversation answer.
+    const html = renderToStaticMarkup(
+      <BriefingMarkdown
+        text={[
+          '차원을 계산하면,',
+          '',
+          '$$',
+          String.raw`[Q,h,N,K]\times[Q,h,K,P]\longrightarrow[Q,h,N,P]$$ 가 됩니다. 여기서 $k$의 축을 교환합니다.`,
+          '',
+          '이것은 조건부 검산이며 소스의 계산식이 아닙니다.',
+          '',
+          '- 입력은 데이터 포트에서 들어옵니다.',
+        ].join('\n')}
+      />,
+    );
+
+    expect(html).not.toContain('katex-error');
+    expect(html).toContain('이것은 조건부 검산이며 소스의 계산식이 아닙니다.');
+    expect(html).toContain('<li>입력은 데이터 포트에서 들어옵니다.</li>');
+  });
+
   it('identifies a stored Scholar-derived paper without presenting it as an email', () => {
     const html = renderToStaticMarkup(
       <BriefingHistoryItem

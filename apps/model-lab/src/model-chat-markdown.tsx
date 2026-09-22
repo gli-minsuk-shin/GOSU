@@ -1,4 +1,3 @@
-import type { Root, RootContent } from 'mdast';
 import { memo, type ReactNode } from 'react';
 import rehypeKatex from 'rehype-katex';
 import rehypeSanitize, {
@@ -8,75 +7,33 @@ import rehypeSanitize, {
 import Markdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
-import { SKIP, visit } from 'unist-util-visit';
+import {
+  MARKDOWN_KATEX_OPTIONS,
+  MARKDOWN_REMARK_MATH_OPTIONS,
+  markdownMathSanitizeAttributes,
+  remarkBoundedMath,
+  remarkDemoteProseMath,
+  repairUnclosedMathFence,
+} from '../../desktop/src/renderer/src/markdown-math-policy';
 
-export const MODEL_CHAT_MATH_LIMITS = Object.freeze({
-  maxFormulaCount: 256,
-  maxCharactersPerFormula: 4_096,
-  maxTotalCharacters: 32_768,
-});
-
-const MODEL_CHAT_REMARK_MATH_OPTIONS = Object.freeze({
-  singleDollarTextMath: true,
-});
-
-const MODEL_CHAT_KATEX_OPTIONS = Object.freeze({
-  trust: false,
-  strict: 'warn' as const,
-  maxExpand: 1_000,
-  maxSize: 20,
-});
+/**
+ * One policy for every GOSU chat. Model Lab used to keep its own copy of these limits and its own
+ * bounding plugin; they drifted apart from the desktop renderer's and only one of them ever got a
+ * fix. The shared module is the single place a formula rule is written now.
+ */
+export {
+  MARKDOWN_MATH_LIMITS as MODEL_CHAT_MATH_LIMITS,
+  remarkBoundedMath as remarkBoundedModelChatMath,
+} from '../../desktop/src/renderer/src/markdown-math-policy';
 
 const MODEL_CHAT_SANITIZE_SCHEMA: RehypeSanitizeOptions = {
   ...defaultSchema,
-  attributes: {
-    ...defaultSchema.attributes,
-    div: [...(defaultSchema.attributes?.div ?? []), ['className', 'math', 'math-display']],
-    span: [...(defaultSchema.attributes?.span ?? []), ['className', 'math', 'math-inline']],
-  },
+  attributes: markdownMathSanitizeAttributes(defaultSchema.attributes),
   protocols: {
     ...defaultSchema.protocols,
     href: ['https'],
   },
 };
-
-type ModelChatMathNode = RootContent & {
-  type: 'math' | 'inlineMath';
-  value: string;
-};
-
-export function remarkBoundedModelChatMath() {
-  return (tree: Root) => {
-    let formulaCount = 0;
-    let totalCharacters = 0;
-
-    visit(tree, (node, index, parent) => {
-      if (!isModelChatMathNode(node) || index === undefined || !parent) return;
-
-      formulaCount += 1;
-      totalCharacters = Math.min(
-        totalCharacters + node.value.length,
-        MODEL_CHAT_MATH_LIMITS.maxTotalCharacters + 1,
-      );
-      const withinBudget =
-        formulaCount <= MODEL_CHAT_MATH_LIMITS.maxFormulaCount &&
-        node.value.length <= MODEL_CHAT_MATH_LIMITS.maxCharactersPerFormula &&
-        totalCharacters <= MODEL_CHAT_MATH_LIMITS.maxTotalCharacters;
-      if (withinBudget) return;
-
-      const replacement: RootContent =
-        node.type === 'inlineMath'
-          ? { type: 'inlineCode', value: `$${node.value}$` }
-          : { type: 'code', lang: 'tex', value: node.value };
-      (parent.children as RootContent[])[index] = replacement;
-      return SKIP;
-    });
-  };
-}
-
-function isModelChatMathNode(node: Root | RootContent): node is ModelChatMathNode {
-  return (node.type === 'math' || node.type === 'inlineMath') && 'value' in node;
-}
 
 const MODEL_CHAT_COMPONENTS: Components = {
   a: ({ children, href }) => <ModelChatLink href={href}>{children}</ModelChatLink>,
@@ -93,18 +50,19 @@ export const ModelChatMarkdown = memo(function ModelChatMarkdown({ source }: { s
       <Markdown
         remarkPlugins={[
           remarkGfm,
-          [remarkMath, MODEL_CHAT_REMARK_MATH_OPTIONS],
-          remarkBoundedModelChatMath,
+          [remarkMath, MARKDOWN_REMARK_MATH_OPTIONS],
+          remarkDemoteProseMath,
+          remarkBoundedMath,
         ]}
         rehypePlugins={[
           [rehypeSanitize, MODEL_CHAT_SANITIZE_SCHEMA],
-          [rehypeKatex, MODEL_CHAT_KATEX_OPTIONS],
+          [rehypeKatex, MARKDOWN_KATEX_OPTIONS],
         ]}
         skipHtml
         urlTransform={safeModelChatMarkdownUrl}
         components={MODEL_CHAT_COMPONENTS}
       >
-        {source}
+        {repairUnclosedMathFence(source)}
       </Markdown>
     </div>
   );

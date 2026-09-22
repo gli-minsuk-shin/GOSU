@@ -15,6 +15,8 @@ import {
   MARKDOWN_REMARK_MATH_OPTIONS,
   markdownMathSanitizeAttributes,
   remarkBoundedMath,
+  remarkDemoteProseMath,
+  repairUnclosedMathFence,
 } from './markdown-math-policy';
 
 const PROJECT_CHAT_SANITIZE_SCHEMA: RehypeSanitizeOptions = {
@@ -39,7 +41,12 @@ const PROJECT_CHAT_MARKDOWN_COMPONENTS: Components = {
 export function ProjectChatMarkdown({ source }: { source: string }) {
   return (
     <Markdown
-      remarkPlugins={[remarkGfm, [remarkMath, MARKDOWN_REMARK_MATH_OPTIONS], remarkBoundedMath]}
+      remarkPlugins={[
+        remarkGfm,
+        [remarkMath, MARKDOWN_REMARK_MATH_OPTIONS],
+        remarkDemoteProseMath,
+        remarkBoundedMath,
+      ]}
       rehypePlugins={[
         [rehypeSanitize, PROJECT_CHAT_SANITIZE_SCHEMA],
         [rehypeKatex, MARKDOWN_KATEX_OPTIONS],
@@ -48,7 +55,7 @@ export function ProjectChatMarkdown({ source }: { source: string }) {
       urlTransform={safeProjectChatMarkdownUrl}
       components={PROJECT_CHAT_MARKDOWN_COMPONENTS}
     >
-      {source}
+      {repairUnclosedMathFence(source)}
     </Markdown>
   );
 }

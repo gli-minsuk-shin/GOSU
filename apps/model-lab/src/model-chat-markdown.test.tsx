@@ -41,6 +41,39 @@ $$
     expect(html).toContain('<ul>');
   });
 
+  it('does not let one unclosed $$ fence swallow the rest of the answer', () => {
+    // Reported from the real app. A model opened `$$` on its own line and put the closing `$$` at
+    // the end of a content line, which does not close the fence: everything after it became one
+    // formula, KaTeX refused it, and every remaining paragraph and list item rendered as error
+    // text. The prose is prose again, and the paragraphs survive.
+    const html = renderChat(
+      [
+        '차원을 계산하면,',
+        '',
+        '$$',
+        String.raw`[Q,h,N,K]\times[Q,h,K,P]\longrightarrow[Q,h,N,P]$$ 가 됩니다. 여기서 transpose는 $k$의 축을 교환합니다.`,
+        '',
+        '이것은 조건부 검산이며 소스의 계산식이 아닙니다.',
+        '',
+        '- 입력은 데이터 포트에서 들어옵니다.',
+      ].join('\n'),
+    );
+
+    expect(html).not.toContain('katex-error');
+    expect(html).toContain('이것은 조건부 검산이며 소스의 계산식이 아닙니다.');
+    expect(html).toContain('<li>입력은 데이터 포트에서 들어옵니다.</li>');
+    expect(html).toContain('가 됩니다');
+  });
+
+  it('renders a failed formula in the reading colour rather than alarm red', () => {
+    // KaTeX's default is #cc0000. A malformed formula is still the user's own words; a wall of red
+    // made a whole answer look broken when only its delimiters were.
+    const html = renderChat(String.raw`Invalid: $\notacommand{$`);
+    expect(html).toContain('katex-error');
+    expect(html).not.toContain('#cc0000');
+    expect(html).toContain('color:currentColor');
+  });
+
   it('keeps malformed and over-budget formulas visible without executing untrusted content', () => {
     const malformed = renderChat(String.raw`Invalid: $\notacommand{$`);
     const overlong = 'x'.repeat(MODEL_CHAT_MATH_LIMITS.maxCharactersPerFormula + 1);
