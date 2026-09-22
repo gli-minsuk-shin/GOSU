@@ -362,7 +362,9 @@ it('generates all four sources into one durable briefing with real summaries and
       methodsAndAssumptions: 'Fixture method',
       reportedResults: 'Fixture result',
     });
-    const html = renderToStaticMarkup(createElement(BriefingHistoryFeed, { history }));
+    const html = renderToStaticMarkup(
+      createElement(BriefingHistoryFeed, { history, deferBody: false }),
+    );
     expect(html).toContain('시간별 기온과 강수확률 예보. 3개 시간대.');
     expect(html).toContain('weather-precipitation-bar is-zero');
     expect(html).toContain('강수확률 0%');
@@ -556,7 +558,9 @@ it('keeps the first saved paper visible after arXiv rate limiting on the second 
     expect(group.snapshot?.sources).toContainEqual(
       expect.objectContaining({ kind: 'papers', status: 'failed' }),
     );
-    const html = renderToStaticMarkup(createElement(BriefingHistoryFeed, { history }));
+    const html = renderToStaticMarkup(
+      createElement(BriefingHistoryFeed, { history, deferBody: false }),
+    );
     expect(html).toContain('Fixture paper');
     expect(html).toContain('Fixture question');
     expect(html).not.toContain('briefing-new-badge');

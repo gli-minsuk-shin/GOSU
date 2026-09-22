@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import './paper-summary-offer.css';
 import { BriefingHistoryItem } from './briefing-history-view';
-import { importanceFirst, type PaperChatReference } from './paper-chat-reference';
+import { type PaperChatReference } from './paper-chat-reference';
+import {
+  DEFAULT_PAPER_SORT,
+  isPaperSort,
+  PAPER_SORTS,
+  sortSavedPapers,
+  type PaperSort,
+} from './paper-sort';
 import type { BriefingRoutine } from '@gosu/briefing-core';
 import type { FeedbackDecision } from './briefing-insight-card';
 import { sourceRequest } from './live-client';
@@ -53,6 +60,7 @@ export function SavedPaperSummaries({
     [selectedTags, setSelectedTags] = useState<string[]>([]),
     /** Only the papers the 논문 요약 AI was asked about. Combines with every other filter. */
     [askedAiOnly, setAskedAiOnly] = useState(false),
+    [sort, setSort] = useState<PaperSort>(DEFAULT_PAPER_SORT),
     [limit, setLimit] = useState(30);
   const [papers, setPapers] = useState<SavedPaper[]>([]),
     [feedback, setFeedback] = useState<Record<string, FeedbackDecision>>({}),
@@ -200,6 +208,22 @@ export function SavedPaperSummaries({
           selected={selectedTags}
           onChange={changeTags}
         />
+        <label className="briefing-paper-sort">
+          정렬
+          <select
+            aria-label="논문 정렬 기준"
+            value={sort}
+            onChange={(event) => {
+              if (isPaperSort(event.target.value)) setSort(event.target.value);
+            }}
+          >
+            {PAPER_SORTS.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <button
           type="button"
           className={`briefing-paper-asked-filter${askedAiOnly ? ' selected' : ''}`}
@@ -350,11 +374,15 @@ export function SavedPaperSummaries({
         </div>
       )}
       <div className="briefing-reading-list">
-        {importanceFirst(visible, (p) => p.item.importance)
+        {sortSavedPapers(visible, sort)
           .slice(0, limit)
           .map((p) => (
             <BriefingHistoryItem
               key={`${routineId}:${p.classificationKey ?? `${p.item.id}:${p.item.sourceUrl}`}`}
+              // Thirty cards at a time, thirty more on request. A collapsed paper's body is 242 of
+              // its 296 tags, plus the Markdown parse and the KaTeX typesetting behind them, so the
+              // list built about 8,900 tags before the reader had opened anything.
+              deferBody
               classificationControl={
                 <div className="briefing-paper-row-tools">
                   <label className="briefing-paper-select">

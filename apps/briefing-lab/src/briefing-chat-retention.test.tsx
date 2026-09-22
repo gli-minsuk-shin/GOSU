@@ -796,6 +796,57 @@ it('restores the conversation scroll position and focuses the existing composer 
   expect(node.scrollTop).toBe(137);
   expect(workspaceStream).toHaveBeenCalledOnce();
 });
+it('keeps the reader\u2019s place when the pane comes back before the transcript has finished laying out', async () => {
+  // Reported: leaving an AI chat and coming back shows a spot in the middle instead of where the
+  // reader was. The placement runs the moment the pane has a box, while maths, fonts and code
+  // blocks are still growing the transcript, so the saved offset is clamped to whatever can be
+  // scrolled right then -- and the clamped value was written back over the reader's own, which
+  // destroyed it. Nothing afterwards could recover it.
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  vi.mocked(workspaceStream).mockResolvedValue(result('Reply'));
+  const routine = initialRealWorkspace('2026-09-10T00:00:00Z').routines[0]!;
+  const node = {
+    scrollHeight: 1200,
+    clientHeight: 300,
+    scrollTop: 0,
+    scrollTo: ({ top }: { top: number }) => {
+      node.scrollTop = Math.max(0, Math.min(top, node.scrollHeight - node.clientHeight));
+    },
+  };
+  const props = { routine, onSettings: vi.fn() };
+  await act(() => {
+    ui = create(<BriefingChat {...props} />, {
+      createNodeMock: (e) =>
+        (e.props as { className?: string }).className === 'briefing-chat-log'
+          ? node
+          : e.type === 'textarea'
+            ? { focus: vi.fn() }
+            : null,
+    });
+  });
+  const scrolled = () =>
+    act(() =>
+      ui.root
+        .findByProps({ 'aria-label': '브리핑 대화 기록' })
+        .props.onScroll({ currentTarget: node }),
+    );
+
+  node.scrollTop = 800;
+  await scrolled();
+  await act(() => ui.update(<BriefingChat {...props} visible={false} />));
+
+  // Back, but the transcript is still short: the browser cannot scroll to 800 yet.
+  node.scrollHeight = 400;
+  node.scrollTop = 0;
+  await act(() => ui.update(<BriefingChat {...props} visible />));
+
+  // The rest of the transcript arrives.
+  node.scrollHeight = 1200;
+  await click('추천 질문 닫기');
+
+  expect(node.scrollTop).toBe(800);
+});
+
 it('puts the reader back after the desktop hid the whole Lab frame and showed it again', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.mocked(workspaceStream).mockResolvedValue(result('Frame-test answer'));

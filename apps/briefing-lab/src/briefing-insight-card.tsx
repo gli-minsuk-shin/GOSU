@@ -95,6 +95,7 @@ export function FeedbackControls({
   );
 }
 export function PaperBriefingDisclosure({
+  deferBody,
   sourceUrl,
   chatAction,
   title,
@@ -125,14 +126,32 @@ export function PaperBriefingDisclosure({
   onFeedback?: (decision: FeedbackDecision) => void;
   feedbackDisabled?: boolean;
   feedbackStatus?: string;
+  /**
+   * Build the body only once this paper has been opened. Off by default: a briefing shows a handful
+   * of papers and its readers expect the whole card to exist. The 논문 요약 library turns it on,
+   * because that list is thirty cards at a time and grows by thirty more on request.
+   */
+  deferBody?: boolean;
   children: ReactNode;
 }) {
   const unique = [...new Map(keywords.map((k) => [k.trim().toLowerCase(), k.trim()])).values()]
     .filter(Boolean)
     .slice(0, 6);
+  /** False until this paper has been opened once; see the note on `onToggle` below. */
+  const [bodyBuilt, setBodyBuilt] = useState(!deferBody);
   return (
     <>
-      <details className="briefing-paper-disclosure">
+      <details
+        className="briefing-paper-disclosure"
+        // A collapsed paper's body is 82% of the card: 242 of its 296 tags, plus the Markdown parse
+        // and the KaTeX typesetting behind them, and KaTeX builds an HTML tree and a MathML tree for
+        // every formula. Thirty cards were about 8,900 tags before a reader had opened one. Building
+        // it when the paper is first opened takes a list of thirty to about 1,600, and a hundred to
+        // about 5,400. Kept afterwards, so opening and closing the same paper again is instant.
+        onToggle={(event) => {
+          if (event.currentTarget.open) setBodyBuilt(true);
+        }}
+      >
         <summary className="briefing-paper-summary">
           <span className="briefing-paper-chevron" aria-hidden="true">
             ›
@@ -169,13 +188,17 @@ export function PaperBriefingDisclosure({
             </div>
           </div>
         </summary>
-        {/* The open paper's left bar closes it, like a Briefing section's accent bar. */}
-        <BriefingSectionRail label="이 논문 접기" className="briefing-item-rail" />
-        <div className="briefing-paper-expanded">
-          <PaperAuthors bibliography={bibliography} />
-          {children}
-          <BriefingBottomCollapse label="논문 요약 접기" leadingAction={chatAction} />
-        </div>
+        {bodyBuilt && (
+          <>
+            {/* The open paper's left bar closes it, like a Briefing section's accent bar. */}
+            <BriefingSectionRail label="이 논문 접기" className="briefing-item-rail" />
+            <div className="briefing-paper-expanded">
+              <PaperAuthors bibliography={bibliography} />
+              {children}
+              <BriefingBottomCollapse label="논문 요약 접기" leadingAction={chatAction} />
+            </div>
+          </>
+        )}
       </details>
       {feedbackStatus && (
         <p className="briefing-feedback-status" role="status">

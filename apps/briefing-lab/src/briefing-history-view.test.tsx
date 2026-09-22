@@ -360,7 +360,7 @@ it('groups batches into one expanded briefing, newest first, with complete store
   const groups = groupBriefingHistory(history);
   expect(groups).toHaveLength(2);
   expect(groups[0]!.items).toHaveLength(1);
-  const html = renderToStaticMarkup(<BriefingHistoryFeed history={history} />);
+  const html = renderToStaticMarkup(<BriefingHistoryFeed history={history} deferBody={false} />);
   expect(html.indexOf('Overview new-batch')).toBeLessThan(html.indexOf('Overview older'));
   expect(html.match(/<details class="briefing-paper-disclosure"/g)).toHaveLength(2);
   expect(html).not.toMatch(/<details class="briefing-paper-disclosure"[^>]*\sopen(?:[\s=>])/);
@@ -374,6 +374,25 @@ it('groups batches into one expanded briefing, newest first, with complete store
   expect(html).toContain('katex');
   expect(html).not.toContain('TODAY');
   expect(html).toContain('당시 날씨가 저장되어 있지 않습니다');
+});
+
+it('builds nothing for a paper nobody has opened, and everything once one is', () => {
+  // A collapsed paper's body is 242 of its 296 tags, and the Markdown parse and the KaTeX
+  // typesetting behind them cost more than the tags do. A feed holds every run's items at once, so
+  // building all of it before the reader opens anything is what made the list scroll badly.
+  const feed = [batch('new-batch'), snapshot];
+  const collapsed = renderToStaticMarkup(<BriefingHistoryFeed history={feed} />);
+  const opened = renderToStaticMarkup(<BriefingHistoryFeed history={feed} deferBody={false} />);
+
+  // The row itself is all there: the reader can still see, search and choose.
+  expect(collapsed).toContain('Paper detail');
+  expect(collapsed).not.toContain('Research question');
+  expect(collapsed).not.toContain('katex');
+  expect(opened).toContain('Research question');
+  // Smaller, and how much smaller depends on how much of the page is paper bodies: this fixture is
+  // mostly weather, agenda and mail chrome around two short papers, so it saves about a tenth. Per
+  // paper card the body is 242 of its 296 tags, which is what a library of thirty feels.
+  expect(collapsed.length).toBeLessThan(opened.length);
 });
 it('restores collapsible source blocks and priority-ordered summary cards with run-specific destinations', () => {
   const h = {

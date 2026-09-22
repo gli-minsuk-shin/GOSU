@@ -111,7 +111,12 @@ afterEach(async () => {
 });
 it('selects multiple tags in a checkbox panel with OR matching, and intersects text/category filters locally', async () => {
   await mountTags();
-  expect(ui.root.findAllByType('select')).toHaveLength(1);
+  // The tag filter is a checkbox panel, not a dropdown. Naming the selects says that, and says
+  // which ones are meant to be there, instead of counting them.
+  expect(ui.root.findAllByType('select').map((n) => n.props['aria-label'])).toEqual([
+    '자동 분류',
+    '논문 정렬 기준',
+  ]);
   await act(() => ui.root.findByProps({ 'aria-label': '논문 태그 선택' }).props.onClick());
   await toggleTag('Large language models');
   expect(shownIds()).toEqual(['p1']);
@@ -510,10 +515,18 @@ it('shows saved papers and their original date without source/LLM work; only the
   });
   expect(vi.mocked(sourceRequest).mock.calls.map((c) => c[0])).toEqual(['/papers/saved']);
   expect(refreshBriefingSummary).not.toHaveBeenCalled();
+  // A paper nobody has opened builds no body: no figure, no typeset maths. That is the whole point
+  // of deferring it -- thirty of these cards used to lay out about 8,900 tags before the reader had
+  // opened one, and 242 of each card's 296 were this.
+  expect(ui.root.findByType('details').props.open).toBeUndefined();
+  expect(ui.root.findAllByType('img')).toHaveLength(0);
+  expect(JSON.stringify(ui.toJSON())).not.toContain('katex');
+
+  // Opening it builds the body, and everything the reader came for is there.
+  await act(() => ui.root.findByType('details').props.onToggle({ currentTarget: { open: true } }));
   expect(ui.root.findByType('time').props.dateTime).toBe(item.provenance.summarizedAt);
   expect(ui.root.findByType('img').props.src).toBe(item.figures[0]!.imageData);
   expect(JSON.stringify(ui.toJSON())).toContain('katex');
-  expect(ui.root.findByType('details').props.open).toBeUndefined();
   await act(() =>
     ui.root
       .findByProps({ 'aria-label': '저장 논문 검색' })

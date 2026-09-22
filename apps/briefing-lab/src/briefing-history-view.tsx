@@ -66,6 +66,7 @@ export function BriefingHistoryItem({
   isNew = false,
   askedAi = false,
   paperReference,
+  deferBody,
 }: {
   item: BriefingHistory['items'][number];
   feedbackChoice?: FeedbackDecision | null;
@@ -81,6 +82,8 @@ export function BriefingHistoryItem({
    *  miss in a library of a hundred, so the card itself carries the mark and takes its own border. */
   askedAi?: boolean;
   paperReference?: PaperChatReference;
+  /** Build a paper's body only once it is opened. The 논문 요약 library sets it; briefings do not. */
+  deferBody?: boolean;
 }) {
   const [choice, setChoice] = useState(feedbackChoice ?? null);
   const [pending, setPending] = useState(false);
@@ -185,6 +188,7 @@ export function BriefingHistoryItem({
     >
       {isPaper ? (
         <PaperBriefingDisclosure
+          {...(deferBody ? { deferBody } : {})}
           sourceUrl={i.sourceUrl}
           chatAction={paperReference ? <PaperChatButton reference={paperReference} /> : undefined}
           title={i.title}
@@ -378,11 +382,19 @@ export function BriefingHistoryFeed({
   onRefresh,
   onDeleted,
   unreadMailOnly = false,
+  deferBody = true,
 }: {
   notificationTarget?: BriefingNotificationTarget | undefined;
   history: BriefingHistory[];
   /** Show only mail that is still unread by its saved state; papers and agenda are not affected. */
   unreadMailOnly?: boolean | undefined;
+  /**
+   * Build a paper's body only once it is opened, which is what the app wants: a feed holds every
+   * run's items at once and a collapsed paper's body is 242 of its 296 tags. Set it false to render
+   * the feed as it looks with every paper open -- what a test asserting the summary text needs,
+   * because a static render cannot open one.
+   */
+  deferBody?: boolean | undefined;
   /** Briefing guidance per routine; a listed mail address or domain pins that mail first. */
   guidance?: GuidanceByRoutine | undefined;
   feedback?: HistoryFeedback;
@@ -882,6 +894,12 @@ export function BriefingHistoryFeed({
                         <BriefingHistoryItem
                           key={item.id}
                           item={item}
+                          // Same reason as the 논문 요약 library: a collapsed paper's body is 242
+                          // of its 296 tags, and the Markdown parse and KaTeX typesetting behind
+                          // them cost more than the tags do. A briefing feed holds every run's
+                          // items at once, so the saving grows with the history rather than with
+                          // one screen.
+                          {...(deferBody ? { deferBody } : {})}
                           paperReference={{
                             routineId: h.routineId,
                             historyId: h.itemHistoryIds[item.id]!,

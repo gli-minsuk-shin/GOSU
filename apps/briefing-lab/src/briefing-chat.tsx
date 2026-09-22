@@ -270,6 +270,8 @@ export function BriefingChat({
     readingPosition = useRef({ top: 0, count: 0, atBottom: true }),
     visibleNow = useRef(visible),
     reshow = useRef<ReturnType<typeof restoreScrollWhenShown> | null>(null),
+    /** Where a placement just put the log, so its own scroll event is not read back as the reader. */
+    restoring = useRef<number | null>(null),
     sendLock = useRef(false);
   visibleNow.current = visible;
   // The desktop hides this whole Lab (an iframe) with display: none. The log then has no box, the
@@ -323,12 +325,21 @@ export function BriefingChat({
     const node = log.current,
       position = readingPosition.current;
     if (node && node.clientHeight > 0) {
+      // Where this scroll lands is not news about the reader. The transcript is often still
+      // growing -- maths, fonts, code blocks -- so asking for a saved offset can be clamped to
+      // whatever is scrollable at that instant. Writing that clamped value back over the reader's
+      // own destroyed it, and then every later placement used the wrong number: coming back to a
+      // chat showed a spot in the middle instead of where they were. Only the reader's own
+      // scrolling updates `top`, which is what the onScroll handler is for.
       node.scrollTo?.({
         top:
           messages.length > position.count || position.atBottom ? node.scrollHeight : position.top,
       });
+      // The scroll event this caused arrives after the commit and is ours, not the reader's. It is
+      // recognised by where it landed rather than by a timer, which has no reliable moment to fire
+      // in every host this runs in.
+      restoring.current = node.scrollTop;
       position.count = messages.length;
-      position.top = node.scrollTop;
       setNearLatest(isNearLatestMessage(node));
     }
     if (focusComposer.current) {
@@ -721,6 +732,11 @@ export function BriefingChat({
           onScroll={(e) => {
             // While the position is being put back, scrollTop is a temporary value, not the reader's.
             if (!visible || !e.currentTarget.clientHeight || reshow.current?.holding) return;
+            if (restoring.current === e.currentTarget.scrollTop) {
+              restoring.current = null;
+              return;
+            }
+            restoring.current = null;
             const node = e.currentTarget;
             readingPosition.current = {
               top: node.scrollTop,

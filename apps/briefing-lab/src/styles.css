@@ -2598,6 +2598,19 @@ input[type='checkbox'] {
   gap: 10px;
   margin-bottom: 12px;
 }
+/* Sits in the filter row with the search, the category and the tag picker, and wraps with them. */
+.briefing-paper-sort {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: #66715e;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.briefing-paper-sort select {
+  min-width: 0;
+}
 .briefing-saved-papers > .briefing-reading-list {
   margin-top: 12px;
 }
