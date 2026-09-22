@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { BriefingRoutine } from '@gosu/briefing-core';
 import { BriefingChat } from './briefing-chat';
-import type { PaperChatReference } from './paper-chat-reference';
 import { briefingChatContextKey } from './briefing-model-selection';
 import type { SettingsProposal } from './assistant-settings-proposal';
 
@@ -11,7 +10,6 @@ import type { SettingsProposal } from './assistant-settings-proposal';
 export function RetainedBriefingChats({
   globalMode = false,
   autoSuggestions = true,
-  paperReference,
   routines,
   selectedId,
   visible,
@@ -22,7 +20,6 @@ export function RetainedBriefingChats({
   routines: readonly BriefingRoutine[];
   globalMode?: boolean;
   autoSuggestions?: boolean;
-  paperReference?: PaperChatReference | undefined;
   selectedId: string | undefined;
   visible: boolean;
   recommendationRequest: number;
@@ -50,9 +47,6 @@ export function RetainedBriefingChats({
               <BriefingChat
                 globalMode={globalMode && active}
                 autoSuggestions={autoSuggestions}
-                paperReference={
-                  paperReference?.routineId === routine.id ? paperReference : undefined
-                }
                 routine={routine}
                 visible={active}
                 recommendationRequest={active ? recommendationRequest : 0}

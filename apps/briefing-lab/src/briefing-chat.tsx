@@ -169,7 +169,6 @@ export function BriefingChat({
   globalMode = false,
   autoSuggestions = true,
   paperChat,
-  paperReference,
   routine,
   onSettings,
   onBusyChange,
@@ -182,17 +181,16 @@ export function BriefingChat({
   autoSuggestions?: boolean;
   /**
    * 논문 요약 AI: this whole chat belongs to one paper. Its transcript is that paper's own, never
-   * the AI 비서's, and every turn carries the paper. Distinct from `paperReference`, which attaches
+   * the AI 비서's, and every turn carries the paper. The AI 비서 is never handed a paper: asking
+   * about one opens that paper's own conversation in 논문 요약, and only it carries the paper.
    * a paper to one question in the assistant's chat.
    */
   paperChat?: PaperChatReference | undefined;
-  paperReference?: PaperChatReference | undefined;
   onSettings: (proposal?: SettingsProposal) => void;
   onBusyChange?: (busy: boolean) => void;
   visible?: boolean;
   recommendationRequest?: number;
 }) {
-  const [selectedPaper, setSelectedPaper] = useState<PaperChatReference>();
   const [attachments, setAttachments] = useState<ProjectChatAttachment[]>([]);
   const [choosingFiles, setChoosingFiles] = useState(false);
   const attachmentPickLock = useRef(false);
@@ -204,12 +202,6 @@ export function BriefingChat({
     };
   }, []);
   const enqueueLock = useRef(false);
-  useEffect(() => {
-    if (!paperReference) return;
-    setSelectedPaper(paperReference);
-    setShowSuggestions(false);
-    composer.current?.focus({ preventScroll: true });
-  }, [paperReference]);
   const [messages, setMessages] = useState<Message[]>([]),
     [draft, setDraft] = useState(''),
     [status, setStatus] = useState(''),
@@ -437,7 +429,6 @@ export function BriefingChat({
           id: crypto.randomUUID(),
           prompt,
           attachmentIds: attachments.map((f) => f.id),
-          ...(selectedPaper ? { paperReference: selectedPaper } : {}),
         });
         setDraft((current) => (current.trim() === prompt ? '' : current));
         setAttachments((current) =>
@@ -475,8 +466,8 @@ export function BriefingChat({
         '/assistant/chat',
         {
           routineId: routine.id,
-          ...((paperChat ?? queued?.paperReference ?? selectedPaper)
-            ? { paperReference: paperChat ?? queued?.paperReference ?? selectedPaper }
+          ...((paperChat ?? queued?.paperReference)
+            ? { paperReference: paperChat ?? queued?.paperReference }
             : {}),
           ...(queued ? { queueId: queued.id, queueToken: queued.token } : {}),
           attachmentIds: queued?.attachmentIds ?? attachments.map((f) => f.id),
@@ -1044,18 +1035,6 @@ export function BriefingChat({
                   </button>
                 </span>
               ))}
-            </div>
-          )}
-          {selectedPaper && (
-            <div className="briefing-paper-reference-tag">
-              <span title={selectedPaper.title}>{selectedPaper.title}</span>
-              <button
-                type="button"
-                aria-label="참조 논문 해제"
-                onClick={() => setSelectedPaper(undefined)}
-              >
-                ×
-              </button>
             </div>
           )}
           {commandSuggestions.length > 0 && (

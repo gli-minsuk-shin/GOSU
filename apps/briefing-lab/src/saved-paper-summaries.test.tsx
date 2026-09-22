@@ -6,6 +6,7 @@ import { refreshBriefingSummary } from './briefing-analysis-client';
 import { BriefingHistoryItem } from './briefing-history-view';
 import { BriefingChat } from './briefing-chat';
 import { initialRealWorkspace } from './workspace-defaults';
+import { paperConversationKey } from './paper-identity';
 import { readFileSync } from 'node:fs';
 vi.mock('./live-client', () => ({ sourceRequest: vi.fn() }));
 vi.mock('./briefing-analysis-client', () => ({ refreshBriefingSummary: vi.fn() }));
@@ -227,6 +228,103 @@ it('opens the paper a card asked about, even when this screen mounts for it', as
     ),
   );
   expect(ui.root.findAllByProps({ className: 'briefing-paper-chat-panel' })).toHaveLength(1);
+});
+
+it('opens one conversation per paper, whichever of the two buttons asks for it', async () => {
+  // The row's 「AI 질의응답」 carried the paper's link and the card's own 「AI 질문」 did not. A paper
+  // held by a briefing rather than the library is keyed by that link, so the same paper answered to
+  // two different conversations depending on which button was pressed, and the questions asked
+  // through one were nowhere to be seen from the other.
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const routine = initialRealWorkspace('2026-09-10T00:00:00Z').routines[0]!;
+  const fromBriefing = {
+    ...tagPapers[0]!,
+    historyId: 'briefing-run-1',
+    item: { ...tagPapers[0]!.item, sourceUrl: 'https://arxiv.org/abs/2601.00001v1' },
+  };
+  vi.mocked(sourceRequest).mockResolvedValue({ papers: [fromBriefing], feedback: {} });
+  await act(() => {
+    ui = create(<SavedPaperSummaries routineId={routine.id} routine={routine} />, {
+      createNodeMock: (e) => (e.type === 'textarea' ? { focus: vi.fn() } : null),
+    });
+  });
+
+  const card = ui.root.findByType(BriefingHistoryItem).props.paperReference;
+  await act(() =>
+    ui.root
+      .findAllByProps({ className: 'briefing-paper-open-chat' })
+      .filter((n) => n.props.onClick)[0]!
+      .props.onClick(),
+  );
+  const row = ui.root.findByType(BriefingChat).props.paperChat;
+
+  expect(paperConversationKey(row)).toBe('arxiv:2601.00001v1');
+  expect(paperConversationKey(card)).toBe(paperConversationKey(row));
+});
+
+it('brings the conversation into view when it opens, not just into the tree', async () => {
+  // The panel is the last element on this screen, under every paper card, and `.briefing-reading-list`
+  // is `overflow: hidden`, so the page is what scrolls. Opening it changed state and moved nothing the
+  // user could see: with thirty cards above it, a paper's own button looked dead. Reported twice; the
+  // earlier fix only covered arriving here from another tab, where the screen mounts at the top.
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const routine = initialRealWorkspace('2026-09-10T00:00:00Z').routines[0]!;
+  vi.mocked(sourceRequest).mockResolvedValue({ papers: tagPapers, feedback: {} });
+  const panelNode = { scrollIntoView: vi.fn(), focus: vi.fn() };
+  await act(() => {
+    ui = create(<SavedPaperSummaries routineId={routine.id} routine={routine} />, {
+      createNodeMock: (e) =>
+        (e.props as { className?: string }).className === 'briefing-paper-chat-panel'
+          ? panelNode
+          : e.type === 'textarea'
+            ? { focus: vi.fn() }
+            : null,
+    });
+  });
+  expect(panelNode.scrollIntoView).not.toHaveBeenCalled();
+
+  await act(() =>
+    ui.root
+      .findAllByProps({ className: 'briefing-paper-open-chat' })
+      .filter((n) => n.props.onClick)[0]!
+      .props.onClick(),
+  );
+  expect(panelNode.scrollIntoView).toHaveBeenCalledOnce();
+  expect(panelNode.focus).toHaveBeenCalledOnce();
+
+  // Switching to another paper moves to it again; the panel is in the same faraway place.
+  await act(() =>
+    ui.root
+      .findAllByProps({ className: 'briefing-paper-open-chat' })
+      .filter((n) => n.props.onClick)[1]!
+      .props.onClick(),
+  );
+  expect(panelNode.scrollIntoView).toHaveBeenCalledTimes(2);
+});
+
+it('moves to the conversation a card asked about, after this screen mounts for it', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const routine = initialRealWorkspace('2026-09-10T00:00:00Z').routines[0]!;
+  vi.mocked(sourceRequest).mockResolvedValue({ papers: tagPapers, feedback: {} });
+  const panelNode = { scrollIntoView: vi.fn(), focus: vi.fn() };
+  await act(() => {
+    ui = create(
+      <SavedPaperSummaries
+        routineId={routine.id}
+        routine={routine}
+        openPaper={{ routineId: routine.id, historyId: 'h', paperId: 'p2', title: 'Image study' }}
+      />,
+      {
+        createNodeMock: (e) =>
+          (e.props as { className?: string }).className === 'briefing-paper-chat-panel'
+            ? panelNode
+            : e.type === 'textarea'
+              ? { focus: vi.fn() }
+              : null,
+      },
+    );
+  });
+  expect(panelNode.scrollIntoView).toHaveBeenCalledOnce();
 });
 
 it('filters the library to the papers the 논문 요약 AI was asked about, together with the other filters', async () => {

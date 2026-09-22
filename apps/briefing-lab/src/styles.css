@@ -3088,31 +3088,6 @@ input[type='checkbox'] {
   width: 17px;
   height: 17px;
 }
-.briefing-paper-reference-tag {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 8px 10px 0;
-  padding: 5px 8px;
-  background: #eef4e7;
-  border: 1px solid #d5e2c9;
-  border-radius: 7px;
-  color: #49672b;
-  font-size: 12px;
-}
-.briefing-paper-reference-tag span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.briefing-paper-reference-tag button {
-  flex-shrink: 0;
-  margin-left: auto;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-}
 .briefing-new-ack {
   justify-self: start;
   width: max-content;

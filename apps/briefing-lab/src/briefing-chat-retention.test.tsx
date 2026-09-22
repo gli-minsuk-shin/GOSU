@@ -13,6 +13,7 @@ import {
 import { workspaceStream } from './workspace-client';
 import { sourceRequest } from './live-client';
 import { restoreBriefingConversation } from './briefing-conversation-restore';
+import { PAPER_CHAT_REFERENCE } from './paper-chat-reference';
 it('automatically retries a temporary restart read failure without replaying an AI turn', async () => {
   vi.mocked(sourceRequest)
     .mockRejectedValueOnce(new Error('routine_busy'))
@@ -144,38 +145,55 @@ it('switches to the global canvas without remounting the chat or losing an unsen
   expect(chat.findByType('textarea').props.value).toBe('Retained draft');
   expect(workspaceStream).not.toHaveBeenCalled();
 });
-it('retains a selected paper tag across turns and omits it after explicit removal', async () => {
+it('never hands a paper to the AI 비서 when one is asked about', async () => {
+  // 「AI 질문」 belongs to 논문 요약 AI, which is its own chat. 0.58.152 stopped opening the
+  // assistant pane for it but left the wire connected, so every question about a paper still
+  // attached that paper to the AI 비서's next turn and moved the cursor into its composer -- which
+  // is the mixing the separation was for. The paper's own chat is the only one that carries it.
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
-  vi.mocked(workspaceStream).mockResolvedValue(result('Grounded reply'));
-  const routine = initialRealWorkspace('2026-09-10T00:00:00Z').routines[0]!;
+  const listeners = new Map<string, ((event: unknown) => void)[]>();
+  vi.stubGlobal('document', { documentElement: { dataset: {} } });
+  vi.stubGlobal('window', {
+    innerWidth: 1280,
+    location: { search: '' },
+    addEventListener: (name: string, fn: (event: unknown) => void) => {
+      listeners.set(name, [...(listeners.get(name) ?? []), fn]);
+    },
+    removeEventListener: (name: string, fn: (event: unknown) => void) => {
+      listeners.set(
+        name,
+        (listeners.get(name) ?? []).filter((f) => f !== fn),
+      );
+    },
+    dispatchEvent: vi.fn(),
+  });
+  vi.mocked(sourceRequest).mockResolvedValue({
+    papers: [],
+    feedback: {},
+    history: [],
+    choices: {},
+  });
+  const { workspace } = await mount();
   const reference = {
-    routineId: routine.id,
+    routineId: workspace.routines[0]!.id,
     historyId: 'h',
     paperId: 'p',
     title: 'Selected paper',
   };
+  // The assistant is already open, which is the case that bites: the user is talking to it and
+  // then asks about a paper. Its chat stays mounted after the handler hides the pane.
+  await click('AI 비서');
+
   await act(() => {
-    ui = create(<BriefingChat routine={routine} onSettings={vi.fn()} paperReference={reference} />);
+    for (const fn of listeners.get(PAPER_CHAT_REFERENCE) ?? []) fn({ detail: reference });
   });
-  expect(text()).toContain('Selected paper');
-  expect(workspaceStream).not.toHaveBeenCalled();
-  const send = async () => {
-    await act(() =>
-      ui.root.findByType('textarea').props.onChange({ target: { value: 'Explain methods' } }),
-    );
-    await act(() => ui.root.findByType('form').props.onSubmit({ preventDefault() {} }));
-  };
-  await send();
-  expect(vi.mocked(workspaceStream).mock.calls[0]?.[1]).toMatchObject({
-    paperReference: reference,
-  });
-  await send();
-  expect(vi.mocked(workspaceStream).mock.calls[1]?.[1]).toMatchObject({
-    paperReference: reference,
-  });
-  await act(() => button('참조 논문 해제').props.onClick());
-  await send();
-  expect(vi.mocked(workspaceStream).mock.calls[2]?.[1]).not.toHaveProperty('paperReference');
+
+  const chats = ui.root.findAllByType(BriefingChat);
+  // Guard against a vacuous pass: the assistant's chat really is mounted at this point.
+  expect(chats.filter((n) => !n.props.paperChat).length).toBeGreaterThan(0);
+  expect(ui.root.findAllByProps({ className: 'briefing-paper-reference-tag' })).toHaveLength(0);
+  // The question did go somewhere: the paper's own conversation is the one that carries it.
+  expect(chats.find((n) => n.props.paperChat)?.props.paperChat).toMatchObject({ paperId: 'p' });
 });
 it('places recommendation and permission icon buttons inside the input box without sending or clearing the draft', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);

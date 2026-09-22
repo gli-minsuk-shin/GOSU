@@ -1408,7 +1408,6 @@ export function BriefingApp({
             <RetainedBriefingChats
               globalMode={globalAssistant}
               autoSuggestions={autoSuggestions}
-              paperReference={paperReference}
               routines={workspace.routines}
               selectedId={routine?.id}
               visible={chatOpen && !rightCollapsed}

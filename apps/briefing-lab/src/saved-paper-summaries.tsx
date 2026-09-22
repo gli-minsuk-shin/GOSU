@@ -43,6 +43,7 @@ export function SavedPaperSummaries({
 }) {
   /** Which paper's 논문 요약 AI conversation is open. Its own chat, never the AI 비서's. */
   const [openChat, setOpenChat] = useState<PaperChatReference | null>(null);
+  const chatPanel = useRef<HTMLElement | null>(null);
   const loadRevision = useRef(0);
   const activeRoutine = useRef(routineId);
   activeRoutine.current = routineId;
@@ -120,6 +121,15 @@ export function SavedPaperSummaries({
     setOpenChat(openPaper);
     onOpenedPaper?.();
   }, [openPaper]);
+  // The panel is the last thing on this screen, under every paper card, and the list itself does not
+  // scroll -- the page does. Opening it without moving to it is what made a paper's own button look
+  // dead twice: the state changed and nothing the user could see did. Focus goes with it, so the
+  // keyboard lands in the conversation too.
+  useEffect(() => {
+    if (!openChat) return;
+    chatPanel.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    chatPanel.current?.focus();
+  }, [openChat]);
   const dateError = paperDateError(dates);
   const visible = papers.filter(
     (p) =>
@@ -432,11 +442,15 @@ export function SavedPaperSummaries({
                   : {}),
               }}
               savedAt={p.savedAt}
+              // The same reference the row's own button builds, link included. A paper a briefing
+              // holds is keyed by its link, so dropping it here gave one paper two conversations:
+              // ask through the card, and the questions asked through the row were nowhere.
               paperReference={{
                 routineId,
                 historyId: p.historyId,
                 paperId: p.item.id,
                 title: p.item.title,
+                ...(p.item.sourceUrl ? { sourceUrl: p.item.sourceUrl } : {}),
               }}
               feedbackChoice={feedback[p.item.id] ?? null}
               onFeedback={
@@ -478,7 +492,12 @@ export function SavedPaperSummaries({
         </button>
       )}
       {openChat && routine && (
-        <section className="briefing-paper-chat-panel" aria-label="논문 요약 AI 질의응답">
+        <section
+          className="briefing-paper-chat-panel"
+          aria-label="논문 요약 AI 질의응답"
+          ref={chatPanel}
+          tabIndex={-1}
+        >
           <header>
             <div>
               <strong>논문 요약 AI</strong>

@@ -5,6 +5,7 @@ import {
   mkdir,
   mkdtemp,
   readdir,
+  readFile,
   rm,
   symlink,
   truncate,
@@ -557,104 +558,179 @@ describe('ManuscriptPdfCompiler', () => {
   );
 });
 
+const PROCESS_GROUP_POLL_MS = 10;
+const PROCESS_GROUP_DEADLINE_MS = 5_000;
+
+function delay(milliseconds: number) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+/**
+ * Builds a `/bin/sh` command that plants a process the runner never spawned
+ * itself inside the command's process group, publishes the group id, then runs
+ * `tail`.
+ *
+ * The grandchild is forked before the group id is moved into place, so a test
+ * that can read the group id knows the group already holds a process that
+ * outlives the direct child. The tests then assert on the group itself instead
+ * of on a side effect a sleeping grandchild would produce at some later
+ * instant, which is what a loaded machine used to lose: here a slow machine can
+ * only make the group die later, never make the assertion wrong.
+ *
+ * The script is carried by `/bin/sh -c` rather than written to a file because
+ * macOS scans a newly written executable on its first run, which can delay
+ * start-up by more than a second.
+ */
+function processGroupCommand(pgidFile: string, tail: readonly string[]): readonly string[] {
+  return [
+    '-c',
+    [
+      'sleep 30 </dev/null >/dev/null 2>&1 &',
+      'printf %s "$$" > "$1.tmp"',
+      'mv "$1.tmp" "$1"',
+      ...tail,
+      '',
+    ].join('\n'),
+    'gosu-process-group-probe',
+    pgidFile,
+  ];
+}
+
+function processGroupAlive(processGroupId: number): boolean {
+  try {
+    process.kill(-processGroupId, 0);
+    return true;
+  } catch (error) {
+    // ESRCH is the only answer that means no member of the group is left; EPERM
+    // would still describe a live group.
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
 describe.skipIf(process.platform === 'win32')('manuscript PDF command process groups', () => {
   let root: string;
+  let plantedGroups: number[] = [];
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'gosu-manuscript-command-'));
+    plantedGroups = [];
   });
 
   afterEach(async () => {
+    for (const processGroupId of plantedGroups) {
+      try {
+        process.kill(-processGroupId, 'SIGKILL');
+      } catch {
+        // The runner already ended the group, which is what these tests assert.
+      }
+    }
     await rm(root, { recursive: true, force: true });
   });
 
+  /**
+   * Reads the process group the command published. Reaching this point proves
+   * the command forked the planted grandchild, so a test that continues cannot
+   * be silently checking an empty process group.
+   */
+  const claimProcessGroup = async (pgidFile: string): Promise<number> => {
+    const deadline = Date.now() + PROCESS_GROUP_DEADLINE_MS;
+    for (;;) {
+      const published = await readFile(pgidFile, 'utf8').catch(() => '');
+      const processGroupId = Number.parseInt(published.trim(), 10);
+      if (Number.isInteger(processGroupId) && processGroupId > 1) {
+        // Remembered so a failing assertion cannot leave the planted process behind.
+        plantedGroups.push(processGroupId);
+        return processGroupId;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `the command never published its process group id at ${pgidFile}, so it never forked the child this test exists to kill`,
+        );
+      }
+      await delay(PROCESS_GROUP_POLL_MS);
+    }
+  };
+
+  const expectProcessGroupKilled = async (processGroupId: number) => {
+    const deadline = Date.now() + PROCESS_GROUP_DEADLINE_MS;
+    while (processGroupAlive(processGroupId) && Date.now() < deadline) {
+      await delay(PROCESS_GROUP_POLL_MS);
+    }
+    expect(
+      processGroupAlive(processGroupId),
+      `process group ${processGroupId} still had members ${PROCESS_GROUP_DEADLINE_MS} ms after the runner ended the command: the direct child died but its descendants outlived it`,
+    ).toBe(false);
+  };
+
   it('kills descendants when a command times out', async () => {
-    const executable = join(root, 'timeout.sh');
-    const survivor = join(root, 'timeout-survivor');
-    await writeFile(
-      executable,
-      '#!/bin/sh\n(sleep 0.35; printf survived > "$1") &\nwhile :; do sleep 1; done\n',
-      { mode: 0o700 },
-    );
+    const pgidFile = join(root, 'timeout-pgid');
     const runner = createManuscriptPdfCommandRunner();
-
-    await expect(
-      runner.run(executable, [survivor], {
-        cwd: root,
-        env: process.env,
-        timeoutMs: 50,
-        maxBytes: 1024,
-      }),
-    ).rejects.toMatchObject({ code: 'manuscript_pdf_compile_failed' });
-    await new Promise((resolve) => setTimeout(resolve, 500));
-
-    expect(existsSync(survivor)).toBe(false);
-    runner.dispose();
-  });
-
-  it('kills descendants when compiler output exceeds its bound', async () => {
-    const executable = join(root, 'overflow.sh');
-    const survivor = join(root, 'overflow-survivor');
-    await writeFile(
-      executable,
-      [
-        '#!/bin/sh',
-        '(sleep 0.35; printf survived > "$1") &',
-        "while :; do printf '0123456789abcdef'; done",
-        '',
-      ].join('\n'),
-      { mode: 0o700 },
-    );
-    const runner = createManuscriptPdfCommandRunner();
-
-    await expect(
-      runner.run(executable, [survivor], {
-        cwd: root,
-        env: process.env,
-        timeoutMs: 2_000,
-        maxBytes: 128,
-      }),
-    ).rejects.toMatchObject({ code: 'manuscript_pdf_compile_failed' });
-    await new Promise((resolve) => setTimeout(resolve, 500));
-
-    expect(existsSync(survivor)).toBe(false);
-    runner.dispose();
-  });
-
-  it('kills every active command group when disposed during app shutdown', async () => {
-    const executable = join(root, 'dispose.sh');
-    const ready = join(root, 'ready');
-    const survivor = join(root, 'dispose-survivor');
-    await writeFile(
-      executable,
-      [
-        '#!/bin/sh',
-        'printf ready > "$1"',
-        '(sleep 0.35; printf survived > "$2") &',
-        'while :; do sleep 1; done',
-        '',
-      ].join('\n'),
-      { mode: 0o700 },
-    );
-    const runner = createManuscriptPdfCommandRunner();
-    const pending = runner.run(executable, [ready, survivor], {
+    // The runner starts this clock at spawn time, so it cannot be tied to the
+    // command's own progress. One second is far beyond the few milliseconds an
+    // already resident /bin/sh needs to publish its group, and a machine slow
+    // enough to miss it fails in claimProcessGroup with that exact reason
+    // rather than passing without having tested anything.
+    const pending = runner.run('/bin/sh', processGroupCommand(pgidFile, ['wait']), {
       cwd: root,
       env: process.env,
-      timeoutMs: 2_000,
-      maxBytes: 1024,
+      timeoutMs: 1_000,
+      maxBytes: 1_024,
     });
-    // Up to 1.5 s for a newly written script to start (macOS scans new executables first).
-    for (let attempt = 0; attempt < 150 && !existsSync(ready); attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
 
-    expect(existsSync(ready)).toBe(true);
-    runner.dispose();
     await expect(pending).rejects.toMatchObject({ code: 'manuscript_pdf_compile_failed' });
-    await new Promise((resolve) => setTimeout(resolve, 500));
 
-    expect(existsSync(survivor)).toBe(false);
-  });
+    await expectProcessGroupKilled(await claimProcessGroup(pgidFile));
+    runner.dispose();
+  }, 20_000);
+
+  it('kills descendants when compiler output exceeds its bound', async () => {
+    const pgidFile = join(root, 'overflow-pgid');
+    const runner = createManuscriptPdfCommandRunner();
+    // The output that crosses maxBytes is written only after the grandchild
+    // exists, so the bound can never be reached before the group holds more
+    // than the direct child. The timeout is long enough that the bound, not
+    // the clock, is what ends this command.
+    const pending = runner.run(
+      '/bin/sh',
+      processGroupCommand(pgidFile, ["while :; do printf '0123456789abcdef'; done"]),
+      {
+        cwd: root,
+        env: process.env,
+        timeoutMs: 10_000,
+        maxBytes: 128,
+      },
+    );
+
+    await expect(pending).rejects.toMatchObject({ code: 'manuscript_pdf_compile_failed' });
+
+    await expectProcessGroupKilled(await claimProcessGroup(pgidFile));
+    runner.dispose();
+  }, 20_000);
+
+  it('kills every active command group when disposed during app shutdown', async () => {
+    const pgidFile = join(root, 'dispose-pgid');
+    const runner = createManuscriptPdfCommandRunner();
+    const pending = runner.run('/bin/sh', processGroupCommand(pgidFile, ['wait']), {
+      cwd: root,
+      env: process.env,
+      timeoutMs: 10_000,
+      maxBytes: 1_024,
+    });
+    // Observed from the start so that a failure below cannot leave the
+    // command's rejection unhandled.
+    const rejected = expect(pending).rejects.toMatchObject({
+      code: 'manuscript_pdf_compile_failed',
+    });
+    // Shutdown is the test's own move, so it happens only once the group is
+    // up: nothing here waits on a deadline the machine decides.
+    const processGroupId = await claimProcessGroup(pgidFile);
+    expect(processGroupAlive(processGroupId)).toBe(true);
+
+    runner.dispose();
+
+    await rejected;
+    await expectProcessGroupKilled(processGroupId);
+  }, 20_000);
 
   it('rejects compiler output that exceeds the generated staging budget', async () => {
     const executable = join(root, 'generate.sh');
