@@ -278,6 +278,33 @@ const Schema = z
       .default([]),
   })
   .strict();
+/**
+ * 논문 요약 AI is a separate chat from the AI 비서, so its turns are kept under a scope of their
+ * own. The profile's own digest stays in front of the key, so changing what the routine may read
+ * still starts a fresh conversation for a paper exactly as it does for the assistant.
+ */
+const PAPER_SCOPE_MARK = ':paper:';
+
+/**
+ * Whether one stored conversation is the chat being displayed, whatever permission scope it was
+ * written under. The assistant owns every scope with no paper mark; a paper owns the scopes that
+ * end with its own mark. Nothing belongs to both.
+ */
+const belongsToChat = (scope: string, paperKey?: string) => {
+  const mark = scope.indexOf(PAPER_SCOPE_MARK);
+  if (paperKey === undefined) return mark < 0;
+  return mark >= 0 && scope.slice(mark) === paperScopeMark(paperKey);
+};
+
+const paperScopeMark = (paperKey: string) =>
+  `${PAPER_SCOPE_MARK}${createHash('sha256').update(paperKey).digest('hex')}`;
+
+const conversationScope = (profile: AssistantProfile, paperKey?: string) =>
+  paperKey ? paperConversationScope(scopeDigest(profile), paperKey) : scopeDigest(profile);
+
+export const paperConversationScope = (profileScope: string, paperKey: string) =>
+  `${profileScope}${paperScopeMark(paperKey)}`;
+
 const scopeDigest = (profile: AssistantProfile) =>
   createHash('sha256')
     .update(
@@ -591,15 +618,14 @@ export class BriefingWorkspaceStore {
       ];
     });
   }
-  async conversation(profile: AssistantProfile) {
+  async conversation(profile: AssistantProfile, paperKey?: string) {
     const state = await this.state.read();
     const current = state.profiles.find((p) => p.routineId === profile.routineId);
     if (!current || !this.owns(current) || scopeDigest(current) !== scopeDigest(profile))
       throw new Error('assistant_settings_changed');
+    const scope = conversationScope(current, paperKey);
     return modelFacingMessages(
-      state.conversations.find(
-        (c) => c.routineId === current.routineId && c.scope === scopeDigest(current),
-      ),
+      state.conversations.find((c) => c.routineId === current.routineId && c.scope === scope),
     );
   }
   async recordBriefingNotification(
@@ -686,27 +712,68 @@ export class BriefingWorkspaceStore {
       calendarConfirmationRequired: profiles.some((p) => this.requiresPerRequestConfirmation(p)),
     };
   }
-  /** Local display for an already-owned routine. Never use this union as model input or approval. */
-  async conversationDisplay(profile: AssistantProfile) {
+  /**
+   * Local display for an already-owned routine. Never use this union as model input or approval.
+   *
+   * One scope only. Until 0.58.152 this flattened every conversation of the routine into one list,
+   * so a question asked about a paper appeared in the AI 비서's own screen even once the two were
+   * stored apart: 논문 요약 AI was a separate chat everywhere except where the user could see it.
+   */
+  async conversationDisplay(profile: AssistantProfile, paperKey?: string) {
     const state = await this.state.read();
     const current = state.profiles.find((p) => p.routineId === profile.routineId);
     if (!current || !this.owns(current) || scopeDigest(current) !== scopeDigest(profile))
       throw new Error('assistant_settings_changed');
+    const scope = conversationScope(current, paperKey);
     const histories = state.conversations.filter((c) => c.routineId === current.routineId);
-    const messages = histories
-      .flatMap((c) => c.messages)
-      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
-    const contextStartedAt = histories.find(
-      (c) => c.scope === scopeDigest(current),
-    )?.contextStartedAt;
+    // Which chat this is, across permission changes. An owner may read their own earlier chat
+    // locally after the routine's permissions changed, which is why this is not an exact scope
+    // match; what it must not do is put the two chats in one list.
+    const mine = histories.filter((c) => belongsToChat(c.scope, paperKey));
+    const current_ = mine.find((c) => c.scope === scope);
     return {
-      messages,
-      otherScopeMessages: histories
-        .filter((c) => c.scope !== scopeDigest(current))
+      messages: mine
+        .flatMap((c) => c.messages)
+        .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)),
+      // Of what is shown, how much was written under a previous permission scope. The screen says
+      // so and that those are not re-sent to the model. The other chat is not counted here: it is
+      // not shown at all, and it lives on its own screen.
+      otherScopeMessages: mine
+        .filter((c) => c.scope !== scope)
         .reduce((sum, c) => sum + c.messages.length, 0),
       // Where the screen draws the "new conversation" line. Display only, never an approval.
-      ...(contextStartedAt ? { contextStartedAt } : {}),
+      ...(current_?.contextStartedAt ? { contextStartedAt: current_.contextStartedAt } : {}),
     };
+  }
+
+  /**
+   * How much has been asked about each paper, for the 논문 요약 list's mark and its filter. Keyed by
+   * the conversation scope so the caller matches it with `paperConversationScope`. Counts only;
+   * no message text leaves this method.
+   */
+  async paperConversationCounts(profile: AssistantProfile, paperKeys: readonly string[]) {
+    const state = await this.state.read();
+    const current = state.profiles.find((p) => p.routineId === profile.routineId);
+    if (!current || !this.owns(current) || scopeDigest(current) !== scopeDigest(profile))
+      throw new Error('assistant_settings_changed');
+    const mine = state.conversations.filter((c) => c.routineId === current.routineId);
+    const counts: Record<string, { turns: number; lastAskedAt: string; lastQuestion: string }> = {};
+    for (const key of new Set(paperKeys)) {
+      // Every permission scope of this paper, so a count does not reset because a routine's
+      // reading permissions changed.
+      const asked = mine
+        .filter((c) => belongsToChat(c.scope, key))
+        .flatMap((c) => c.messages)
+        .filter((m) => m.role === 'user')
+        .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+      if (!asked.length) continue;
+      counts[key] = {
+        turns: asked.length,
+        lastAskedAt: asked.at(-1)!.createdAt,
+        lastQuestion: asked.at(-1)!.text.slice(0, 200),
+      };
+    }
+    return counts;
   }
   /**
    * `/new`: later turns start from an empty context. Records are kept; the checkpoint summarized
@@ -738,26 +805,32 @@ export class BriefingWorkspaceStore {
     });
     return result;
   }
-  async appendConversation(profile: AssistantProfile, message: ConversationMessage) {
+  async appendConversation(
+    profile: AssistantProfile,
+    message: ConversationMessage,
+    paperKey?: string,
+  ) {
     const parsed = ConversationMessageSchema.parse(message);
     await this.state.mutate((state) => {
       const current = state.profiles.find((p) => p.routineId === profile.routineId);
       if (!current || !this.owns(current) || scopeDigest(current) !== scopeDigest(profile))
         throw new Error('assistant_settings_changed');
+      const scope = conversationScope(current, paperKey);
       let conversation = state.conversations.find(
-        (c) => c.routineId === current.routineId && c.scope === scopeDigest(current),
+        (c) => c.routineId === current.routineId && c.scope === scope,
       );
       if (!conversation) {
-        conversation = { routineId: current.routineId, scope: scopeDigest(current), messages: [] };
+        conversation = { routineId: current.routineId, scope, messages: [] };
         state.conversations.push(conversation);
       }
       conversation.messages.push(parsed);
     });
   }
-  async conversationCheckpoint(profile: AssistantProfile) {
-    await this.conversation(profile);
+  async conversationCheckpoint(profile: AssistantProfile, paperKey?: string) {
+    await this.conversation(profile, paperKey);
+    const scope = conversationScope(profile, paperKey);
     return (await this.state.read()).conversations.find(
-      (c) => c.routineId === profile.routineId && c.scope === scopeDigest(profile),
+      (c) => c.routineId === profile.routineId && c.scope === scope,
     )?.checkpoint;
   }
   async saveConversationCheckpoint(profile: AssistantProfile, checkpoint: ConversationCheckpoint) {

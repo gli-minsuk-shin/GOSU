@@ -2,15 +2,23 @@ import type { BriefingHistory } from '../briefing-workspace-store';
 import { versionedPaperId } from './paper-identity';
 import { cleanPaperTags, paperTagAliases, paperTagKey } from './paper-tags';
 import { paperCategoryLabel } from './paper-classification';
-import type { PaperConversation } from './paper-summary-contract';
+/** Counts only; the conversation itself is read on the 논문 요약 screen, never in this list. */
+export type PaperConversationCount = {
+  turns: number;
+  lastAskedAt: string;
+  lastQuestion: string;
+};
 
 export type SavedPaper = {
   historyId: string;
   savedAt: string;
   classificationKey?: string;
   private?: boolean;
-  /** What the 논문 요약 AI was asked about this paper. Only papers in the shared library have it. */
-  conversation?: PaperConversation;
+  /**
+   * What the 논문 요약 AI was asked about this paper, from that paper's own conversation. Every
+   * paper in the list can have one, not only the few that are shared-library records.
+   */
+  conversation?: PaperConversationCount;
   item: BriefingHistory['items'][number];
 };
 const normalize = (value: string) => value.normalize('NFKC').toLocaleLowerCase().trim();

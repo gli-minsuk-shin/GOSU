@@ -4,6 +4,8 @@ import { SavedPaperSummaries } from './saved-paper-summaries';
 import { sourceRequest } from './live-client';
 import { refreshBriefingSummary } from './briefing-analysis-client';
 import { BriefingHistoryItem } from './briefing-history-view';
+import { BriefingChat } from './briefing-chat';
+import { initialRealWorkspace } from './workspace-defaults';
 import { readFileSync } from 'node:fs';
 vi.mock('./live-client', () => ({ sourceRequest: vi.fn() }));
 vi.mock('./briefing-analysis-client', () => ({ refreshBriefingSummary: vi.fn() }));
@@ -137,6 +139,52 @@ it('selects multiple tags in a checkbox panel with OR matching, and intersects t
   expect(sourceRequest).toHaveBeenCalledTimes(1);
   expect(refreshBriefingSummary).not.toHaveBeenCalled();
 });
+it('opens a paper conversation inside 논문 요약, separate from the AI 비서 pane', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const routine = initialRealWorkspace('2026-09-10T00:00:00Z').routines[0]!;
+  const discussed = {
+    ...tagPapers[0]!,
+    item: { ...tagPapers[0]!.item, sourceUrl: 'https://arxiv.org/abs/2601.00001v1' },
+    conversation: { turns: 2, lastAskedAt: '2026-09-22T01:00:00.000Z', lastQuestion: '가정은?' },
+  };
+  vi.mocked(sourceRequest).mockResolvedValue({ papers: [discussed, tagPapers[1]], feedback: {} });
+  await act(() => {
+    ui = create(<SavedPaperSummaries routineId={routine.id} routine={routine} />, {
+      createNodeMock: (e) => (e.type === 'textarea' ? { focus: vi.fn() } : null),
+    });
+  });
+  const panel = () => ui.root.findAllByProps({ className: 'briefing-paper-chat-panel' });
+  const openButtons = () =>
+    ui.root
+      .findAllByProps({ className: 'briefing-paper-open-chat' })
+      .filter((n) => n.props.onClick);
+
+  // Nothing is open until a paper is chosen, and each row offers its own conversation.
+  expect(panel()).toHaveLength(0);
+  expect(openButtons()).toHaveLength(2);
+
+  await act(() => openButtons()[0]!.props.onClick());
+  expect(panel()).toHaveLength(1);
+  // The panel names the paper and says whose conversation this is.
+  const shown = JSON.stringify(ui.toJSON());
+  expect(shown).toContain('논문 요약 AI');
+  expect(shown).toContain('Language study');
+  expect(shown).toContain('AI 비서 대화에 섞이지 않고');
+
+  // The chat it mounts is told which paper it belongs to, so it reads and writes that thread.
+  const chat = ui.root.findByType(BriefingChat);
+  expect(chat.props.paperChat).toMatchObject({
+    routineId: routine.id,
+    paperId: 'p1',
+    sourceUrl: 'https://arxiv.org/abs/2601.00001v1',
+  });
+  // Never the assistant's transient attachment, which is what mixed the two before.
+  expect(chat.props.paperReference).toBeUndefined();
+
+  await act(() => ui.root.findByProps({ 'aria-label': '논문 대화 닫기' }).props.onClick());
+  expect(panel()).toHaveLength(0);
+});
+
 it('filters the library to the papers the 논문 요약 AI was asked about, together with the other filters', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   const discussed = {

@@ -6,6 +6,17 @@ export const PaperChatReferenceSchema = z
     historyId: z.string().max(300),
     paperId: z.string().max(300),
     title: z.string().max(1000),
+    /**
+     * The paper's own link, when the card that opened this chat had one. It is what makes the same
+     * paper reached from two briefings one conversation instead of two. Web links only: this value
+     * comes from a card and is used to name a conversation, so a `file:` or any other scheme has no
+     * business here.
+     */
+    sourceUrl: z
+      .string()
+      .max(2000)
+      .refine((value) => /^https?:\/\//u.test(value), 'paper_source_url_scheme')
+      .optional(),
   })
   .strict();
 export type PaperChatReference = z.infer<typeof PaperChatReferenceSchema>;
@@ -14,8 +25,8 @@ export function PaperChatButton({ reference }: { reference: PaperChatReference }
     <button
       type="button"
       className="briefing-paper-chat-button"
-      title="이 논문으로 AI 비서와 대화"
-      aria-label={`${reference.title} · AI 비서에게 질문`}
+      title="이 논문의 논문 요약 AI 대화를 엽니다"
+      aria-label={`${reference.title} · 논문 요약 AI에게 질문`}
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();

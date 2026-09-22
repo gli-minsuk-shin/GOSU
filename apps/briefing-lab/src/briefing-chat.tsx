@@ -32,6 +32,7 @@ import { ContextUsageMeter } from './context-usage-meter';
 import type { ContextUsage } from './context-usage';
 import { ConversationMessageSchema, type ConversationMessage } from './briefing-conversation';
 import type { PaperChatReference } from './paper-chat-reference';
+import { paperConversationKey } from './paper-identity';
 import { DEFAULT_BRIEFING_QUESTIONS } from './briefing-questions';
 import { settingsProposalText, type SettingsProposal } from './assistant-settings-proposal';
 import { AssistantQueue, useAssistantQueue } from './assistant-queue';
@@ -167,6 +168,7 @@ export function isNearLatestMessage(
 export function BriefingChat({
   globalMode = false,
   autoSuggestions = true,
+  paperChat,
   paperReference,
   routine,
   onSettings,
@@ -178,6 +180,12 @@ export function BriefingChat({
   globalMode?: boolean;
   /** Settings -> Agent: whether opening this chat also opens its suggested questions. */
   autoSuggestions?: boolean;
+  /**
+   * 논문 요약 AI: this whole chat belongs to one paper. Its transcript is that paper's own, never
+   * the AI 비서's, and every turn carries the paper. Distinct from `paperReference`, which attaches
+   * a paper to one question in the assistant's chat.
+   */
+  paperChat?: PaperChatReference | undefined;
   paperReference?: PaperChatReference | undefined;
   onSettings: (proposal?: SettingsProposal) => void;
   onBusyChange?: (busy: boolean) => void;
@@ -226,7 +234,12 @@ export function BriefingChat({
     setRestoreError('');
     void (async () => {
       try {
-        const result = await restoreBriefingConversation(routine.id, c.signal);
+        const result = await restoreBriefingConversation(
+          routine.id,
+          c.signal,
+          undefined,
+          paperChat,
+        );
         const saved = ConversationMessageSchema.array().parse(result?.messages ?? []);
         if (!c.signal.aborted) {
           const startedAt =
@@ -247,7 +260,7 @@ export function BriefingChat({
       }
     })();
     return () => c.abort();
-  }, [routine.id, restoreAttempt]);
+  }, [routine.id, restoreAttempt, paperChat && paperConversationKey(paperChat)]);
   const approvalNoteId = useId();
   const controller = useRef<AbortController | null>(null),
     paperReply = useRef<PaperSaveReplyHandler | null>(null),
@@ -462,8 +475,8 @@ export function BriefingChat({
         '/assistant/chat',
         {
           routineId: routine.id,
-          ...((queued?.paperReference ?? selectedPaper)
-            ? { paperReference: queued?.paperReference ?? selectedPaper }
+          ...((paperChat ?? queued?.paperReference ?? selectedPaper)
+            ? { paperReference: paperChat ?? queued?.paperReference ?? selectedPaper }
             : {}),
           ...(queued ? { queueId: queued.id, queueToken: queued.token } : {}),
           attachmentIds: queued?.attachmentIds ?? attachments.map((f) => f.id),

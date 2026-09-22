@@ -1,5 +1,6 @@
 import { sourceRequest } from './live-client';
 import type { ConversationMessage } from './briefing-conversation';
+import type { PaperChatReference } from './paper-chat-reference';
 const wait = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
     const abort = () => {
@@ -18,6 +19,8 @@ export async function restoreBriefingConversation(
   routineId: string,
   signal: AbortSignal,
   pause = wait,
+  /** A paper chat restores that paper's own thread, not the assistant's. */
+  paperReference?: PaperChatReference,
 ) {
   for (let attempt = 0; ; attempt++) {
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -27,7 +30,11 @@ export async function restoreBriefingConversation(
         otherScopeMessages?: number;
         /** Set once `/new` was used: where the screen draws the "new conversation" line. */
         contextStartedAt?: string;
-      }>('/assistant/conversation/get', { routineId }, signal);
+      }>(
+        '/assistant/conversation/get',
+        { routineId, ...(paperReference ? { paperReference } : {}) },
+        signal,
+      );
     } catch (error) {
       const transient =
         error instanceof TypeError ||

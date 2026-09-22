@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createCodexModelCatalog } from '@gosu/contracts';
+import { paperConversationKey } from './src/paper-identity';
 import { defaultLiveSettings, defaultAssistantPreferences } from '@gosu/briefing-core';
 import { runRoutineWithGosuLanguage } from './briefing-native';
 import { LiveSourceService } from './live-source-service';
@@ -525,50 +526,53 @@ it.each(['cancel', 'revoke'] as const)(
   },
 );
 
-it('records a question about a saved paper on that paper, and never loses the answer if it cannot', async () => {
+it('keeps a paper question out of the AI 비서 transcript, in the paper own thread', async () => {
   const s = await setup();
   vi.mocked(runRoutineWithGosuLanguage).mockResolvedValue(answer());
-  const noteConversation = vi.fn(async () => ({
-    updatedAt: '2026-09-22T01:00:00.000Z',
-    turns: 1,
-    entries: [
-      { askedAt: '2026-09-22T01:00:00.000Z', question: '이 논문의 가정은?', answer: 'Checked' },
-    ],
-  }));
-  s.service.sharedPaperLibrary = { list: async () => [], save: vi.fn(), noteConversation };
-  const libraryId = 'c'.repeat(64);
+  const paper = {
+    routineId: 'r',
+    historyId: '2026-09-22T00:00:00Z',
+    paperId: 'discovered',
+    title: 'A paper from a briefing',
+    sourceUrl: 'https://arxiv.org/abs/2601.12345v1',
+  };
 
-  // A chat opened from the 논문 요약 보관함 carries that record's id, so the turn is recorded on it.
-  const saved = await s.invoke(new AbortController().signal, '이 논문의 가정은?', [], {
-    paperReference: { routineId: 'r', historyId: '', paperId: libraryId, title: 'Saved paper' },
-  });
-  // The question is the user's own sentence and the answer is the model's text, not the raw envelope.
-  expect(noteConversation).toHaveBeenCalledExactlyOnceWith(libraryId, {
-    question: '이 논문의 가정은?',
-    answer: 'Checked synthetic sources',
-  });
-  expect(saved.at(-1)).toMatchObject({ type: 'result' });
-  expect(saved.at(-1)?.result?.conversationWarning).toBeUndefined();
+  await s.invoke(new AbortController().signal, '이 논문의 가정은?', [], { paperReference: paper });
+  await s.invoke(new AbortController().signal, '오늘 메일 요약해줘');
 
-  // A paper from a briefing's own history is not in the library, so nothing is recorded for it.
-  noteConversation.mockClear();
-  await s.invoke(new AbortController().signal, '이건 뭐야?', [], {
-    paperReference: {
-      routineId: 'r',
-      historyId: '2026-09-22T00:00:00Z',
-      paperId: 'discovered',
-      title: 'From a briefing',
-    },
-  });
-  expect(noteConversation).not.toHaveBeenCalled();
+  const profile = (await s.store.profile('r'))!;
+  const assistant = await owner(() => s.store.conversation(profile));
+  const thread = await owner(() => s.store.conversation(profile, paperConversationKey(paper)));
 
-  // A note that cannot be written is said out loud and the answer still arrives.
-  noteConversation.mockRejectedValueOnce(new Error('paper_library_record_missing'));
-  const failed = await s.invoke(new AbortController().signal, '결론은?', [], {
-    paperReference: { routineId: 'r', historyId: '', paperId: libraryId, title: 'Saved paper' },
+  // The assistant's own conversation holds only what was asked of the assistant.
+  expect(assistant.map((m) => m.text)).toEqual([
+    '오늘 메일 요약해줘',
+    expect.stringContaining('Checked synthetic sources'),
+  ]);
+  // The paper's thread holds only that paper's turn, and it is there to come back to.
+  expect(thread.map((m) => m.text)).toEqual([
+    '이 논문의 가정은?',
+    expect.stringContaining('Checked synthetic sources'),
+  ]);
+
+  // The same paper opened from another briefing is the same conversation, because the key is the
+  // paper and not the briefing that listed it.
+  await s.invoke(new AbortController().signal, '한계는?', [], {
+    paperReference: { ...paper, historyId: '2026-09-21T00:00:00Z', paperId: 'other-item' },
   });
-  const result = failed.at(-1);
-  expect(result).toMatchObject({ type: 'result' });
-  expect(result?.result?.answer).toContain('Checked synthetic sources');
-  expect(result?.result?.conversationWarning).toContain('논문 요약 보관함에 없어');
+  expect(
+    (await owner(() => s.store.conversation(profile, paperConversationKey(paper)))).map(
+      (m) => m.text,
+    ),
+  ).toEqual([
+    '이 논문의 가정은?',
+    expect.stringContaining('Checked synthetic sources'),
+    '한계는?',
+    expect.stringContaining('Checked synthetic sources'),
+  ]);
+  // And the assistant still has not seen any of it.
+  expect((await owner(() => s.store.conversation(profile))).map((m) => m.text)).toEqual([
+    '오늘 메일 요약해줘',
+    expect.stringContaining('Checked synthetic sources'),
+  ]);
 });

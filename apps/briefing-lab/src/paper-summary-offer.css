@@ -86,6 +86,61 @@
   width: 15px;
   height: 15px;
 }
+/* 논문 요약 AI's own chat, opened from one paper's row. It is a panel in this screen, not the AI
+   비서's pane, so the two conversations are separate where the user looks as well as where they are
+   stored. */
+.briefing-paper-chat-panel {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #d4dfcc;
+  border-radius: 10px;
+  background: #fbfdf9;
+}
+.briefing-paper-chat-panel > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.briefing-paper-chat-panel > header > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.briefing-paper-chat-panel > header span {
+  overflow: hidden;
+  color: #49672b;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.briefing-paper-chat-panel > header button {
+  padding: 4px 9px;
+  border: 1px solid #d4dfcc;
+  border-radius: 7px;
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.briefing-paper-row-tools > .briefing-paper-open-chat {
+  padding: 4px 9px;
+  border: 1px solid #d4dfcc;
+  border-radius: 7px;
+  background: #f3f7ef;
+  color: #49672b;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.briefing-paper-row-tools > .briefing-paper-open-chat:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 /* Papers the 논문 요약 AI was asked about: a quiet mark on the row, and the filter that shows only
    those rows. Both borrow the chat button's colours so they read as the same feature. */
 .briefing-paper-asked-mark {

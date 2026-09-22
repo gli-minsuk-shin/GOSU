@@ -86,9 +86,20 @@ it('sorts importance stably without mutating input and leaves unknown last', () 
 it('labels the paper action and rejects arbitrary context or URL injection', () => {
   const reference = { routineId: 'r', historyId: 'h', paperId: 'p', title: 'Exact paper' };
   expect(renderToStaticMarkup(<PaperChatButton reference={reference} />)).toContain(
-    'Exact paper · AI 비서에게 질문',
+    'Exact paper · 논문 요약 AI에게 질문',
   );
   expect(
     PaperChatReferenceSchema.safeParse({ ...reference, sourceUrl: 'file:///secret' }).success,
   ).toBe(false);
+  for (const scheme of ['javascript:alert(1)', 'data:text/html,x', 'ftp://host/p', '/etc/passwd'])
+    expect(PaperChatReferenceSchema.safeParse({ ...reference, sourceUrl: scheme }).success).toBe(
+      false,
+    );
+  // A paper's own web link is carried, because it is what names that paper's conversation.
+  expect(
+    PaperChatReferenceSchema.safeParse({
+      ...reference,
+      sourceUrl: 'https://arxiv.org/abs/2601.12345v1',
+    }).success,
+  ).toBe(true);
 });

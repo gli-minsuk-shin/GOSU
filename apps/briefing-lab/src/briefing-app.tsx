@@ -884,10 +884,12 @@ export function BriefingApp({
       if (!parsed.success || !workspace.routines.some((r) => r.id === parsed.data.routineId))
         return;
       onChange({ ...workspace, selectedRoutineId: parsed.data.routineId });
+      // 논문 요약 AI is its own chat and it lives in 논문 요약. Asking about a paper used to open the
+      // AI 비서 pane with the paper attached, which is what mixed the two conversations together.
       setPaperReference(parsed.data);
-      setChatOpen(true);
+      setTab('papers');
+      setChatOpen(false);
       setCopilotOpen(false);
-      setRightCollapsed(false);
     };
     if (typeof window === 'undefined') return;
     window.addEventListener?.(PAPER_CHAT_REFERENCE, choose);
@@ -1291,7 +1293,20 @@ export function BriefingApp({
                     </select>
                   </label>
                 )}
-                <SavedPaperSummaries key={routine.id} routineId={routine.id} />
+                <SavedPaperSummaries
+                  key={routine.id}
+                  routineId={routine.id}
+                  routine={routine}
+                  autoSuggestions={autoSuggestions}
+                  openPaper={paperReference?.routineId === routine.id ? paperReference : undefined}
+                  onOpenedPaper={() => setPaperReference(undefined)}
+                  onSettings={(proposal) => {
+                    setSettingsProposal(
+                      proposal ? { routineId: routine.id, value: proposal } : undefined,
+                    );
+                    setTab('settings');
+                  }}
+                />
               </>
             ) : tab === 'history' ? null : tab === 'manage' ? (
               <RoutineManager

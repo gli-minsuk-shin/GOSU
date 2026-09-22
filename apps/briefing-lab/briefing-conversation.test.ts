@@ -219,3 +219,82 @@ it('/new starts an empty model context but keeps every record for the screen and
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+it('keeps 논문 요약 AI and the AI 비서 in separate transcripts, each across permission changes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'paper-conversation-'));
+  try {
+    const owner = <T>(fn: () => T) => briefingClientContext.run('a'.repeat(64), fn);
+    const make = () => new BriefingWorkspaceStore(dir, async () => Buffer.alloc(32, 5));
+    const store = make();
+    const settings = {
+      routineId: 'r',
+      name: 'fixture',
+      timeZone: 'Asia/Seoul',
+      live: defaultLiveSettings(),
+      interest: { keywords: [], excluded: [] },
+      preferences: defaultAssistantPreferences(),
+    };
+    const profile = await owner(() => store.save(settings, async () => undefined));
+    const paper = 'arxiv:2601.12345v1';
+    const at = (n: number) => `2026-09-22T00:0${n}:00.000Z`;
+
+    await owner(() =>
+      store.appendConversation(profile, { role: 'user', text: '메일 요약', createdAt: at(0) }),
+    );
+    await owner(() =>
+      store.appendConversation(
+        profile,
+        { role: 'user', text: '이 논문은?', createdAt: at(1) },
+        paper,
+      ),
+    );
+
+    // Each side sees only its own, and the model is given only its own.
+    expect((await owner(() => store.conversation(profile))).map((m) => m.text)).toEqual([
+      '메일 요약',
+    ]);
+    expect((await owner(() => store.conversation(profile, paper))).map((m) => m.text)).toEqual([
+      '이 논문은?',
+    ]);
+    expect(
+      (await owner(() => store.conversationDisplay(profile))).messages.map((m) => m.text),
+    ).toEqual(['메일 요약']);
+    expect(
+      (await owner(() => store.conversationDisplay(profile, paper))).messages.map((m) => m.text),
+    ).toEqual(['이 논문은?']);
+
+    // Counting for the 논문 요약 list reads the paper's own thread, and knows nothing of the other.
+    expect(
+      await owner(() => store.paperConversationCounts(profile, [paper, 'arxiv:other'])),
+    ).toEqual({
+      [paper]: { turns: 1, lastAskedAt: at(1), lastQuestion: '이 논문은?' },
+    });
+
+    // A permission change starts a new context for both, and each still shows only its own history.
+    const changed = await owner(() =>
+      store.save(
+        { ...settings, preferences: { ...settings.preferences, providerId: 'claude-code' } },
+        async () => undefined,
+      ),
+    );
+    await owner(() =>
+      store.appendConversation(
+        changed,
+        { role: 'user', text: '다음 질문', createdAt: at(2) },
+        paper,
+      ),
+    );
+    const display = await owner(() => make().conversationDisplay(changed, paper));
+    expect(display.messages.map((m) => m.text)).toEqual(['이 논문은?', '다음 질문']);
+    expect(display.otherScopeMessages).toBe(1);
+    expect(
+      (await owner(() => make().conversationDisplay(changed))).messages.map((m) => m.text),
+    ).toEqual(['메일 요약']);
+    // The count spans the permission change too, so it does not reset under the user.
+    expect(
+      (await owner(() => make().paperConversationCounts(changed, [paper])))[paper]?.turns,
+    ).toBe(2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

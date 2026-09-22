@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import './paper-summary-offer.css';
 import { BriefingHistoryItem } from './briefing-history-view';
-import { importanceFirst } from './paper-chat-reference';
+import { importanceFirst, type PaperChatReference } from './paper-chat-reference';
+import type { BriefingRoutine } from '@gosu/briefing-core';
+import type { SettingsProposal } from './assistant-settings-proposal';
+import { BriefingChat } from './briefing-chat';
 import type { FeedbackDecision } from './briefing-insight-card';
 import { sourceRequest } from './live-client';
 import { refreshBriefingSummary } from './briefing-analysis-client';
@@ -21,7 +24,30 @@ import {
   PaperClassificationActions,
   PaperClassificationControl,
 } from './paper-classification-controls';
-export function SavedPaperSummaries({ routineId }: { routineId: string }) {
+export function SavedPaperSummaries({
+  routineId,
+  routine,
+  autoSuggestions = true,
+  onSettings,
+  openPaper,
+  onOpenedPaper,
+}: {
+  routineId: string;
+  /** Present inside Briefing Lab; the paper chat needs the routine it runs under. */
+  routine?: BriefingRoutine;
+  autoSuggestions?: boolean;
+  onSettings?: (proposal?: SettingsProposal) => void;
+  /** A paper's card elsewhere asked to talk about it; its conversation opens here. */
+  openPaper?: PaperChatReference | undefined;
+  onOpenedPaper?: (() => void) | undefined;
+}) {
+  /** Which paper's 논문 요약 AI conversation is open. Its own chat, never the AI 비서's. */
+  const [openChat, setOpenChat] = useState<PaperChatReference | null>(null);
+  useEffect(() => {
+    if (!openPaper) return;
+    setOpenChat(openPaper);
+    onOpenedPaper?.();
+  }, [openPaper]);
   const loadRevision = useRef(0);
   const activeRoutine = useRef(routineId);
   activeRoutine.current = routineId;
@@ -64,6 +90,7 @@ export function SavedPaperSummaries({ routineId }: { routineId: string }) {
     );
   };
   useEffect(() => {
+    setOpenChat(null);
     setPapers([]);
     setSelection([]);
     setConfirmDelete(false);
@@ -352,12 +379,31 @@ export function SavedPaperSummaries({ routineId }: { routineId: string }) {
                     선택
                   </label>
                   <PaperClassificationControl routineId={routineId} paper={p} onChanged={load} />
+                  <button
+                    type="button"
+                    className="briefing-paper-open-chat"
+                    disabled={!routine}
+                    title={
+                      routine
+                        ? '이 논문의 논문 요약 AI 대화를 엽니다. AI 비서 대화와 섞이지 않습니다.'
+                        : '브리핑 루틴을 먼저 선택해주세요.'
+                    }
+                    onClick={() =>
+                      setOpenChat({
+                        routineId,
+                        historyId: p.historyId,
+                        paperId: p.item.id,
+                        title: p.item.title,
+                        ...(p.item.sourceUrl ? { sourceUrl: p.item.sourceUrl } : {}),
+                      })
+                    }
+                  >
+                    AI 질의응답
+                  </button>
                   {p.conversation && (
                     <span
                       className="briefing-paper-asked-mark"
-                      title={`논문 요약 AI 질의응답 ${p.conversation.turns}회 · 마지막 질문: ${
-                        p.conversation.entries.at(-1)?.question ?? ''
-                      }`}
+                      title={`논문 요약 AI 질의응답 ${p.conversation.turns}회 · 마지막 질문: ${p.conversation.lastQuestion}`}
                       aria-label={`AI 질의응답 ${p.conversation.turns}회`}
                     >
                       <svg
@@ -426,6 +472,31 @@ export function SavedPaperSummaries({ routineId }: { routineId: string }) {
         <button type="button" className="briefing-button" onClick={() => setLimit((n) => n + 30)}>
           논문 더 보기 ({visible.length - limit}편)
         </button>
+      )}
+      {openChat && routine && (
+        <section className="briefing-paper-chat-panel" aria-label="논문 요약 AI 질의응답">
+          <header>
+            <div>
+              <strong>논문 요약 AI</strong>
+              <span>{openChat.title}</span>
+            </div>
+            <button type="button" onClick={() => setOpenChat(null)} aria-label="논문 대화 닫기">
+              닫기
+            </button>
+          </header>
+          <p className="briefing-muted">
+            이 논문만의 대화입니다. AI 비서 대화에 섞이지 않고, 같은 논문을 다시 열면 이어집니다.
+            사용할 모델은 설정 → Agent의 논문 분석·질의응답 AI에서 정합니다.
+          </p>
+          <BriefingChat
+            key={`${openChat.historyId}:${openChat.paperId}`}
+            routine={routine}
+            paperChat={openChat}
+            autoSuggestions={autoSuggestions}
+            onSettings={onSettings ?? (() => undefined)}
+            onBusyChange={() => undefined}
+          />
+        </section>
       )}
     </section>
   );

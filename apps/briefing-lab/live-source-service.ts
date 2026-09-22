@@ -119,7 +119,8 @@ import {
 } from './src/briefing-notifications';
 import { PaperSummarySaveSchema } from './src/paper-summary-contract';
 import { sharedPaperView } from './src/shared-paper-view';
-import { savedLibraryPaperId } from './src/paper-identity';
+import { paperConversationKey } from './src/paper-identity';
+import { PaperChatReferenceSchema } from './src/paper-chat-reference';
 import {
   compactConversationNow,
   historyPlan,
@@ -2667,9 +2668,33 @@ export class LiveSourceService {
             return [];
           })) ?? []
         ).map(sharedPaperView);
-        const papers = (
+        const classified = (
           await this.workspace.classificationViews(input.routineId, [...routinePapers, ...shared])
         ).sort((a, b) => Date.parse(b.savedAt) - Date.parse(a.savedAt));
+        // What has been asked about each paper, for the list's mark and its filter. Read from the
+        // conversation store, so a paper that came from a briefing counts the same as one in the
+        // shared library: before 0.58.152 only the library's own records could carry this, and of
+        // 101 papers in a real library exactly three were such records.
+        const keyed = classified.map((paper) => ({
+          paper,
+          key: paperConversationKey({
+            historyId: paper.historyId,
+            paperId: paper.item.id,
+            ...(paper.item.sourceUrl ? { sourceUrl: paper.item.sourceUrl } : {}),
+          }),
+        }));
+        const conversationCounts = profile
+          ? await this.workspace
+              .paperConversationCounts(
+                profile,
+                keyed.map((k) => k.key),
+              )
+              .catch(() => ({}) as Record<string, never>)
+          : {};
+        const papers = keyed.map(({ paper, key }) => {
+          const found = conversationCounts[key];
+          return found ? { ...paper, conversation: found } : paper;
+        });
         let feedback: Record<string, 'important' | 'not-interested'> = {};
         try {
           feedback = await this.memory.feedbackChoices(
@@ -3269,10 +3294,19 @@ export class LiveSourceService {
         return json(200, await this.attachments.release(input.routineId, input.attachmentId));
       }
       if (path === '/assistant/conversation/get') {
-        const input = z.object({ routineId }).strict().parse(body);
+        const input = z
+          .object({ routineId, paperReference: PaperChatReferenceSchema.optional() })
+          .strict()
+          .parse(body);
         const profile = await this.workspace.profile(input.routineId);
         if (!profile) throw new Error('assistant_settings_required');
-        return json(200, await this.workspace.conversationDisplay(profile));
+        return json(
+          200,
+          await this.workspace.conversationDisplay(
+            profile,
+            input.paperReference ? paperConversationKey(input.paperReference) : undefined,
+          ),
+        );
       }
       if (path === '/assistant/conversation/new' || path === '/assistant/conversation/compact') {
         const input = z.object({ routineId }).strict().parse(body);
@@ -3409,13 +3443,19 @@ export class LiveSourceService {
             if (!this.attachments) throw new Error('assistant_attachments_unavailable');
             attached = this.attachments.claim(profile, input.attachmentIds);
           }
-          const past = await this.workspace.conversation(profile);
+          // 논문 요약 AI is its own chat. A turn about one paper reads and writes that paper's own
+          // transcript, so the AI 비서's conversation stays about what the user was discussing with
+          // it and a paper's thread is still there the next time that paper is opened.
+          const paperKey = input.paperReference
+            ? paperConversationKey(input.paperReference)
+            : undefined;
+          const past = await this.workspace.conversation(profile, paperKey);
           const paperSaveScope = approvedPaperSaveScope(
             input.prompt,
             past,
             !input.queueId && !input.attachmentIds?.length,
           );
-          const checkpoint = await this.workspace.conversationCheckpoint(profile);
+          const checkpoint = await this.workspace.conversationCheckpoint(profile, paperKey);
           const policy = await this.modelRouting?.();
           // The assistant's provider and model come from Settings → Agent, like every Briefing usage.
           const assistantPreferences = routedBriefingPreferences(
@@ -3423,11 +3463,11 @@ export class LiveSourceService {
             policy,
             briefingChatUsage(Boolean(input.paperReference)),
           );
-          await this.workspace.appendConversation(profile, {
-            role: 'user',
-            text: input.prompt,
-            createdAt: new Date().toISOString(),
-          });
+          await this.workspace.appendConversation(
+            profile,
+            { role: 'user', text: input.prompt, createdAt: new Date().toISOString() },
+            paperKey,
+          );
           const feedbackProfileReader = (
             this.memory as unknown as {
               feedbackProfile?: (routineId: string) => Promise<FeedbackProfile>;
@@ -3545,7 +3585,7 @@ export class LiveSourceService {
               // The current context only: what is above a `/new` line is not reachable by the model.
               searchConversation: async (query, from, to) =>
                 searchConversationRecords(
-                  await this.workspace.conversation(profile),
+                  await this.workspace.conversation(profile, paperKey),
                   query,
                   from,
                   to,
@@ -3721,46 +3761,28 @@ export class LiveSourceService {
             (detail) => send({ type: 'progress', detail }),
           );
           let persistenceWarning: string | undefined;
-          let conversationWarning: string | undefined;
           try {
-            await this.workspace.appendConversation(profile, {
-              role: 'assistant',
-              text: result.answer,
-              createdAt: new Date().toISOString(),
-              invocation: result.invocation,
-              hasOtherPendingActions: Boolean(
-                result.events.length || result.tasks.length || result.settingsProposal,
-              ),
-              ...(result.contextUsage ? { contextUsage: result.contextUsage } : {}),
-            });
+            await this.workspace.appendConversation(
+              profile,
+              {
+                role: 'assistant',
+                text: result.answer,
+                createdAt: new Date().toISOString(),
+                invocation: result.invocation,
+                hasOtherPendingActions: Boolean(
+                  result.events.length || result.tasks.length || result.settingsProposal,
+                ),
+                ...(result.contextUsage ? { contextUsage: result.contextUsage } : {}),
+              },
+              paperKey,
+            );
           } catch {
             persistenceWarning =
               '답변은 완료됐지만 대화 저장에 실패했습니다. 앱을 닫기 전에 내용을 복사해주세요. 요청을 자동으로 다시 실행하지 않습니다.';
           }
-          // A question about a paper that is in the 논문 요약 보관함 is recorded on that paper, so
-          // the user can find later which papers they discussed and what was said. No model is
-          // called for it. A failure here never fails the answer: it is reported in its own line.
-          const libraryPaperId = savedLibraryPaperId(input.paperReference);
-          if (libraryPaperId && this.sharedPaperLibrary?.noteConversation) {
-            try {
-              await this.sharedPaperLibrary.noteConversation(libraryPaperId, {
-                question: input.prompt,
-                answer: result.answer,
-              });
-            } catch (error) {
-              conversationWarning =
-                error instanceof Error && error.message === 'paper_library_record_missing'
-                  ? '이 논문은 논문 요약 보관함에 없어 대화 기록을 남기지 않았습니다. 답변은 그대로입니다.'
-                  : '답변은 완료됐지만 이 논문에 대화 기록을 남기지 못했습니다. 답변은 그대로입니다.';
-            }
-          }
           send({
             type: 'result',
-            result: {
-              ...result,
-              ...(persistenceWarning ? { persistenceWarning } : {}),
-              ...(conversationWarning ? { conversationWarning } : {}),
-            },
+            result: { ...result, ...(persistenceWarning ? { persistenceWarning } : {}) },
           });
         } catch (error) {
           queueError = sourceError(error);

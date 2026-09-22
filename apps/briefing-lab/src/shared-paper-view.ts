@@ -5,7 +5,6 @@ export function sharedPaperView(record: PaperSummaryRecord): SavedPaper {
     return {
       historyId: 'shared:' + record.id,
       savedAt: record.savedAt,
-      ...(record.conversation ? { conversation: record.conversation } : {}),
       item: {
         ...record.paper.insight,
         id: record.id,
@@ -29,7 +28,6 @@ export function sharedPaperView(record: PaperSummaryRecord): SavedPaper {
   return {
     historyId: 'shared:' + record.id,
     savedAt: record.savedAt,
-    ...(record.conversation ? { conversation: record.conversation } : {}),
     item: {
       id: record.id,
       title: record.title,
