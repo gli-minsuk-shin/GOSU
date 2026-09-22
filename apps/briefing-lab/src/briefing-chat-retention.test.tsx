@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { useState } from 'react';
-import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, expect, it, vi } from 'vitest';
 import { BriefingApp } from './briefing-app';
 import { BriefingChat, isNearLatestMessage } from './briefing-chat';
+import { SavedPaperSummaries } from './saved-paper-summaries';
 import { initialRealWorkspace } from './workspace-defaults';
 import {
   defaultAssistantPreferences,
@@ -194,6 +195,186 @@ it('never hands a paper to the AI 비서 when one is asked about', async () => {
   expect(ui.root.findAllByProps({ className: 'briefing-paper-reference-tag' })).toHaveLength(0);
   // The question did go somewhere: the paper's own conversation is the one that carries it.
   expect(chats.find((n) => n.props.paperChat)?.props.paperChat).toMatchObject({ paperId: 'p' });
+});
+const paperLibrary = [
+  {
+    historyId: 'h',
+    savedAt: '2026-09-09T00:00:00Z',
+    item: {
+      id: 'p1',
+      title: 'Language study',
+      kind: 'papers',
+      summary: 'Saved result',
+      readScope: 'abstract',
+      tags: ['LLM'],
+      sourceUrl: 'https://arxiv.org/abs/2601.00001v1',
+    },
+  },
+];
+async function mountWithPapers() {
+  vi.stubGlobal('document', { documentElement: { dataset: {} } });
+  vi.stubGlobal('window', {
+    innerWidth: 1280,
+    location: { search: '' },
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  });
+  vi.mocked(sourceRequest).mockResolvedValue({
+    papers: paperLibrary,
+    feedback: {},
+    history: [],
+    choices: {},
+  });
+  return mount();
+}
+/** The right-hand pane, found by its label so restyling its class names cannot break these. */
+const rightPane = () => ui.root.findByProps({ 'aria-label': '브리핑 상세 정보' });
+const paneChats = () => rightPane().findAllByType(BriefingChat);
+const openFirstPaperConversation = async () => {
+  await click('논문 요약');
+  await act(() =>
+    ui.root
+      .findAllByProps({ className: 'briefing-paper-open-chat' })
+      .filter((n) => n.props.onClick)[0]!
+      .props.onClick(),
+  );
+};
+it('opens a paper conversation in the right pane, not under the paper list', async () => {
+  // 0.58.155 rendered it as the last element of 논문 요약, under every card, and scrolled the page
+  // down to it. A conversation belongs in the pane on the right, where the AI 비서 lives: while
+  // 논문 요약 is the open tab, the paper's own chat takes that slot.
+  await mountWithPapers();
+
+  await openFirstPaperConversation();
+
+  const paperChats = paneChats().filter((n) => n.props.paperChat);
+  expect(paperChats).toHaveLength(1);
+  // Opening it expands the pane; holding it collapsed would be the same dead button in a new place.
+  expect(paperChats[0]!.props.visible).toBe(true);
+  // Nothing is left under the list: the screen itself no longer renders a chat at all.
+  expect(ui.root.findByType(SavedPaperSummaries).findAllByType(BriefingChat)).toHaveLength(0);
+});
+it('hands the pane back to the AI 비서 on another tab without unmounting the paper chat', async () => {
+  // The assistant is already open, which is the case that bites: the user is talking to it, asks
+  // about a paper, then navigates away. Neither conversation may be reset by the other's turn in
+  // the pane -- the rule RetainedBriefingChats already follows for routines.
+  await mountWithPapers();
+  await click('AI 비서');
+  await openFirstPaperConversation();
+
+  await click('개인 연구 브리핑');
+
+  const showing = paneChats().filter((n) => n.props.visible !== false);
+  expect(showing.length).toBeGreaterThan(0);
+  expect(showing.every((n) => !n.props.paperChat)).toBe(true);
+  expect(ui.root.findAllByType(BriefingChat).some((n) => n.props.paperChat)).toBe(true);
+});
+it('shows the same paper conversation again on returning to 논문 요약', async () => {
+  await mountWithPapers();
+  await click('AI 비서');
+  await openFirstPaperConversation();
+  await click('개인 연구 브리핑');
+
+  await click('논문 요약');
+
+  const showing = paneChats().filter((n) => n.props.visible !== false);
+  expect(showing).toHaveLength(1);
+  expect(showing[0]!.props.paperChat).toMatchObject({ paperId: 'p1' });
+});
+it('keeps the AI 비서 mounted behind the paper chat, so an unsent draft survives', async () => {
+  // Only one of the two may show, but the other has to be hidden rather than dropped: a
+  // BriefingChat that unmounts loses whatever was typed into it, and losing a conversation by
+  // clicking away would be a new version of the complaint this change answers.
+  await mountWithPapers();
+  await click('AI 비서');
+  const assistant = paneChats().find((n) => !n.props.paperChat)!;
+  await act(() =>
+    assistant
+      .findByType('textarea')
+      .props.onChange({ target: { value: 'Unsent to the assistant' } }),
+  );
+
+  await openFirstPaperConversation();
+
+  const showing = paneChats().filter((n) => n.props.visible !== false);
+  expect(showing).toHaveLength(1);
+  expect(showing[0]!.props.paperChat).toMatchObject({ paperId: 'p1' });
+  // The very same instance is still there, holding the draft.
+  expect(paneChats().find((n) => !n.props.paperChat)).toBe(assistant);
+  expect(assistant.findByType('textarea').props.value).toBe('Unsent to the assistant');
+});
+it('gives the paper chat the same composer tools as the AI 비서, file attachment included', async () => {
+  // Both run the same BriefingChat, so the tools were never actually missing -- what hid them was
+  // the old panel, a short box under the paper list where the composer had no room to breathe.
+  // Pinned so that splitting the two panes later cannot quietly leave one with fewer tools.
+  await mountWithPapers();
+  await click('AI 비서');
+  const labels = (chat: ReactTestInstance) =>
+    chat
+      .findAllByType('button')
+      .map((b) => b.props['aria-label'])
+      .filter(Boolean)
+      .sort();
+  const assistant = labels(paneChats().find((n) => !n.props.paperChat)!);
+
+  await openFirstPaperConversation();
+
+  const paper = labels(paneChats().find((n) => n.props.paperChat)!);
+  expect(paper).toContain('파일 첨부');
+  // Recommendations are the one thing the paper chat does not take: they are written for the
+  // assistant's routine, and a paper conversation starts from the paper, not from a prompt list.
+  expect(paper).not.toContain('추천 질문');
+  expect(paper).not.toContain('추천 질문 닫기');
+  // Everything else the assistant offers, the paper chat offers too.
+  expect(assistant.filter((label) => !label.startsWith('추천 질문'))).toEqual(paper);
+});
+it('shows the paper chat its own model in the pane header, not the AI 비서\u2019s', async () => {
+  // The two run on models the user assigns separately in 설정 → Agent, so the header that names the
+  // assistant's model would be a lie over a paper conversation. A wrong model is worse than none,
+  // which is why the badge stayed out until it could ask for the right usage.
+  vi.stubGlobal('document', { documentElement: { dataset: {} } });
+  vi.stubGlobal('window', {
+    innerWidth: 1280,
+    location: { search: '' },
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  });
+  vi.mocked(sourceRequest).mockImplementation(async (path: string) =>
+    path === '/assistant/model/current'
+      ? {
+          usages: [
+            {
+              usage: 'briefingAssistant',
+              providerId: 'codex',
+              modelId: 'assistant-model',
+              displayName: 'Assistant model',
+              reasoning: 'high',
+              assigned: true,
+              available: true,
+            },
+            {
+              usage: 'paperChat',
+              providerId: 'codex',
+              modelId: 'paper-model',
+              displayName: 'Paper model',
+              reasoning: 'high',
+              assigned: true,
+              available: true,
+            },
+          ],
+        }
+      : { papers: paperLibrary, feedback: {}, history: [], choices: {} },
+  );
+  await mount();
+  await click('AI 비서');
+  expect(text()).toContain('Assistant model');
+
+  await openFirstPaperConversation();
+
+  expect(text()).toContain('Paper model');
+  expect(text()).not.toContain('Assistant model');
 });
 it('places recommendation and permission icon buttons inside the input box without sending or clearing the draft', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);

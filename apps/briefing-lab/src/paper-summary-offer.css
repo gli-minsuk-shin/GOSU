@@ -86,29 +86,30 @@
   width: 15px;
   height: 15px;
 }
-/* 논문 요약 AI's own chat, opened from one paper's row. It is a panel in this screen, not the AI
-   비서's pane, so the two conversations are separate where the user looks as well as where they are
-   stored. */
+/* 논문 요약 AI's own chat, opened from one paper's row. It takes the AI 비서's slot in the
+   right-hand pane while 논문 요약 is the open tab: separate conversations, one place to have one.
+   It stays mounted while another tab borrows the pane, so `hidden` has to beat the flex below. */
 .briefing-paper-chat-panel {
-  display: grid;
-  gap: 6px;
-  margin-top: 14px;
-  padding: 12px;
-  border: 1px solid #d4dfcc;
-  border-radius: 10px;
-  background: #fbfdf9;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px 14px;
+}
+.briefing-paper-chat-panel[hidden] {
+  display: none !important;
+}
+.briefing-paper-chat-panel > .briefing-chat {
+  flex: 1;
+  min-height: 0;
 }
 .briefing-paper-chat-panel > header {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 10px;
-}
-.briefing-paper-chat-panel > header > div {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
 }
 .briefing-paper-chat-panel > header span {
   overflow: hidden;
@@ -118,6 +119,10 @@
   white-space: nowrap;
 }
 .briefing-paper-chat-panel > header button {
+  /* The pane is ~380px and paper titles are long: without this the title squeezes 「닫기」 onto
+     two lines. The title is the one that must give way, and it already ellipsises. */
+  flex-shrink: 0;
+  white-space: nowrap;
   padding: 4px 9px;
   border: 1px solid #d4dfcc;
   border-radius: 7px;

@@ -641,7 +641,7 @@ export function BriefingChat({
       <div className="briefing-chat-context">
         <b>{routine.name}</b>
       </div>
-      {showSuggestions && restored && (
+      {!paperChat && showSuggestions && restored && (
         <section ref={suggestions} className="briefing-chat-welcome" aria-label="추천 질문">
           <header className="briefing-chat-welcome-heading">
             {globalMode ? (
@@ -1102,30 +1102,32 @@ export function BriefingChat({
                   />
                 </svg>
               </button>
-              <button
-                type="button"
-                className="briefing-chat-shortcut"
-                aria-label="추천 질문"
-                ref={suggestionsToggle}
-                aria-expanded={showSuggestions}
-                title={showSuggestions ? '추천 질문 숨기기' : '추천 질문 보기'}
-                onClick={() => {
-                  focusComposer.current = showSuggestions;
-                  setShowSuggestions((open) => !open);
-                }}
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.7"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
+              {!paperChat && (
+                <button
+                  type="button"
+                  className="briefing-chat-shortcut"
+                  aria-label="추천 질문"
+                  ref={suggestionsToggle}
+                  aria-expanded={showSuggestions}
+                  title={showSuggestions ? '추천 질문 숨기기' : '추천 질문 보기'}
+                  onClick={() => {
+                    focusComposer.current = showSuggestions;
+                    setShowSuggestions((open) => !open);
+                  }}
                 >
-                  <path d="M9 18h6m-5 3h4M8.5 14.5a6 6 0 1 1 7 0c-1 .7-1.5 1.5-1.5 3.5h-4c0-2-.5-2.8-1.5-3.5Z" />
-                </svg>
-              </button>
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M9 18h6m-5 3h4M8.5 14.5a6 6 0 1 1 7 0c-1 .7-1.5 1.5-1.5 3.5h-4c0-2-.5-2.8-1.5-3.5Z" />
+                  </svg>
+                </button>
+              )}
               <button
                 type="button"
                 className="briefing-chat-shortcut"

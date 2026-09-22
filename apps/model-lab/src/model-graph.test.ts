@@ -43,6 +43,7 @@ import {
 } from './model-graph';
 import {
   availablePanelMaximum,
+  modelLabPrimaryFloor,
   clampPanelWidth,
   footerHeightAfterPointerMove,
   footerHeightAfterSeparatorKey,
@@ -1609,8 +1610,37 @@ c=g(B)`;
   it('clamps panel widths while reserving a usable graph workspace', () => {
     expect(clampPanelWidth(120, 190, 420)).toBe(190);
     expect(clampPanelWidth(900, 300, 620)).toBe(620);
-    expect(availablePanelMaximum(1_280, 390, 190, 420)).toBe(356);
+    // The graph's floor is proportional below 1,368px, so a narrow workspace still leaves the
+    // sidebars somewhere to move. It was a flat 520 and this case answered 356.
+    expect(modelLabPrimaryFloor(1_280)).toBe(486);
+    expect(modelLabPrimaryFloor(2_140)).toBe(520);
+    expect(availablePanelMaximum(1_280, 390, 190, 420)).toBe(390);
     expect(availablePanelMaximum(2_140, 390, 190, 420)).toBe(420);
+  });
+
+  it('lets the Model Assistant chat use the whole window height', () => {
+    // Measured in a real browser at a 1,400px window: the panel stopped at 900px and left 429
+    // empty pixels under it while the conversation itself had 641. Removing the cap took the
+    // conversation to 1,127. The viewport is the only bound this panel needs.
+    const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+    const sidebar = /\.model-chat--sidebar \{[^}]*\}/u.exec(styles)?.[0] ?? '';
+
+    expect(sidebar).toContain('height: calc(100dvh - 32px)');
+    expect(sidebar).not.toContain('max-height');
+  });
+
+  it('leaves the Model Assistant resize bar somewhere to move at GOSU pane widths', () => {
+    // Measured before this: a workspace of 1,040px or less gave the bar zero travel and 1,100px
+    // gave it fourteen pixels, so dragging it did nothing the user could see. The model list is at
+    // its default 252 and the assistant's own floor is 300.
+    const travel = (workspaceWidth: number) =>
+      availablePanelMaximum(workspaceWidth, 252, 300, 620) - 300;
+
+    expect(travel(960)).toBeGreaterThan(0);
+    expect(travel(1_040)).toBeGreaterThan(50);
+    expect(travel(1_100)).toBeGreaterThan(100);
+    // A wide window still hands the assistant its full range.
+    expect(availablePanelMaximum(1_920, 252, 300, 620)).toBe(620);
   });
 
   it('describes the real FiLM probe objective without claiming it is missing', () => {

@@ -3,8 +3,6 @@ import './paper-summary-offer.css';
 import { BriefingHistoryItem } from './briefing-history-view';
 import { importanceFirst, type PaperChatReference } from './paper-chat-reference';
 import type { BriefingRoutine } from '@gosu/briefing-core';
-import type { SettingsProposal } from './assistant-settings-proposal';
-import { BriefingChat } from './briefing-chat';
 import type { FeedbackDecision } from './briefing-insight-card';
 import { sourceRequest } from './live-client';
 import { refreshBriefingSummary } from './briefing-analysis-client';
@@ -27,23 +25,20 @@ import {
 export function SavedPaperSummaries({
   routineId,
   routine,
-  autoSuggestions = true,
-  onSettings,
   openPaper,
   onOpenedPaper,
+  onOpenChat,
 }: {
   routineId: string;
-  /** Present inside Briefing Lab; the paper chat needs the routine it runs under. */
+  /** Present inside Briefing Lab; a paper's button needs the routine its chat runs under. */
   routine?: BriefingRoutine;
-  autoSuggestions?: boolean;
-  onSettings?: (proposal?: SettingsProposal) => void;
-  /** A paper's card elsewhere asked to talk about it; its conversation opens here. */
+  /** A paper's card elsewhere asked to talk about it; that request is forwarded, not rendered. */
   openPaper?: PaperChatReference | undefined;
   onOpenedPaper?: (() => void) | undefined;
+  /** Which paper to talk about. The conversation itself lives in the right-hand pane, in the
+   *  AI 비서's slot, so that leaving this screen cannot end it; this screen only asks for it. */
+  onOpenChat?: ((paper: PaperChatReference | null) => void) | undefined;
 }) {
-  /** Which paper's 논문 요약 AI conversation is open. Its own chat, never the AI 비서's. */
-  const [openChat, setOpenChat] = useState<PaperChatReference | null>(null);
-  const chatPanel = useRef<HTMLElement | null>(null);
   const loadRevision = useRef(0);
   const activeRoutine = useRef(routineId);
   activeRoutine.current = routineId;
@@ -86,7 +81,6 @@ export function SavedPaperSummaries({
     );
   };
   useEffect(() => {
-    setOpenChat(null);
     setPapers([]);
     setSelection([]);
     setConfirmDelete(false);
@@ -112,24 +106,12 @@ export function SavedPaperSummaries({
       }
     };
   }, [routineId]);
-  // Declared after the routine effect above on purpose: React runs effects in declaration order, and
-  // that one clears `openChat` when this screen mounts. Asking about a paper from another tab mounts
-  // this screen and sets `openPaper` in the same pass, so a sync declared earlier was wiped a moment
-  // later and the panel never appeared.
+  // Asking about a paper from another tab mounts this screen and sets `openPaper` in the same pass.
   useEffect(() => {
     if (!openPaper) return;
-    setOpenChat(openPaper);
+    onOpenChat?.(openPaper);
     onOpenedPaper?.();
   }, [openPaper]);
-  // The panel is the last thing on this screen, under every paper card, and the list itself does not
-  // scroll -- the page does. Opening it without moving to it is what made a paper's own button look
-  // dead twice: the state changed and nothing the user could see did. Focus goes with it, so the
-  // keyboard lands in the conversation too.
-  useEffect(() => {
-    if (!openChat) return;
-    chatPanel.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
-    chatPanel.current?.focus();
-  }, [openChat]);
   const dateError = paperDateError(dates);
   const visible = papers.filter(
     (p) =>
@@ -403,7 +385,7 @@ export function SavedPaperSummaries({
                         : '브리핑 루틴을 먼저 선택해주세요.'
                     }
                     onClick={() =>
-                      setOpenChat({
+                      onOpenChat?.({
                         routineId,
                         historyId: p.historyId,
                         paperId: p.item.id,
@@ -442,6 +424,7 @@ export function SavedPaperSummaries({
                   : {}),
               }}
               savedAt={p.savedAt}
+              askedAi={Boolean(p.conversation)}
               // The same reference the row's own button builds, link included. A paper a briefing
               // holds is keyed by its link, so dropping it here gave one paper two conversations:
               // ask through the card, and the questions asked through the row were nowhere.
@@ -490,36 +473,6 @@ export function SavedPaperSummaries({
         <button type="button" className="briefing-button" onClick={() => setLimit((n) => n + 30)}>
           논문 더 보기 ({visible.length - limit}편)
         </button>
-      )}
-      {openChat && routine && (
-        <section
-          className="briefing-paper-chat-panel"
-          aria-label="논문 요약 AI 질의응답"
-          ref={chatPanel}
-          tabIndex={-1}
-        >
-          <header>
-            <div>
-              <strong>논문 요약 AI</strong>
-              <span>{openChat.title}</span>
-            </div>
-            <button type="button" onClick={() => setOpenChat(null)} aria-label="논문 대화 닫기">
-              닫기
-            </button>
-          </header>
-          <p className="briefing-muted">
-            이 논문만의 대화입니다. AI 비서 대화에 섞이지 않고, 같은 논문을 다시 열면 이어집니다.
-            사용할 모델은 설정 → Agent의 논문 분석·질의응답 AI에서 정합니다.
-          </p>
-          <BriefingChat
-            key={`${openChat.historyId}:${openChat.paperId}`}
-            routine={routine}
-            paperChat={openChat}
-            autoSuggestions={autoSuggestions}
-            onSettings={onSettings ?? (() => undefined)}
-            onBusyChange={() => undefined}
-          />
-        </section>
       )}
     </section>
   );

@@ -4,7 +4,7 @@ import { isGosuEmbedded } from './desktop-bridge';
 
 /** What runs for one Briefing usage right now, as `/assistant/model/current` reports it. */
 export type BriefingUsageModel = {
-  usage: 'briefing' | 'briefingAssistant' | 'lightweightTasks';
+  usage: 'briefing' | 'briefingAssistant' | 'paperChat' | 'lightweightTasks';
   providerId: string;
   modelId: string | null;
   displayName: string;
@@ -16,6 +16,7 @@ export type BriefingUsageModel = {
 export const BRIEFING_USAGE_LABELS: Record<BriefingUsageModel['usage'], string> = {
   briefing: '이메일·논문 요약',
   briefingAssistant: 'AI 비서 대화',
+  paperChat: '논문 분석·질의응답',
   lightweightTasks: '빠른 1차 브리핑 · 일정·할 일 초안',
 };
 const providerName = (id: string) =>

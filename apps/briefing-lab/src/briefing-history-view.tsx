@@ -64,6 +64,7 @@ export function BriefingHistoryItem({
   navigationId,
   classificationControl,
   isNew = false,
+  askedAi = false,
   paperReference,
 }: {
   item: BriefingHistory['items'][number];
@@ -76,6 +77,9 @@ export function BriefingHistoryItem({
   navigationId?: string | undefined;
   classificationControl?: ReactNode;
   isNew?: boolean;
+  /** The 논문 요약 AI has been asked about this paper. A counter in the row's tool strip was easy to
+   *  miss in a library of a hundred, so the card itself carries the mark and takes its own border. */
+  askedAi?: boolean;
   paperReference?: PaperChatReference;
 }) {
   const [choice, setChoice] = useState(feedbackChoice ?? null);
@@ -161,9 +165,20 @@ export function BriefingHistoryItem({
       )}
     </>
   );
+  const titleBadges =
+    isNew || askedAi ? (
+      <>
+        {isNew && <span className="briefing-new-badge">New</span>}
+        {askedAi && (
+          <span className="briefing-asked-ai-badge" title="논문 요약 AI와 질의응답한 논문">
+            AI
+          </span>
+        )}
+      </>
+    ) : undefined;
   return (
     <article
-      className={`briefing-card briefing-insight-card ${isPaper ? 'is-paper' : 'is-email'}`}
+      className={`briefing-card briefing-insight-card ${isPaper ? 'is-paper' : 'is-email'}${askedAi ? ' is-asked-ai' : ''}`}
       id={navigationId}
       data-briefing-jump-target={navigationId ? 'true' : undefined}
       tabIndex={navigationId ? -1 : undefined}
@@ -173,7 +188,7 @@ export function BriefingHistoryItem({
           sourceUrl={i.sourceUrl}
           chatAction={paperReference ? <PaperChatButton reference={paperReference} /> : undefined}
           title={i.title}
-          titleBadge={isNew ? <span className="briefing-new-badge">New</span> : undefined}
+          titleBadge={titleBadges}
           discoverySource={i.discoverySource}
           bibliography={i.bibliography}
           publishedAt={i.paperPublishedAt}
@@ -193,7 +208,7 @@ export function BriefingHistoryItem({
           preparedActions={i.preparedActions}
           calendarText={`${i.action ?? ''}\n${i.summary}`}
           title={i.title}
-          titleBadge={isNew ? <span className="briefing-new-badge">New</span> : undefined}
+          titleBadge={titleBadges}
           summary={i.summary}
           sender={i.mailSender}
           mailMessageUrl={i.mailMessageUrl}

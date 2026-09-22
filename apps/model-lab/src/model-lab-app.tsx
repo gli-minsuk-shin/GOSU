@@ -582,6 +582,17 @@ export function footerHeightAfterSeparatorKey(
   return clampPanelWidth(height + (key === 'ArrowUp' ? step : -step), minimum, maximum);
 }
 
+/**
+ * The graph keeps a floor, but a fixed 520px one spent the whole budget in a GOSU-sized pane and
+ * left the Model Assistant's resize bar with nowhere to go: measured, a workspace of 1040px or less
+ * gave it **zero** travel and 1100px gave it fourteen pixels, so dragging it did nothing at all.
+ * The floor is now the smaller of 520 and 38% of the workspace, which keeps the graph usable while
+ * leaving the bar something to move. Collapsing the model list still frees the most room.
+ */
+export function modelLabPrimaryFloor(workspaceWidth: number) {
+  return Math.min(MODEL_LAB_PRIMARY_MIN_WIDTH, Math.round(workspaceWidth * 0.38));
+}
+
 export function availablePanelMaximum(
   workspaceWidth: number,
   otherPanelWidth: number,
@@ -593,7 +604,7 @@ export function availablePanelMaximum(
     minimum,
     Math.min(
       hardMaximum,
-      workspaceWidth - otherPanelWidth - MODEL_LAB_PRIMARY_MIN_WIDTH - separatorSpace,
+      workspaceWidth - otherPanelWidth - modelLabPrimaryFloor(workspaceWidth) - separatorSpace,
     ),
   );
 }

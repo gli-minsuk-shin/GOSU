@@ -943,6 +943,18 @@ button {
   background: #fff;
   box-shadow: 0 3px 12px #273e1603;
 }
+/* A paper the 논문 요약 AI has been asked about. The counter in the row's tool strip was easy to
+   miss in a library of a hundred cards, so the box itself reads as discussed at a glance: a tinted
+   ground and a solid left bar, quiet enough not to shout over the card's own content.
+   The second selector is not redundant. Inside .briefing-reading-list every card gives up its
+   border, radius and shadow so the list can draw one box, and that rule has the same specificity as
+   a plain .is-asked-ai rule but is loaded later -- which made the first attempt paint nothing at
+   all. The mark is an inset bar rather than a border for the same reason. */
+.briefing-card.briefing-insight-card.is-asked-ai,
+.briefing-reading-list > .briefing-card.briefing-insight-card.is-asked-ai {
+  background: #f7fbf1;
+  box-shadow: inset 3px 0 0 #7ba24f;
+}
 .briefing-card-top {
   display: flex;
   flex-wrap: wrap;
@@ -2987,6 +2999,19 @@ input[type='checkbox'] {
   font-size: 10px;
   font-weight: 650;
   line-height: 1.5;
+}
+.briefing-asked-ai-badge {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  margin-left: 8px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: #e6f0d8;
+  color: #3f5f1f;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }
 .briefing-new-badge {
   display: inline-flex;

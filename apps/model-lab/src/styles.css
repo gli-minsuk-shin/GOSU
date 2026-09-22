@@ -4488,9 +4488,11 @@ button.module-question-tag__module {
   flex-direction: column;
   align-self: start;
   width: 100%;
+  /* The viewport is the only bound. A 900px cap used to stop here and leave the rest of a tall
+     window empty -- measured at 429 wasted pixels below the panel in a 1400px window, while the
+     conversation itself had 641. A chat gets taller when the window does. */
   height: calc(100dvh - 32px);
   min-height: 0;
-  max-height: 900px;
   overflow: hidden;
   border-left: 1px solid var(--model-border);
   background: var(--model-surface-soft);
@@ -4517,7 +4519,7 @@ button.module-question-tag__module {
 }
 
 .model-chat > header {
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--model-border);
   background: var(--model-surface);
 }
@@ -4526,7 +4528,7 @@ button.module-question-tag__module {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px 10px;
+  gap: 6px 10px;
 }
 
 .model-chat__identity {
@@ -5116,8 +5118,9 @@ button.module-question-tag__module {
 .chat-composer {
   display: grid;
   align-items: stretch;
-  gap: 8px;
-  padding: 12px;
+  /* Three short metadata lines sit above the input; their own gaps cost more than they do. */
+  gap: 6px;
+  padding: 9px 10px;
   border-top: 1px solid var(--model-border);
   background: var(--model-surface);
 }

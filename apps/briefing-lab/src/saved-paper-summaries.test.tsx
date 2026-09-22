@@ -140,7 +140,9 @@ it('selects multiple tags in a checkbox panel with OR matching, and intersects t
   expect(sourceRequest).toHaveBeenCalledTimes(1);
   expect(refreshBriefingSummary).not.toHaveBeenCalled();
 });
-it('opens a paper conversation inside 논문 요약, separate from the AI 비서 pane', async () => {
+it("asks for a paper's own conversation instead of rendering one under the list", async () => {
+  // The conversation lives in the right-hand pane now, in the AI 비서's slot. This screen's job is
+  // to name the paper; rendering the chat here is what buried it under every card.
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   const routine = initialRealWorkspace('2026-09-10T00:00:00Z').routines[0]!;
   const discussed = {
@@ -149,48 +151,39 @@ it('opens a paper conversation inside 논문 요약, separate from the AI 비서
     conversation: { turns: 2, lastAskedAt: '2026-09-22T01:00:00.000Z', lastQuestion: '가정은?' },
   };
   vi.mocked(sourceRequest).mockResolvedValue({ papers: [discussed, tagPapers[1]], feedback: {} });
+  const onOpenChat = vi.fn();
   await act(() => {
-    ui = create(<SavedPaperSummaries routineId={routine.id} routine={routine} />, {
-      createNodeMock: (e) => (e.type === 'textarea' ? { focus: vi.fn() } : null),
-    });
+    ui = create(
+      <SavedPaperSummaries routineId={routine.id} routine={routine} onOpenChat={onOpenChat} />,
+      { createNodeMock: (e) => (e.type === 'textarea' ? { focus: vi.fn() } : null) },
+    );
   });
-  const panel = () => ui.root.findAllByProps({ className: 'briefing-paper-chat-panel' });
   const openButtons = () =>
     ui.root
       .findAllByProps({ className: 'briefing-paper-open-chat' })
       .filter((n) => n.props.onClick);
 
-  // Nothing is open until a paper is chosen, and each row offers its own conversation.
-  expect(panel()).toHaveLength(0);
+  // Each row offers its own conversation, and nothing is asked for until one is chosen.
   expect(openButtons()).toHaveLength(2);
+  expect(onOpenChat).not.toHaveBeenCalled();
 
   await act(() => openButtons()[0]!.props.onClick());
-  expect(panel()).toHaveLength(1);
-  // The panel names the paper and says whose conversation this is.
-  const shown = JSON.stringify(ui.toJSON());
-  expect(shown).toContain('논문 요약 AI');
-  expect(shown).toContain('Language study');
-  expect(shown).toContain('AI 비서 대화에 섞이지 않고');
 
-  // The chat it mounts is told which paper it belongs to, so it reads and writes that thread.
-  const chat = ui.root.findByType(BriefingChat);
-  expect(chat.props.paperChat).toMatchObject({
+  // The paper is named in full, including the link its conversation is keyed by.
+  expect(onOpenChat).toHaveBeenCalledWith({
     routineId: routine.id,
+    historyId: 'h',
     paperId: 'p1',
+    title: 'Language study',
     sourceUrl: 'https://arxiv.org/abs/2601.00001v1',
   });
-  // Never the assistant's transient attachment, which is what mixed the two before.
-  expect(chat.props.paperReference).toBeUndefined();
-
-  await act(() => ui.root.findByProps({ 'aria-label': '논문 대화 닫기' }).props.onClick());
-  expect(panel()).toHaveLength(0);
+  // This screen owns no chat at all, so nothing here can mix with the AI 비서's.
+  expect(ui.root.findAllByType(BriefingChat)).toHaveLength(0);
 });
 
-it('opens the paper a card asked about, even when this screen mounts for it', async () => {
+it('forwards the paper a card asked about, even when this screen mounts for it', async () => {
   // Pressing 「AI 질문」 on a paper card navigates here and asks for that paper in the same pass, so
-  // this screen mounts and receives `openPaper` together. Its routine effect clears the open chat on
-  // mount, and React runs effects in declaration order: a sync declared before that one was wiped a
-  // moment after it ran, and the panel never appeared.
+  // this screen mounts and receives `openPaper` together.
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   const routine = initialRealWorkspace('2026-09-10T00:00:00Z').routines[0]!;
   vi.mocked(sourceRequest).mockResolvedValue({ papers: tagPapers, feedback: {} });
@@ -200,6 +193,7 @@ it('opens the paper a card asked about, even when this screen mounts for it', as
     paperId: 'p2',
     title: 'Image study',
   };
+  const onOpenChat = vi.fn();
   const onOpenedPaper = vi.fn();
   await act(() => {
     ui = create(
@@ -207,30 +201,31 @@ it('opens the paper a card asked about, even when this screen mounts for it', as
         routineId={routine.id}
         routine={routine}
         openPaper={asked}
+        onOpenChat={onOpenChat}
         onOpenedPaper={onOpenedPaper}
       />,
       { createNodeMock: (e) => (e.type === 'textarea' ? { focus: vi.fn() } : null) },
     );
   });
 
-  expect(ui.root.findAllByProps({ className: 'briefing-paper-chat-panel' })).toHaveLength(1);
-  expect(ui.root.findByType(BriefingChat).props.paperChat).toMatchObject({ paperId: 'p2' });
-  expect(JSON.stringify(ui.toJSON())).toContain('Image study');
-  // The request is consumed, so returning to this screen later does not reopen it by itself.
+  expect(onOpenChat).toHaveBeenCalledWith(asked);
   expect(onOpenedPaper).toHaveBeenCalledOnce();
+
+  // The request is consumed, so re-rendering without it never asks a second time.
   await act(() =>
     ui.update(
       <SavedPaperSummaries
         routineId={routine.id}
         routine={routine}
+        onOpenChat={onOpenChat}
         onOpenedPaper={onOpenedPaper}
       />,
     ),
   );
-  expect(ui.root.findAllByProps({ className: 'briefing-paper-chat-panel' })).toHaveLength(1);
+  expect(onOpenChat).toHaveBeenCalledOnce();
 });
 
-it('opens one conversation per paper, whichever of the two buttons asks for it', async () => {
+it('asks for one conversation per paper, whichever of the two buttons requests it', async () => {
   // The row's 「AI 질의응답」 carried the paper's link and the card's own 「AI 질문」 did not. A paper
   // held by a briefing rather than the library is keyed by that link, so the same paper answered to
   // two different conversations depending on which button was pressed, and the questions asked
@@ -243,10 +238,12 @@ it('opens one conversation per paper, whichever of the two buttons asks for it',
     item: { ...tagPapers[0]!.item, sourceUrl: 'https://arxiv.org/abs/2601.00001v1' },
   };
   vi.mocked(sourceRequest).mockResolvedValue({ papers: [fromBriefing], feedback: {} });
+  const onOpenChat = vi.fn();
   await act(() => {
-    ui = create(<SavedPaperSummaries routineId={routine.id} routine={routine} />, {
-      createNodeMock: (e) => (e.type === 'textarea' ? { focus: vi.fn() } : null),
-    });
+    ui = create(
+      <SavedPaperSummaries routineId={routine.id} routine={routine} onOpenChat={onOpenChat} />,
+      { createNodeMock: (e) => (e.type === 'textarea' ? { focus: vi.fn() } : null) },
+    );
   });
 
   const card = ui.root.findByType(BriefingHistoryItem).props.paperReference;
@@ -256,75 +253,50 @@ it('opens one conversation per paper, whichever of the two buttons asks for it',
       .filter((n) => n.props.onClick)[0]!
       .props.onClick(),
   );
-  const row = ui.root.findByType(BriefingChat).props.paperChat;
+  const row = onOpenChat.mock.calls[0]![0];
 
   expect(paperConversationKey(row)).toBe('arxiv:2601.00001v1');
   expect(paperConversationKey(card)).toBe(paperConversationKey(row));
 });
 
-it('brings the conversation into view when it opens, not just into the tree', async () => {
-  // The panel is the last element on this screen, under every paper card, and `.briefing-reading-list`
-  // is `overflow: hidden`, so the page is what scrolls. Opening it changed state and moved nothing the
-  // user could see: with thirty cards above it, a paper's own button looked dead. Reported twice; the
-  // earlier fix only covered arriving here from another tab, where the screen mounts at the top.
+it('marks a paper the 논문 요약 AI was asked about on the card itself, not only in its tool strip', async () => {
+  // A small counter in the row's tool strip is easy to miss in a library of a hundred cards. The
+  // card now carries the mark beside its title and its box takes a different border, so a paper
+  // that has been discussed is findable at a glance.
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   const routine = initialRealWorkspace('2026-09-10T00:00:00Z').routines[0]!;
-  vi.mocked(sourceRequest).mockResolvedValue({ papers: tagPapers, feedback: {} });
-  const panelNode = { scrollIntoView: vi.fn(), focus: vi.fn() };
+  const discussed = {
+    ...tagPapers[0]!,
+    conversation: { turns: 2, lastAskedAt: '2026-09-22T01:00:00.000Z', lastQuestion: '가정은?' },
+  };
+  vi.mocked(sourceRequest).mockResolvedValue({ papers: [discussed, tagPapers[1]], feedback: {} });
   await act(() => {
     ui = create(<SavedPaperSummaries routineId={routine.id} routine={routine} />, {
-      createNodeMock: (e) =>
-        (e.props as { className?: string }).className === 'briefing-paper-chat-panel'
-          ? panelNode
-          : e.type === 'textarea'
-            ? { focus: vi.fn() }
-            : null,
+      createNodeMock: (e) => (e.type === 'textarea' ? { focus: vi.fn() } : null),
     });
   });
-  expect(panelNode.scrollIntoView).not.toHaveBeenCalled();
 
-  await act(() =>
-    ui.root
-      .findAllByProps({ className: 'briefing-paper-open-chat' })
-      .filter((n) => n.props.onClick)[0]!
-      .props.onClick(),
+  // Exactly the discussed paper is flagged, and it is the one that was discussed.
+  const flagged = ui.root.findAllByType(BriefingHistoryItem).filter((n) => n.props.askedAi);
+  expect(flagged).toHaveLength(1);
+  expect(flagged[0]!.props.item.id).toBe('p1');
+
+  // The flag reaches the card's own box, so the border can change with it.
+  const marked = ui.root
+    .findAllByType('article')
+    .filter((n) => String(n.props.className).includes('is-asked-ai'));
+  expect(marked).toHaveLength(1);
+  // ...and a mark sits beside the title, where the eye already goes.
+  expect(ui.root.findAllByProps({ className: 'briefing-asked-ai-badge' })).toHaveLength(1);
+
+  // Inside .briefing-reading-list every card gives up its own border, radius and shadow -- the list
+  // draws one box and separates cards with a divider. A rule of the same specificity loaded later
+  // therefore paints nothing, which is exactly what the first attempt did: the class was on the
+  // element and the screen looked identical. The marker must out-specify that rule.
+  const css = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+  expect(css).toMatch(
+    /\.briefing-reading-list > \.briefing-card\.briefing-insight-card\.is-asked-ai[^}]*\{[^}]*inset 3px 0 0/u,
   );
-  expect(panelNode.scrollIntoView).toHaveBeenCalledOnce();
-  expect(panelNode.focus).toHaveBeenCalledOnce();
-
-  // Switching to another paper moves to it again; the panel is in the same faraway place.
-  await act(() =>
-    ui.root
-      .findAllByProps({ className: 'briefing-paper-open-chat' })
-      .filter((n) => n.props.onClick)[1]!
-      .props.onClick(),
-  );
-  expect(panelNode.scrollIntoView).toHaveBeenCalledTimes(2);
-});
-
-it('moves to the conversation a card asked about, after this screen mounts for it', async () => {
-  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
-  const routine = initialRealWorkspace('2026-09-10T00:00:00Z').routines[0]!;
-  vi.mocked(sourceRequest).mockResolvedValue({ papers: tagPapers, feedback: {} });
-  const panelNode = { scrollIntoView: vi.fn(), focus: vi.fn() };
-  await act(() => {
-    ui = create(
-      <SavedPaperSummaries
-        routineId={routine.id}
-        routine={routine}
-        openPaper={{ routineId: routine.id, historyId: 'h', paperId: 'p2', title: 'Image study' }}
-      />,
-      {
-        createNodeMock: (e) =>
-          (e.props as { className?: string }).className === 'briefing-paper-chat-panel'
-            ? panelNode
-            : e.type === 'textarea'
-              ? { focus: vi.fn() }
-              : null,
-      },
-    );
-  });
-  expect(panelNode.scrollIntoView).toHaveBeenCalledOnce();
 });
 
 it('filters the library to the papers the 논문 요약 AI was asked about, together with the other filters', async () => {

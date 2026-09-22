@@ -37,6 +37,7 @@ import {
   PaperChatReferenceSchema,
   type PaperChatReference,
 } from './paper-chat-reference';
+import { BriefingChat } from './briefing-chat';
 import { BriefingModelBadge } from './briefing-model-badge';
 import { CalendarView } from './calendar-view';
 import { BriefingHistoryView } from './briefing-history-view';
@@ -878,6 +879,10 @@ export function BriefingApp({
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [paperReference, setPaperReference] = useState<PaperChatReference>();
+  /** Which paper's 논문 요약 AI conversation the right-hand pane holds. It is kept while other tabs
+   *  borrow the pane, so returning to 논문 요약 resumes the same conversation. */
+  const [paperChat, setPaperChat] = useState<PaperChatReference | null>(null);
+  const [paperChatBusy, setPaperChatBusy] = useState(false);
   useEffect(() => {
     const choose = (event: Event) => {
       const parsed = PaperChatReferenceSchema.safeParse((event as CustomEvent).detail);
@@ -933,6 +938,13 @@ export function BriefingApp({
   const routine =
     workspace.routines.find((item) => item.id === workspace.selectedRoutineId) ??
     workspace.routines[0];
+  /** A conversation kept from another routine does not apply here, so it is filtered out rather
+   *  than cleared: clearing it from an effect would race the papers screen's own mount effect,
+   *  which forwards the paper a card asked about. */
+  const activePaperChat = paperChat?.routineId === routine?.id ? paperChat : null;
+  /** 논문 요약 lends its conversation the AI 비서's slot. Collapsing the pane hides it without
+   *  ending it, so this stays true while `rightCollapsed` is. */
+  const paperChatOpen = tab === 'papers' && activePaperChat !== null;
   const personalRoutines = workspace.routines.filter((item) => item.kind === 'personal');
   const primaryPersonalRoutine = personalRoutines[0] ?? routine;
   const openChatSidebar = () => {
@@ -1297,14 +1309,12 @@ export function BriefingApp({
                   key={routine.id}
                   routineId={routine.id}
                   routine={routine}
-                  autoSuggestions={autoSuggestions}
                   openPaper={paperReference?.routineId === routine.id ? paperReference : undefined}
                   onOpenedPaper={() => setPaperReference(undefined)}
-                  onSettings={(proposal) => {
-                    setSettingsProposal(
-                      proposal ? { routineId: routine.id, value: proposal } : undefined,
-                    );
-                    setTab('settings');
+                  onOpenChat={(paper) => {
+                    setPaperChat(paper);
+                    // A conversation behind a collapsed pane is the same dead button in a new place.
+                    if (paper) setRightCollapsed(false);
                   }}
                 />
               </>
@@ -1377,14 +1387,28 @@ export function BriefingApp({
           <div className="briefing-splitter-spacer" />
         )}
         <aside
-          className={`briefing-details ${chatOpen && !rightCollapsed ? 'chat-open' : ''}`}
+          className={`briefing-details ${(chatOpen || paperChatOpen) && !rightCollapsed ? 'chat-open' : ''}`}
           aria-label="브리핑 상세 정보"
         >
           <header>
             <span className="briefing-section-caption">
-              {chatOpen ? 'GOSU AI' : copilotOpen ? 'ROUTINE COPILOT' : 'ROUTINE OVERVIEW'}
+              {paperChatOpen
+                ? '논문 요약 AI'
+                : chatOpen
+                  ? 'GOSU AI'
+                  : copilotOpen
+                    ? 'ROUTINE COPILOT'
+                    : 'ROUTINE OVERVIEW'}
             </span>
-            {chatOpen && routine && !rightCollapsed && (
+            {paperChatOpen && routine && !rightCollapsed && (
+              <BriefingModelBadge
+                key={`${routine.id}:paperChat`}
+                routineId={routine.id}
+                usage="paperChat"
+                busy={paperChatBusy}
+              />
+            )}
+            {chatOpen && !paperChatOpen && routine && !rightCollapsed && (
               <BriefingModelBadge key={routine.id} routineId={routine.id} busy={chatBusy} />
             )}
             <button
@@ -1401,7 +1425,7 @@ export function BriefingApp({
           </header>
           {rightCollapsed && (
             <button type="button" className="briefing-sidebar-vertical" onClick={openChatSidebar}>
-              AI 비서
+              {paperChatOpen ? '논문 요약 AI' : 'AI 비서'}
             </button>
           )}
           <div className="briefing-details-scroll" hidden={rightCollapsed}>
@@ -1410,7 +1434,7 @@ export function BriefingApp({
               autoSuggestions={autoSuggestions}
               routines={workspace.routines}
               selectedId={routine?.id}
-              visible={chatOpen && !rightCollapsed}
+              visible={chatOpen && !rightCollapsed && !paperChatOpen}
               recommendationRequest={recommendationRequest}
               onBusyChange={setChatBusy}
               onSettings={(proposal) => {
@@ -1420,7 +1444,43 @@ export function BriefingApp({
                 setTab('settings');
               }}
             />
-            {chatOpen ? null : copilotOpen ? (
+            {activePaperChat && routine && (
+              <section
+                className="briefing-paper-chat-panel"
+                aria-label="논문 요약 AI 질의응답"
+                hidden={!paperChatOpen}
+              >
+                <header>
+                  <span>{activePaperChat.title}</span>
+                  <button
+                    type="button"
+                    onClick={() => setPaperChat(null)}
+                    aria-label="논문 대화 닫기"
+                  >
+                    닫기
+                  </button>
+                </header>
+                <p className="briefing-muted">
+                  이 논문만의 대화입니다. AI 비서 대화에 섞이지 않고, 같은 논문을 다시 열면
+                  이어집니다. 사용할 모델은 설정 → Agent의 논문 분석·질의응답 AI에서 정합니다.
+                </p>
+                <BriefingChat
+                  key={`${activePaperChat.historyId}:${activePaperChat.paperId}`}
+                  routine={routine}
+                  paperChat={activePaperChat}
+                  autoSuggestions={autoSuggestions}
+                  visible={paperChatOpen && !rightCollapsed}
+                  onBusyChange={setPaperChatBusy}
+                  onSettings={(proposal) => {
+                    setSettingsProposal(
+                      proposal ? { routineId: routine.id, value: proposal } : undefined,
+                    );
+                    setTab('settings');
+                  }}
+                />
+              </section>
+            )}
+            {paperChatOpen || chatOpen ? null : copilotOpen ? (
               <>
                 <button
                   type="button"
