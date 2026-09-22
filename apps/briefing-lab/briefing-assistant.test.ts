@@ -967,6 +967,8 @@ it('uses the native GOSU harness with read-only tools and source-backed pending 
         'propose_settings',
         'search_saved_papers',
         'read_saved_paper',
+        'list_paper_conversations',
+        'read_paper_conversation',
         'search_papers',
         'search_email',
         'search_briefing_history',

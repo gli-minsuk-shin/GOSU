@@ -221,6 +221,21 @@ const Schema = z
         z.object({
           routineId: z.string(),
           scope: z.string(),
+          /**
+           * Which paper this conversation is about, for the chats that may read it. Recorded with
+           * the conversation so the list does not depend on the paper still being in the library:
+           * a briefing can be removed, and the conversation about its paper is still the user's.
+           */
+          paper: z
+            .object({
+              historyId: z.string().max(300),
+              paperId: z.string().max(300),
+              title: z.string().max(1000),
+              /** The key this conversation is stored under, so a reader never has to rebuild it. */
+              key: z.string().max(600),
+            })
+            .strict()
+            .optional(),
           messages: z.array(ConversationMessageSchema).max(10000),
           /**
            * `/new`: the model is given the records from this index on. Earlier records stay for the
@@ -751,6 +766,58 @@ export class BriefingWorkspaceStore {
    * the conversation scope so the caller matches it with `paperConversationScope`. Counts only;
    * no message text leaves this method.
    */
+  /**
+   * Every paper this routine has a 논문 요약 AI conversation about, newest first. For the three
+   * chats that may read those conversations without hosting them: they look here, and continue the
+   * conversation in 논문 요약 where it lives.
+   */
+  async paperConversationIndex(profile: AssistantProfile, limit = 50) {
+    const state = await this.state.read();
+    const current = state.profiles.find((p) => p.routineId === profile.routineId);
+    if (!current || !this.owns(current) || scopeDigest(current) !== scopeDigest(profile))
+      throw new Error('assistant_settings_changed');
+    const byMark = new Map<
+      string,
+      {
+        messages: ConversationMessage[];
+        paper?: { historyId: string; paperId: string; title: string; key: string };
+      }
+    >();
+    for (const c of state.conversations) {
+      if (c.routineId !== current.routineId) continue;
+      const mark = c.scope.indexOf(PAPER_SCOPE_MARK);
+      if (mark < 0) continue;
+      const key = c.scope.slice(mark);
+      const found = byMark.get(key) ?? { messages: [] };
+      byMark.set(key, {
+        messages: [...found.messages, ...c.messages],
+        ...((c.paper ?? found.paper) ? { paper: c.paper ?? found.paper } : {}),
+      });
+    }
+    return [...byMark.entries()]
+      .map(([mark, found]) => {
+        const ordered = [...found.messages].sort(
+          (a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt),
+        );
+        const asked = ordered.filter((m) => m.role === 'user');
+        return {
+          mark,
+          ...(found.paper ? { paper: found.paper } : {}),
+          turns: asked.length,
+          lastAskedAt: asked.at(-1)?.createdAt ?? ordered.at(-1)?.createdAt ?? '',
+          lastQuestion: (asked.at(-1)?.text ?? '').slice(0, 200),
+        };
+      })
+      .filter((entry) => entry.turns > 0)
+      .sort((a, b) => b.lastAskedAt.localeCompare(a.lastAskedAt))
+      .slice(0, Math.max(1, Math.min(limit, 200)));
+  }
+
+  /** The mark that names one paper's conversation, for matching an index entry to a paper. */
+  paperConversationMark(paperKey: string) {
+    return paperScopeMark(paperKey);
+  }
+
   async paperConversationCounts(profile: AssistantProfile, paperKeys: readonly string[]) {
     const state = await this.state.read();
     const current = state.profiles.find((p) => p.routineId === profile.routineId);
@@ -809,6 +876,7 @@ export class BriefingWorkspaceStore {
     profile: AssistantProfile,
     message: ConversationMessage,
     paperKey?: string,
+    paper?: { historyId: string; paperId: string; title: string; key: string },
   ) {
     const parsed = ConversationMessageSchema.parse(message);
     await this.state.mutate((state) => {
@@ -823,6 +891,7 @@ export class BriefingWorkspaceStore {
         conversation = { routineId: current.routineId, scope, messages: [] };
         state.conversations.push(conversation);
       }
+      if (paper && paperKey) conversation.paper = paper;
       conversation.messages.push(parsed);
     });
   }

@@ -20,6 +20,12 @@ export type BriefingHostReads = Readonly<{
   mail: (input: unknown, caller: string, signal: AbortSignal) => Promise<unknown>;
   briefings: (input: unknown, caller: string, signal: AbortSignal) => Promise<unknown>;
   papers: (input: unknown, caller: string, signal: AbortSignal) => Promise<unknown>;
+  /**
+   * The 논문 요약 AI conversations this routine holds. Read only, under the same permission as the
+   * paper summaries they are about: they are the user's own questions about those same papers.
+   * Reading one here never adds to it; it is continued in 논문 요약.
+   */
+  paperConversations: (input: unknown, caller: string, signal: AbortSignal) => Promise<unknown>;
 }>;
 
 export type BriefingHostStatus = Readonly<{
@@ -54,6 +60,18 @@ export type BriefingHostFetchers = Readonly<{
     limit: number,
   ) => Promise<readonly BriefingHistory[]>;
   briefingRecord: (routineId: string, historyId: string) => Promise<BriefingHistory | null>;
+  paperConversations: (
+    profile: AssistantProfile,
+    paperKey?: string,
+  ) => Promise<{
+    index: readonly {
+      turns: number;
+      lastAskedAt: string;
+      lastQuestion: string;
+      paper?: { historyId: string; paperId: string; title: string; key: string } | undefined;
+    }[];
+    messages?: readonly { role: string; text: string; createdAt: string }[];
+  }>;
   savedPapers: (
     routineId: string,
     query: string,
@@ -241,6 +259,49 @@ export function createBriefingHostReads(deps: BriefingHostFetchers): BriefingHos
       };
     },
 
+    async paperConversations(input, caller, signal) {
+      const request = HostPaperRequestSchema.parse(input ?? {});
+      // The same permission as the summaries: a conversation is about those papers, and refusing it
+      // separately would only make the user grant the same thing twice.
+      const profile = await begin('papers', caller, signal);
+      const wanted = Boolean(request.historyId && request.paperId);
+      const listing = await deps.paperConversations(profile);
+      await finish('papers', profile, signal);
+      const named = listing.index.flatMap((entry) =>
+        entry.paper ? [{ ...entry, ...entry.paper }] : [],
+      );
+      if (!wanted)
+        return {
+          routine: profile.name,
+          note: '논문 요약 AI conversations in this routine. Read only; continue one in 논문 요약.',
+          trust: 'user_conversation',
+          conversations: named.map(
+            ({ historyId, paperId, title, turns, lastAskedAt, lastQuestion }) => ({
+              historyId,
+              paperId,
+              title,
+              turns,
+              lastAskedAt,
+              lastQuestion,
+            }),
+          ),
+        };
+      const found = named.find(
+        (entry) => entry.historyId === request.historyId && entry.paperId === request.paperId,
+      );
+      if (!found) throw new Error('assistant_paper_conversation_unknown');
+      const read = await deps.paperConversations(profile, found.key);
+      await finish('papers', profile, signal);
+      return {
+        routine: profile.name,
+        historyId: found.historyId,
+        paperId: found.paperId,
+        title: found.title,
+        note: 'Read only. Continue this conversation in 논문 요약.',
+        trust: 'user_conversation',
+        messages: read.messages ?? [],
+      };
+    },
     async papers(input, caller, signal) {
       const request = HostPaperRequestSchema.parse(input ?? {});
       const profile = await begin('papers', caller, signal);

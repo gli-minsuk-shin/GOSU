@@ -37,6 +37,7 @@ it('owns a single loopback host, serves only bounded static paths and never adop
       mail: vi.fn(async () => ({ messages: [] })),
       briefings: vi.fn(async () => ({ briefings: [] })),
       papers: vi.fn(async () => ({ papers: [] })),
+      paperConversations: vi.fn(async () => ({ conversations: [] })),
     },
     close: vi.fn(),
   };

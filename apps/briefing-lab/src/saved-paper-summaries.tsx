@@ -43,11 +43,6 @@ export function SavedPaperSummaries({
 }) {
   /** Which paper's 논문 요약 AI conversation is open. Its own chat, never the AI 비서's. */
   const [openChat, setOpenChat] = useState<PaperChatReference | null>(null);
-  useEffect(() => {
-    if (!openPaper) return;
-    setOpenChat(openPaper);
-    onOpenedPaper?.();
-  }, [openPaper]);
   const loadRevision = useRef(0);
   const activeRoutine = useRef(routineId);
   activeRoutine.current = routineId;
@@ -116,6 +111,15 @@ export function SavedPaperSummaries({
       }
     };
   }, [routineId]);
+  // Declared after the routine effect above on purpose: React runs effects in declaration order, and
+  // that one clears `openChat` when this screen mounts. Asking about a paper from another tab mounts
+  // this screen and sets `openPaper` in the same pass, so a sync declared earlier was wiped a moment
+  // later and the panel never appeared.
+  useEffect(() => {
+    if (!openPaper) return;
+    setOpenChat(openPaper);
+    onOpenedPaper?.();
+  }, [openPaper]);
   const dateError = paperDateError(dates);
   const visible = papers.filter(
     (p) =>

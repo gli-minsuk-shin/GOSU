@@ -565,7 +565,7 @@ export class LiveSourceService {
   private automaticSummaryJobs = new Map<string, AutomaticSummaryJob>();
   // Wired only by the production host or explicitly injected test store; never an agent tool.
   sharedPaperLibrary?: Pick<SharedPaperSummaryLibrary, 'save' | 'list'> &
-    Partial<Pick<SharedPaperSummaryLibrary, 'remove' | 'noteConversation'>>;
+    Partial<Pick<SharedPaperSummaryLibrary, 'remove'>>;
   paperClassifier?: typeof classifySavedPaperTexts;
   generation?: BriefingGeneration;
   todoReader?: TodoReader;
@@ -1298,6 +1298,15 @@ export class LiveSourceService {
         await this.workspace.assertHostRead(kind, profile);
       },
       privateAllowed: (profile) => this.workspace.hostPrivateAllowed(profile),
+      paperConversations: async (profile, paperKey) =>
+        paperKey
+          ? {
+              index: [],
+              messages: (await this.workspace.conversationDisplay(profile, paperKey)).messages.map(
+                (m) => ({ role: m.role, text: m.text, createdAt: m.createdAt }),
+              ),
+            }
+          : { index: await this.workspace.paperConversationIndex(profile) },
       requiresConfirmation: (profile) => this.workspace.requiresPerRequestConfirmation(profile),
       consent: (message, signal) => this.consent(message, signal),
       calendar: (profile, start, end, signal) =>
@@ -3467,6 +3476,14 @@ export class LiveSourceService {
             profile,
             { role: 'user', text: input.prompt, createdAt: new Date().toISOString() },
             paperKey,
+            input.paperReference && paperKey
+              ? {
+                  historyId: input.paperReference.historyId,
+                  paperId: input.paperReference.paperId,
+                  title: input.paperReference.title,
+                  key: paperKey,
+                }
+              : undefined,
           );
           const feedbackProfileReader = (
             this.memory as unknown as {

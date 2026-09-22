@@ -576,3 +576,80 @@ it('keeps a paper question out of the AI 비서 transcript, in the paper own thr
     expect.stringContaining('Checked synthetic sources'),
   ]);
 });
+
+it('lets the AI 비서 read a paper conversation without adding to it', async () => {
+  const s = await setup();
+  const paper = {
+    routineId: 'r',
+    historyId: '2026-09-22T00:00:00Z',
+    paperId: 'discovered',
+    title: 'A paper from a briefing',
+    sourceUrl: 'https://arxiv.org/abs/2601.12345v1',
+  };
+  // One turn in that paper's own chat, so there is something to read.
+  vi.mocked(runRoutineWithGosuLanguage).mockResolvedValue(answer());
+  await s.invoke(new AbortController().signal, '이 논문의 가정은?', [], { paperReference: paper });
+
+  const seen: unknown[] = [];
+  vi.mocked(runRoutineWithGosuLanguage).mockImplementation(async (_input, signal, _p, options) => {
+    const job = options!.structuredJob!;
+    const names = job.tools?.map((t) => t.name) ?? [];
+    expect(names).toContain('list_paper_conversations');
+    expect(names).toContain('read_paper_conversation');
+    seen.push(await job.executeTool!('list_paper_conversations', { query: '' }, signal));
+    seen.push(
+      await job.executeTool!(
+        'read_paper_conversation',
+        { query: paper.historyId, from: paper.paperId },
+        signal,
+      ),
+    );
+    return answer();
+  });
+  await s.invoke(new AbortController().signal, '내가 어떤 논문들 물어봤지?');
+
+  // The list names the paper and how much was asked, and says where to continue it.
+  expect(seen[0]).toMatchObject({
+    conversations: [
+      expect.objectContaining({
+        paperId: 'discovered',
+        turns: 1,
+        lastQuestion: '이 논문의 가정은?',
+      }),
+    ],
+  });
+  expect(JSON.stringify(seen[0])).toContain('논문 요약');
+  // The read returns that paper's own thread, not the assistant's.
+  expect(seen[1]).toMatchObject({
+    paperId: 'discovered',
+    messages: [
+      { role: 'user', text: '이 논문의 가정은?' },
+      expect.objectContaining({ role: 'assistant' }),
+    ],
+  });
+
+  const profile = (await s.store.profile('r'))!;
+  // Reading it here added nothing to the paper's thread, and the assistant kept its own.
+  expect(
+    (await owner(() => s.store.conversation(profile, paperConversationKey(paper)))).map(
+      (m) => m.text,
+    ),
+  ).toEqual(['이 논문의 가정은?', expect.stringContaining('Checked synthetic sources')]);
+  expect((await owner(() => s.store.conversation(profile))).map((m) => m.text)).toEqual([
+    '내가 어떤 논문들 물어봤지?',
+    expect.stringContaining('Checked synthetic sources'),
+  ]);
+
+  // A paper it has no conversation about is a named refusal, not an empty answer.
+  vi.mocked(runRoutineWithGosuLanguage).mockImplementation(async (_i, signal, _p, options) => {
+    await expect(
+      options!.structuredJob!.executeTool!(
+        'read_paper_conversation',
+        { query: 'nope', from: 'nope' },
+        signal,
+      ),
+    ).rejects.toThrow('assistant_paper_conversation_unknown');
+    return answer();
+  });
+  await s.invoke(new AbortController().signal, '없는 논문 대화 읽어줘');
+});

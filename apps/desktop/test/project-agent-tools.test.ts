@@ -1035,6 +1035,7 @@ describe('ProjectAgentToolSession', () => {
       mail: vi.fn(async () => ({ messages: [{ id: 'm1', title: 'Review request' }] })),
       briefings: vi.fn(async () => ({ briefings: [{ historyId: 'h1' }] })),
       papers: vi.fn(async () => ({ papers: [{ paperId: 'p1' }] })),
+      paperConversations: vi.fn(async () => ({ conversations: [] })),
     };
     const base = {
       projectId: projectAlpha.id,

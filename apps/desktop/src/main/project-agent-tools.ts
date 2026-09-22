@@ -483,17 +483,34 @@ const BRIEFING_PAPERS_TOOL = {
   },
 } as const;
 
+const BRIEFING_PAPER_CONVERSATIONS_TOOL = {
+  type: 'function',
+  name: 'read_paper_conversations',
+  description:
+    "Read the 논문 요약 AI conversations saved in GOSU Briefing: with no arguments it lists which papers were discussed, how many turns each has and its last question; an exact historyId with paperId returns that paper's conversation. These are the user's own questions and the answers they were given. Read only: answering here does not add to a conversation, which is continued in 논문 요약.",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      historyId: { type: 'string' },
+      paperId: { type: 'string' },
+    },
+    additionalProperties: false,
+  },
+} as const;
+
 const BRIEFING_TOOL_NAMES: ReadonlySet<string> = new Set([
   BRIEFING_CALENDAR_TOOL.name,
   BRIEFING_MAIL_TOOL.name,
   BRIEFING_HISTORY_TOOL.name,
   BRIEFING_PAPERS_TOOL.name,
+  BRIEFING_PAPER_CONVERSATIONS_TOOL.name,
 ]);
 const knownBriefingErrors = new Set([
   'assistant_calendar_permission_required',
   'assistant_mail_permission_required',
   'assistant_briefings_permission_required',
   'assistant_papers_permission_required',
+  'assistant_paper_conversation_unknown',
   'assistant_private_ai_required',
   'assistant_calendar_range',
   'assistant_settings_changed',
@@ -1080,6 +1097,7 @@ export interface ProjectAgentBriefingReads {
   mail(input: unknown, caller: string, signal: AbortSignal): Promise<unknown>;
   briefings(input: unknown, caller: string, signal: AbortSignal): Promise<unknown>;
   papers(input: unknown, caller: string, signal: AbortSignal): Promise<unknown>;
+  paperConversations(input: unknown, caller: string, signal: AbortSignal): Promise<unknown>;
 }
 
 export type ProjectAgentHermesDelegationInput = Readonly<{
@@ -1952,7 +1970,13 @@ export class ProjectAgentToolSession {
       ...(dependencies.modelLabWrite ? [ADD_MODEL_LAB_TOOL] : []),
       WORKSPACE_TOOL,
       ...(dependencies.briefingReads
-        ? [BRIEFING_CALENDAR_TOOL, BRIEFING_MAIL_TOOL, BRIEFING_HISTORY_TOOL, BRIEFING_PAPERS_TOOL]
+        ? [
+            BRIEFING_CALENDAR_TOOL,
+            BRIEFING_MAIL_TOOL,
+            BRIEFING_HISTORY_TOOL,
+            BRIEFING_PAPERS_TOOL,
+            BRIEFING_PAPER_CONVERSATIONS_TOOL,
+          ]
         : []),
       ...(dependencies.searchConversation ? [SEARCH_CONVERSATION_TOOL] : []),
       ...(this.localNotesAvailable ? [LIST_NOTES_TOOL, READ_NOTE_TOOL] : []),
@@ -2964,7 +2988,9 @@ export class ProjectAgentToolSession {
           ? reads.mail
           : tool === BRIEFING_HISTORY_TOOL.name
             ? reads.briefings
-            : reads.papers;
+            : tool === BRIEFING_PAPER_CONVERSATIONS_TOOL.name
+              ? reads.paperConversations
+              : reads.papers;
     const result = await read(arguments_ ?? {}, caller, signal);
     await this.requireActiveProject();
     if (signal.aborted || this.toolIntakeClosed) return failure('tool_not_allowed');

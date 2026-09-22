@@ -179,6 +179,16 @@ export const BRIEFING_KNOWLEDGE_TOOLS = [
       'Read one complete saved paper summary including five sections, equations and figure captions. Set query to the exact historyId and from to the exact paperId returned by search_saved_papers or selectedPaperReference. This is a historical AI summary. Set to="original" only when the question requires original evidence: attempts supported public arXiv HTML from the resolved stored URL. Unsupported or unavailable originals remain explicitly unavailable; never claim a complete PDF read.',
   },
   {
+    name: 'list_paper_conversations',
+    description:
+      'List the papers this routine has a 논문 요약 AI conversation about, newest question first, with how many turns each has and its last question. Read only: the conversation itself is held and continued in 논문 요약, not here. Use read_paper_conversation for one paper, with the historyId and paperId this returns.',
+  },
+  {
+    name: 'read_paper_conversation',
+    description:
+      'Read one paper\u2019s 논문 요약 AI conversation. Set query to the exact historyId and from to the exact paperId from list_paper_conversations, search_saved_papers or selectedPaperReference. Read only: answering here does not add to that conversation, which is continued in 논문 요약.',
+  },
+  {
     name: 'search_papers',
     description:
       'Search public papers across arXiv, Crossref publisher metadata and OpenReview. For a specific paper use its exact title and mode=title; for topics use concise search terms and mode=topic (default), independent of question length. Neither mode inherits briefing date/author/exclusion filters. mode=recent keeps those filters. A known year narrows results. A DOI, DOI URL, arXiv ID/URL or PMLR article URL resolves directly without unrelated title search. Results are candidates, not proof of relevance or full-text access; inspect titles/authors/venue and refine topics as needed. Each source has a bounded deadline; partial failures do not mean absence. Use read_public_paper with a returned id before detailed analysis.',
@@ -703,6 +713,48 @@ async function runBriefingAssistantInner(
               projectWrites++;
             if (action === 'read') readProjects.add(query.query);
             return response;
+          }
+          if (name === 'list_paper_conversations' || name === 'read_paper_conversation') {
+            // Read only, on purpose: 논문 요약 AI is its own chat, and answering here must not add to
+            // it. The three chats that may look at it link back to 논문 요약 to continue it.
+            // Each conversation carries the paper it is about, so this does not depend on that
+            // paper still being in the library: a briefing can be removed and the conversation
+            // about its paper is still the user's.
+            const index = await workspace.paperConversationIndex(profile);
+            await stillAllowed(sig);
+            const named = index.flatMap((entry) =>
+              entry.paper ? [{ ...entry, ...entry.paper }] : [],
+            );
+            if (name === 'list_paper_conversations')
+              return {
+                conversations: named.map(
+                  ({ historyId, paperId, title, turns, lastAskedAt, lastQuestion }) => ({
+                    historyId,
+                    paperId,
+                    title,
+                    turns,
+                    lastAskedAt,
+                    lastQuestion,
+                  }),
+                ),
+                note: '논문 요약 AI conversations. Continue one in 논문 요약, not here.',
+              };
+            const wanted = named.find(
+              (k) => k.historyId === query.query && k.paperId === query.from,
+            );
+            if (!wanted) throw new Error('assistant_paper_conversation_unknown');
+            const conversation = await workspace.conversationDisplay(profile, wanted.key);
+            return {
+              historyId: wanted.historyId,
+              paperId: wanted.paperId,
+              title: wanted.title,
+              messages: conversation.messages.map((m) => ({
+                role: m.role,
+                text: m.text,
+                createdAt: m.createdAt,
+              })),
+              note: 'Read only. Continue this conversation in 논문 요약.',
+            };
           }
           if (name === 'search_saved_papers' || name === 'read_saved_paper') {
             const library = await readSavedPaperLibrary(

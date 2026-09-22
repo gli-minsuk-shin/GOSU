@@ -185,6 +185,50 @@ it('opens a paper conversation inside 논문 요약, separate from the AI 비서
   expect(panel()).toHaveLength(0);
 });
 
+it('opens the paper a card asked about, even when this screen mounts for it', async () => {
+  // Pressing 「AI 질문」 on a paper card navigates here and asks for that paper in the same pass, so
+  // this screen mounts and receives `openPaper` together. Its routine effect clears the open chat on
+  // mount, and React runs effects in declaration order: a sync declared before that one was wiped a
+  // moment after it ran, and the panel never appeared.
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const routine = initialRealWorkspace('2026-09-10T00:00:00Z').routines[0]!;
+  vi.mocked(sourceRequest).mockResolvedValue({ papers: tagPapers, feedback: {} });
+  const asked = {
+    routineId: routine.id,
+    historyId: 'h',
+    paperId: 'p2',
+    title: 'Image study',
+  };
+  const onOpenedPaper = vi.fn();
+  await act(() => {
+    ui = create(
+      <SavedPaperSummaries
+        routineId={routine.id}
+        routine={routine}
+        openPaper={asked}
+        onOpenedPaper={onOpenedPaper}
+      />,
+      { createNodeMock: (e) => (e.type === 'textarea' ? { focus: vi.fn() } : null) },
+    );
+  });
+
+  expect(ui.root.findAllByProps({ className: 'briefing-paper-chat-panel' })).toHaveLength(1);
+  expect(ui.root.findByType(BriefingChat).props.paperChat).toMatchObject({ paperId: 'p2' });
+  expect(JSON.stringify(ui.toJSON())).toContain('Image study');
+  // The request is consumed, so returning to this screen later does not reopen it by itself.
+  expect(onOpenedPaper).toHaveBeenCalledOnce();
+  await act(() =>
+    ui.update(
+      <SavedPaperSummaries
+        routineId={routine.id}
+        routine={routine}
+        onOpenedPaper={onOpenedPaper}
+      />,
+    ),
+  );
+  expect(ui.root.findAllByProps({ className: 'briefing-paper-chat-panel' })).toHaveLength(1);
+});
+
 it('filters the library to the papers the 논문 요약 AI was asked about, together with the other filters', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   const discussed = {
