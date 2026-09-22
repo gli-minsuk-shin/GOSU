@@ -119,6 +119,7 @@ import {
 } from './src/briefing-notifications';
 import { PaperSummarySaveSchema } from './src/paper-summary-contract';
 import { sharedPaperView } from './src/shared-paper-view';
+import { savedLibraryPaperId } from './src/paper-identity';
 import {
   compactConversationNow,
   historyPlan,
@@ -563,7 +564,7 @@ export class LiveSourceService {
   private automaticSummaryJobs = new Map<string, AutomaticSummaryJob>();
   // Wired only by the production host or explicitly injected test store; never an agent tool.
   sharedPaperLibrary?: Pick<SharedPaperSummaryLibrary, 'save' | 'list'> &
-    Partial<Pick<SharedPaperSummaryLibrary, 'remove'>>;
+    Partial<Pick<SharedPaperSummaryLibrary, 'remove' | 'noteConversation'>>;
   paperClassifier?: typeof classifySavedPaperTexts;
   generation?: BriefingGeneration;
   todoReader?: TodoReader;
@@ -3720,6 +3721,7 @@ export class LiveSourceService {
             (detail) => send({ type: 'progress', detail }),
           );
           let persistenceWarning: string | undefined;
+          let conversationWarning: string | undefined;
           try {
             await this.workspace.appendConversation(profile, {
               role: 'assistant',
@@ -3735,9 +3737,30 @@ export class LiveSourceService {
             persistenceWarning =
               '답변은 완료됐지만 대화 저장에 실패했습니다. 앱을 닫기 전에 내용을 복사해주세요. 요청을 자동으로 다시 실행하지 않습니다.';
           }
+          // A question about a paper that is in the 논문 요약 보관함 is recorded on that paper, so
+          // the user can find later which papers they discussed and what was said. No model is
+          // called for it. A failure here never fails the answer: it is reported in its own line.
+          const libraryPaperId = savedLibraryPaperId(input.paperReference);
+          if (libraryPaperId && this.sharedPaperLibrary?.noteConversation) {
+            try {
+              await this.sharedPaperLibrary.noteConversation(libraryPaperId, {
+                question: input.prompt,
+                answer: result.answer,
+              });
+            } catch (error) {
+              conversationWarning =
+                error instanceof Error && error.message === 'paper_library_record_missing'
+                  ? '이 논문은 논문 요약 보관함에 없어 대화 기록을 남기지 않았습니다. 답변은 그대로입니다.'
+                  : '답변은 완료됐지만 이 논문에 대화 기록을 남기지 못했습니다. 답변은 그대로입니다.';
+            }
+          }
           send({
             type: 'result',
-            result: { ...result, ...(persistenceWarning ? { persistenceWarning } : {}) },
+            result: {
+              ...result,
+              ...(persistenceWarning ? { persistenceWarning } : {}),
+              ...(conversationWarning ? { conversationWarning } : {}),
+            },
           });
         } catch (error) {
           queueError = sourceError(error);

@@ -148,3 +148,45 @@ it('removes the two buttons on 나중에 without saving anything', async () => {
     vi.unstubAllGlobals();
   }
 });
+
+it('offers one click and 나중에 when the answer holds no link the library can verify', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const onSave = vi.fn();
+  const onAsk = vi.fn();
+  let ui!: ReturnType<typeof create>;
+  try {
+    await act(() => {
+      ui = create(
+        <PaperSummarySaveOffer
+          asked
+          question="이 논문들 정리해줘"
+          answer={'정리했습니다. '.repeat(5) + '\n\n이 분석도 논문 요약 보관함에 추가할까요?'}
+          // A report page: the library opens arXiv, DOI, OpenReview and PMLR only.
+          references={[{ title: 'Lab report', url: 'https://example.org/report' }]}
+          onSave={onSave}
+          onAsk={onAsk}
+        />,
+      );
+    });
+    const labels = () => ui.root.findAllByType('button').map((b) => b.children.join(''));
+    expect(ui.toJSON()).not.toBeNull();
+    expect(labels()).toEqual(['링크 붙여 다시 정리', '나중에']);
+
+    // The one click asks for the links, as the user, instead of leaving them to type the sentence.
+    await act(() => ui.root.findAllByType('button')[0]!.props.onClick());
+    expect(onAsk).toHaveBeenCalledExactlyOnceWith(
+      '논문마다 DOI나 arXiv 링크를 붙여서 다시 정리해줘',
+    );
+    // Nothing was saved: there is nothing here the library can verify.
+    expect(onSave).not.toHaveBeenCalled();
+
+    // 나중에 puts the buttons away and keeps the explanation, so the notice is not lost.
+    await act(() => ui.root.findAllByType('button')[1]!.props.onClick());
+    expect(ui.root.findAllByType('button')).toHaveLength(0);
+    expect(JSON.stringify(ui.toJSON())).toContain('확인할 수 있는 논문 링크가 없습니다');
+    expect(onSave).not.toHaveBeenCalled();
+  } finally {
+    await act(() => ui?.unmount());
+    vi.unstubAllGlobals();
+  }
+});

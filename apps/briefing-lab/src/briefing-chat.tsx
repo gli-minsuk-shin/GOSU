@@ -58,6 +58,8 @@ type ChatAnswer = AssistantAnswer & {
   savedPapers?: (PaperSummarySaveReceipt & { title: string })[];
   contextUsage?: ContextUsage;
   persistenceWarning?: string;
+  /** The answer arrived but this paper's 대화 기록 could not be written. Never hides the answer. */
+  conversationWarning?: string;
   settingsProposal?: SettingsProposal;
   sources: {
     id: string;
@@ -486,6 +488,7 @@ export function BriefingChat({
         ]);
         setStatus(
           result.persistenceWarning ||
+            result.conversationWarning ||
             (result.events.length || result.tasks.length
               ? '답변 완료 · 제안은 아직 실행되지 않았습니다.'
               : '답변 완료'),
@@ -787,6 +790,7 @@ export function BriefingChat({
                             }
                           : undefined
                       }
+                      onAsk={i === messages.length - 1 ? (prompt) => void send(prompt) : undefined}
                       onSave={(candidate) =>
                         sourceRequest<PaperSummarySaveReceipt>(
                           '/papers/shared/save',

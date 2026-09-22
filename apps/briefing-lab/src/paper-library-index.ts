@@ -2,12 +2,15 @@ import type { BriefingHistory } from '../briefing-workspace-store';
 import { versionedPaperId } from './paper-identity';
 import { cleanPaperTags, paperTagAliases, paperTagKey } from './paper-tags';
 import { paperCategoryLabel } from './paper-classification';
+import type { PaperConversation } from './paper-summary-contract';
 
 export type SavedPaper = {
   historyId: string;
   savedAt: string;
   classificationKey?: string;
   private?: boolean;
+  /** What the 논문 요약 AI was asked about this paper. Only papers in the shared library have it. */
+  conversation?: PaperConversation;
   item: BriefingHistory['items'][number];
 };
 const normalize = (value: string) => value.normalize('NFKC').toLocaleLowerCase().trim();

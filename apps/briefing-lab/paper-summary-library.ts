@@ -8,9 +8,11 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'node:path';
 import { systemBriefingKey } from './briefing-system-key';
 import {
+  appendPaperConversation,
   PaperSummarySaveSchema,
   PaperSummaryRecordSchema,
   safePaperLink,
+  type PaperConversation,
   type PaperSummaryRecord,
   type PaperSummarySaveReceipt,
 } from './src/paper-summary-contract';
@@ -164,9 +166,24 @@ export class SharedPaperSummaryLibrary {
       savedAt: new Date().toISOString(),
       origin,
     });
+    const published = await this.publish(folder, record, 'create-only');
+    const saved = await this.read(id);
+    return { id, savedAt: saved.savedAt, alreadySaved: !published };
+  }
+
+  /**
+   * Seal one record and put it in place. `create-only` links, so two processes cannot overwrite a
+   * different analysis that already carries this id, and answers false when one is there.
+   * `replace` renames over this record's own file, which is how a record gains a note about itself.
+   */
+  private async publish(
+    folder: string,
+    record: PaperSummaryRecord,
+    mode: 'create-only' | 'replace',
+  ) {
     const iv = randomBytes(12),
       cipher = createCipheriv('aes-256-gcm', await this.getKey(), iv);
-    cipher.setAAD(Buffer.from('gosu-approved-paper:' + id));
+    cipher.setAAD(Buffer.from('gosu-approved-paper:' + record.id));
     const data = Buffer.concat([cipher.update(JSON.stringify(record), 'utf8'), cipher.final()]);
     const sealed = JSON.stringify({
       version: 1,
@@ -176,13 +193,19 @@ export class SharedPaperSummaryLibrary {
     });
     if (Buffer.byteLength(sealed) > MAX_BYTES) throw new Error('paper_library_size_limit');
     const temp = join(folder, randomUUID() + '.pending'),
-      target = join(folder, id + SUFFIX);
+      target = join(folder, record.id + SUFFIX);
     const file = await open(temp, 'wx', 0o600);
     try {
       await file.writeFile(sealed);
       await file.sync();
     } finally {
       await file.close();
+    }
+    if (mode === 'replace') {
+      // rename replaces atomically: a crash leaves either the old record or the new one, never a
+      // half-written file, and the paper itself is never lost to a note about it.
+      await rename(temp, target);
+      return true;
     }
     let published = false;
     try {
@@ -195,7 +218,31 @@ export class SharedPaperSummaryLibrary {
     } finally {
       await unlink(temp);
     }
+    return published;
+  }
+
+  /**
+   * Record one more 논문 요약 AI turn on a saved paper. No model is called: the question is the
+   * user's own sentence and the answer is the opening of the one already written. An unknown id is
+   * reported, not created, so a question about a paper that is not in the library changes nothing.
+   */
+  async noteConversation(
+    id: string,
+    turn: { question: string; answer: string; askedAt?: string },
+  ): Promise<PaperConversation> {
+    const record = await this.read(id).catch((e: unknown) => {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT')
+        throw new Error('paper_library_record_missing');
+      throw e;
+    });
+    const conversation = appendPaperConversation(record.conversation, {
+      question: turn.question,
+      answer: turn.answer,
+      askedAt: turn.askedAt ?? new Date().toISOString(),
+    });
+    await this.publish(await this.folder(), { ...record, conversation }, 'replace');
     const saved = await this.read(id);
-    return { id, savedAt: saved.savedAt, alreadySaved: !published };
+    if (!saved.conversation) throw new Error('paper_library_note_unconfirmed');
+    return saved.conversation;
   }
 }

@@ -1262,8 +1262,9 @@ export function ProjectChatView({
         setContextCommandStatus(projectChatCompactionStatus(receipt));
       });
   };
-  const submit = () => {
-    const message = draft.trim();
+  /** `text` is for a card that sends a follow-up in the user's place; otherwise the composer wins. */
+  const submit = (text?: string) => {
+    const message = (text ?? draft).trim();
     if (!message || loading) return;
     const contextCommand = parseChatSlashCommand(message);
     if (contextCommand) {
@@ -2104,6 +2105,7 @@ export function ProjectChatView({
                               }
                             : undefined
                         }
+                        onAsk={isLatestMessage ? (prompt) => submit(prompt) : undefined}
                         onSave={(candidate) => window.gosu.paperSummaries.save(candidate)}
                       />
                     )}
@@ -2720,7 +2722,8 @@ export function ProjectChatView({
               <button
                 type="button"
                 className="primary-button chat-send"
-                onClick={submit}
+                // Not `onClick={submit}`: the click event would arrive as the message text.
+                onClick={() => submit()}
                 disabled={
                   loading ||
                   draft.trim().length === 0 ||

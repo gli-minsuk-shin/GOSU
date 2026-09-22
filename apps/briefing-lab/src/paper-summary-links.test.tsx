@@ -130,7 +130,7 @@ describe('paper summary card with several papers', () => {
     }
   });
 
-  it('explains which links are needed instead of offering a save that must fail', async () => {
+  it('offers the follow-up and 나중에 instead of a save that must fail', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     const onSave = vi.fn();
     let ui!: ReturnType<typeof create>;
@@ -151,6 +151,12 @@ describe('paper summary card with several papers', () => {
 
       expect(html).toContain('확인할 수 있는 논문 링크가 없습니다');
       expect(html).toContain('arXiv');
+      // Nothing here is savable, so the card never offers 추가. Without a chat that can send the
+      // follow-up, 나중에 is the only thing it can honestly offer.
+      expect(ui.root.findAllByType('button').map((b) => b.children.join(''))).toEqual(['나중에']);
+      expect(html).not.toContain('추가할까요');
+      expect(onSave).not.toHaveBeenCalled();
+      await act(() => ui.root.findByType('button').props.onClick());
       expect(ui.root.findAllByType('button')).toHaveLength(0);
       expect(onSave).not.toHaveBeenCalled();
     } finally {

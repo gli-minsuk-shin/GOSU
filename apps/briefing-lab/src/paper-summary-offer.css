@@ -86,6 +86,34 @@
   width: 15px;
   height: 15px;
 }
+/* Papers the 논문 요약 AI was asked about: a quiet mark on the row, and the filter that shows only
+   those rows. Both borrow the chat button's colours so they read as the same feature. */
+.briefing-paper-asked-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #49672b;
+  font-size: 11px;
+}
+.briefing-paper-asked-mark svg {
+  width: 15px;
+  height: 15px;
+}
+.briefing-paper-filters > .briefing-paper-asked-filter {
+  padding: 6px 10px;
+  border: 1px solid #d4dfcc;
+  border-radius: 8px;
+  background: #fff;
+  color: #49672b;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.briefing-paper-filters > .briefing-paper-asked-filter.selected {
+  border-color: #9cb884;
+  background: #eef4e7;
+}
+
 /* Under an answer that asked the question itself: just the two answers, no card. */
 .gosu-paper-save-offer.is-answer {
   margin: 6px 0 2px;

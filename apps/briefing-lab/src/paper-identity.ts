@@ -20,3 +20,21 @@ export function versionedPaperId(value: string | undefined): string | null {
     return null;
   }
 }
+
+/**
+ * The 논문 요약 보관함 record a chat is about, or null. A card in the library builds its chat
+ * button with an empty `historyId` and the record's own 64-hex id as the paper id, and
+ * `sharedPaperView` publishes the same id; a paper from a briefing's own history carries that
+ * briefing's id instead and is not in the library, so it has nowhere to record a conversation.
+ */
+export function savedLibraryPaperId(
+  reference: { historyId: string; paperId: string } | undefined,
+): string | null {
+  if (!reference) return null;
+  const id = reference.historyId.startsWith('shared:')
+    ? reference.historyId.slice('shared:'.length)
+    : reference.historyId === ''
+      ? reference.paperId
+      : '';
+  return /^[a-f0-9]{64}$/.test(id) ? id : null;
+}

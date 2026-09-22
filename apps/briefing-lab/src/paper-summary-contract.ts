@@ -53,6 +53,50 @@ const VERIFIABLE_PAPER_LINK =
  */
 export const verifiablePaperLink = (value: string) =>
   Boolean(arxivSaveId(value)) || VERIFIABLE_PAPER_LINK.test(value);
+/**
+ * What the user asked the 논문 요약 AI about one saved paper, so they can check later what was
+ * discussed. Derived from the turns that happened, never a second model call: the question is the
+ * user's own sentence and the answer is an excerpt of the one the model already wrote.
+ */
+export const PAPER_CONVERSATION_ENTRIES = 40;
+export const PAPER_CONVERSATION_QUESTION_MAX = 2_000;
+export const PAPER_CONVERSATION_ANSWER_MAX = 1_200;
+export const PaperConversationEntrySchema = z
+  .object({
+    askedAt: z.string().datetime(),
+    question: z.string().trim().min(1).max(PAPER_CONVERSATION_QUESTION_MAX),
+    /** The opening of the answer. Empty when the turn produced no text. */
+    answer: z.string().trim().max(PAPER_CONVERSATION_ANSWER_MAX),
+  })
+  .strict();
+export const PaperConversationSchema = z
+  .object({
+    updatedAt: z.string().datetime(),
+    /** Every turn ever, including the ones no longer kept in `entries`. */
+    turns: z.number().int().min(1).max(1_000_000),
+    entries: z.array(PaperConversationEntrySchema).min(1).max(PAPER_CONVERSATION_ENTRIES),
+  })
+  .strict();
+export type PaperConversation = z.infer<typeof PaperConversationSchema>;
+export type PaperConversationEntry = z.infer<typeof PaperConversationEntrySchema>;
+
+/** One more turn on a paper: the newest entries are kept and the total keeps counting. */
+export function appendPaperConversation(
+  current: PaperConversation | undefined,
+  entry: { question: string; answer: string; askedAt: string },
+): PaperConversation {
+  const question = entry.question.trim().slice(0, PAPER_CONVERSATION_QUESTION_MAX);
+  const answer = entry.answer.trim().slice(0, PAPER_CONVERSATION_ANSWER_MAX);
+  if (!question) throw new Error('paper_conversation_question_empty');
+  return PaperConversationSchema.parse({
+    updatedAt: entry.askedAt,
+    turns: Math.min(1_000_000, (current?.turns ?? 0) + 1),
+    entries: [...(current?.entries ?? []), { askedAt: entry.askedAt, question, answer }].slice(
+      -PAPER_CONVERSATION_ENTRIES,
+    ),
+  });
+}
+
 export const PaperSummaryCandidateSchema = z
   .object({
     title: z.string().trim().min(1).max(240),
@@ -71,12 +115,14 @@ export type PaperSummaryRecord = PaperSummaryCandidate & {
   id: string;
   savedAt: string;
   origin: 'GOSU' | 'Model Lab' | 'Briefing Lab';
+  conversation?: PaperConversation | undefined;
 };
 export const PaperSummaryRecordSchema = PaperSummaryCandidateSchema.extend({
   paper: VerifiedPaperSummarySchema.optional(),
   id: z.string().regex(/^[a-f0-9]{64}$/),
   savedAt: z.string().datetime(),
   origin: z.enum(['GOSU', 'Model Lab', 'Briefing Lab']),
+  conversation: PaperConversationSchema.optional(),
 }).strict();
 
 export function paperSummaryCandidate(

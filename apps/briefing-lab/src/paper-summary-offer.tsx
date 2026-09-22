@@ -9,12 +9,15 @@ import {
 } from './paper-summary-contract';
 import './paper-summary-offer.css';
 export type PaperSaveReplyHandler = (text: string) => boolean;
+/** The follow-up that turns an unsavable answer into a savable one, in the user's own voice. */
+export const LINK_REQUEST = '논문마다 DOI나 arXiv 링크를 붙여서 다시 정리해줘';
 export function PaperSummarySaveOffer({
   question,
   answer,
   references,
   onSave,
   onReplyReady,
+  onAsk,
   allowBareYes = true,
   activityWorkload = 'papers',
   asked = false,
@@ -24,6 +27,11 @@ export function PaperSummarySaveOffer({
   references?: readonly { title: string; url: string }[] | undefined;
   onSave: (candidate: PaperSummaryCandidate) => Promise<PaperSummarySaveReceipt>;
   onReplyReady?: ((handler: PaperSaveReplyHandler | null) => void) | undefined;
+  /**
+   * Sends a follow-up question as the user. Only used in the state where the answer holds no link
+   * the library can verify, so the one thing that can be done there is one click instead of typing.
+   */
+  onAsk?: ((prompt: string) => void) | undefined;
   allowBareYes?: boolean;
   activityWorkload?: 'papers' | 'model-lab';
   /**
@@ -123,9 +131,23 @@ export function PaperSummarySaveOffer({
       <section className="gosu-paper-save-offer is-answer" aria-label="논문 요약 저장 안내">
         <small role="status">
           이 답변에는 보관함이 확인할 수 있는 논문 링크가 없습니다. arXiv, DOI, OpenReview, PMLR
-          링크가 있는 논문만 저장할 수 있습니다. “논문마다 DOI나 arXiv 링크를 붙여서 다시
-          정리해줘”라고 요청해 보세요.
+          링크가 있는 논문만 저장할 수 있습니다.
         </small>
+        {state !== 'declined' && (
+          <div>
+            {/* Not "추가": there is nothing here the library can add yet. One click asks for the
+                links that would make it addable, instead of leaving the user to type the sentence.
+                Only where the chat can send it: a dead button explains nothing. */}
+            {onAsk && (
+              <button type="button" title={LINK_REQUEST} onClick={() => onAsk(LINK_REQUEST)}>
+                링크 붙여 다시 정리
+              </button>
+            )}
+            <button type="button" onClick={() => setState('declined')}>
+              나중에
+            </button>
+          </div>
+        )}
       </section>
     );
   if (!candidate || state === 'declined') return null;

@@ -93,3 +93,69 @@ it('requires explicit approval, encrypts exact content and survives restart with
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+it('records 논문 요약 AI turns on a saved paper without touching the analysis or calling a model', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'paper-library-conversation-'));
+  const key = vi.fn(async () => Buffer.alloc(32, 7));
+  try {
+    const prepare = async (candidate: NonNullable<ReturnType<typeof paperSummaryCandidate>>) => [
+      candidate,
+    ];
+    const library = new SharedPaperSummaryLibrary(dir, key, prepare);
+    const candidate = paperSummaryCandidate(
+      'https://arxiv.org/abs/2609.00002v1 이 논문 분석해줘',
+      answer,
+    )!;
+    const saved = await library.save({ candidate, confirmed: true }, 'GOSU');
+    expect((await library.list())[0]?.conversation).toBeUndefined();
+
+    const first = await library.noteConversation(saved.id, {
+      question: '이 논문의 가정이 왜 필요해?',
+      answer: '식별을 위해 필요합니다.',
+      askedAt: '2026-09-22T01:00:00.000Z',
+    });
+    expect(first).toMatchObject({
+      turns: 1,
+      updatedAt: '2026-09-22T01:00:00.000Z',
+      entries: [
+        {
+          askedAt: '2026-09-22T01:00:00.000Z',
+          question: '이 논문의 가정이 왜 필요해?',
+          answer: '식별을 위해 필요합니다.',
+        },
+      ],
+    });
+
+    // A second turn appends, and the paper's own analysis is untouched by the note.
+    await library.noteConversation(saved.id, {
+      question: '한계는?',
+      answer: '실제 실험이 없습니다.',
+      askedAt: '2026-09-22T01:05:00.000Z',
+    });
+    const reopened = new SharedPaperSummaryLibrary(dir, key, prepare);
+    const record = (await reopened.list())[0]!;
+    expect(record.conversation?.turns).toBe(2);
+    expect(record.conversation?.entries.map((e) => e.question)).toEqual([
+      '이 논문의 가정이 왜 필요해?',
+      '한계는?',
+    ]);
+    expect(record.markdown).toBe(answer);
+    expect(record.id).toBe(saved.id);
+    expect(record.savedAt).toBe((await reopened.list())[0]!.savedAt);
+    // Still sealed: the note is not readable in the file either.
+    const file = join(dir, 'approved-paper-summaries', saved.id + '.paper.enc.json');
+    expect(await readFile(file, 'utf8')).not.toContain('한계는?');
+    // One file, not a second copy: a note replaces this record instead of publishing a new one.
+    expect(await readdir(join(dir, 'approved-paper-summaries'))).toEqual([
+      saved.id + '.paper.enc.json',
+    ]);
+
+    // A paper that is not in the library is reported, never created.
+    await expect(
+      reopened.noteConversation('b'.repeat(64), { question: '뭐야?', answer: '' }),
+    ).rejects.toThrow('paper_library_record_missing');
+    expect(await reopened.list()).toHaveLength(1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -171,6 +171,22 @@ describe('Project Chat without Research Notes', () => {
     },
   );
 
+  it('sends the composer text when the send button is clicked, never the click event', async () => {
+    // `submit` takes the text to send so a card can send a follow-up in the user's place. The
+    // send button must not pass its own event into that parameter: the event would be the message.
+    const input = props();
+    const renderer = await mount(input);
+    await act(async () =>
+      renderer.root.findByProps({ className: 'primary-button chat-send' }).props.onClick({
+        type: 'click',
+        preventDefault: vi.fn(),
+        stopPropagation: vi.fn(),
+      }),
+    );
+    expect(input.onSend).toHaveBeenCalledOnce();
+    expect(input.onSend.mock.calls[0]?.[0]).toBe('Discuss the project without accessing notes');
+  });
+
   it('also permits Claude Code chat with an inactive note grant without switching providers', async () => {
     const input = props({
       models: [

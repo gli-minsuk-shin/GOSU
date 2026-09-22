@@ -137,6 +137,86 @@ it('selects multiple tags in a checkbox panel with OR matching, and intersects t
   expect(sourceRequest).toHaveBeenCalledTimes(1);
   expect(refreshBriefingSummary).not.toHaveBeenCalled();
 });
+it('filters the library to the papers the 논문 요약 AI was asked about, together with the other filters', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const discussed = {
+    ...tagPapers[0]!,
+    conversation: {
+      updatedAt: '2026-09-22T01:00:00.000Z',
+      turns: 3,
+      entries: [
+        {
+          askedAt: '2026-09-22T01:00:00.000Z',
+          question: '가정이 왜 필요해?',
+          answer: '식별을 위해.',
+        },
+      ],
+    },
+  };
+  const alsoDiscussed = {
+    ...tagPapers[1]!,
+    conversation: {
+      updatedAt: '2026-09-22T02:00:00.000Z',
+      turns: 1,
+      entries: [{ askedAt: '2026-09-22T02:00:00.000Z', question: '한계는?', answer: '' }],
+    },
+  };
+  vi.mocked(sourceRequest).mockResolvedValue({
+    papers: [discussed, alsoDiscussed, tagPapers[2]],
+    feedback: {},
+  });
+  await act(() => {
+    ui = create(<SavedPaperSummaries routineId="r" />);
+  });
+  const toggle = () => ui.root.findByProps({ className: 'briefing-paper-asked-filter' });
+
+  // Off by default, and the count says how many papers have a conversation.
+  expect(shownIds()).toEqual(['p1', 'p2', 'p3']);
+  expect(toggle().children.join('')).toContain('(2)');
+  expect(toggle().props['aria-pressed']).toBe(false);
+
+  await act(() => toggle().props.onClick());
+  expect(shownIds()).toEqual(['p1', 'p2']);
+  expect(
+    ui.root.findByProps({ className: 'briefing-paper-asked-filter selected' }).props[
+      'aria-pressed'
+    ],
+  ).toBe(true);
+
+  // It intersects the text search rather than replacing it.
+  await act(() =>
+    ui.root
+      .findByProps({ 'aria-label': '저장 논문 검색' })
+      .props.onChange({ target: { value: 'Image' } }),
+  );
+  expect(shownIds()).toEqual(['p2']);
+  await act(() =>
+    ui.root
+      .findByProps({ 'aria-label': '저장 논문 검색' })
+      .props.onChange({ target: { value: 'Statistics' } }),
+  );
+  expect(shownIds()).toEqual([]);
+
+  // A discussed paper is marked in the list with how many turns it had.
+  await act(() =>
+    ui.root
+      .findByProps({ 'aria-label': '저장 논문 검색' })
+      .props.onChange({ target: { value: '' } }),
+  );
+  expect(
+    ui.root
+      .findAllByProps({ className: 'briefing-paper-asked-mark' })
+      .map((n) => n.props['aria-label']),
+  ).toEqual(['AI 질의응답 3회', 'AI 질의응답 1회']);
+
+  // Turning it off restores the whole library, and nothing called a source or a model.
+  await act(() =>
+    ui.root.findByProps({ className: 'briefing-paper-asked-filter selected' }).props.onClick(),
+  );
+  expect(shownIds()).toEqual(['p1', 'p2', 'p3']);
+  expect(sourceRequest).toHaveBeenCalledTimes(1);
+  expect(refreshBriefingSummary).not.toHaveBeenCalled();
+});
 it('searches existing tag aliases without clearing hidden selections, and supports remove/clear/close', async () => {
   await mountTags();
   const trigger = () => ui.root.findByProps({ 'aria-label': '논문 태그 선택' });

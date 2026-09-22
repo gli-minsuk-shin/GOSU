@@ -34,6 +34,8 @@ export function SavedPaperSummaries({ routineId }: { routineId: string }) {
   const [query, setQuery] = useState(''),
     [category, setCategory] = useState(''),
     [selectedTags, setSelectedTags] = useState<string[]>([]),
+    /** Only the papers the 논문 요약 AI was asked about. Combines with every other filter. */
+    [askedAiOnly, setAskedAiOnly] = useState(false),
     [limit, setLimit] = useState(30);
   const [papers, setPapers] = useState<SavedPaper[]>([]),
     [feedback, setFeedback] = useState<Record<string, FeedbackDecision>>({}),
@@ -89,8 +91,12 @@ export function SavedPaperSummaries({ routineId }: { routineId: string }) {
   }, [routineId]);
   const dateError = paperDateError(dates);
   const visible = papers.filter(
-    (p) => matchesSavedPaper(p, query, category, selectedTags) && matchesPaperDates(p, dates),
+    (p) =>
+      matchesSavedPaper(p, query, category, selectedTags) &&
+      matchesPaperDates(p, dates) &&
+      (!askedAiOnly || Boolean(p.conversation)),
   );
+  const askedAiCount = papers.filter((p) => p.conversation).length;
   const missingSummaryDates = papers.filter(
     (p) => !paperCalendarDay(p.item.provenance?.summarizedAt),
   ).length;
@@ -171,6 +177,18 @@ export function SavedPaperSummaries({ routineId }: { routineId: string }) {
           selected={selectedTags}
           onChange={changeTags}
         />
+        <button
+          type="button"
+          className={`briefing-paper-asked-filter${askedAiOnly ? ' selected' : ''}`}
+          aria-pressed={askedAiOnly}
+          title="논문 요약 AI와 질의응답한 논문만 보기"
+          onClick={() => {
+            setAskedAiOnly((on) => !on);
+            setLimit(30);
+          }}
+        >
+          AI 질의응답 ({askedAiCount})
+        </button>
       </div>
       <PaperDateControls
         value={dates}
@@ -334,6 +352,27 @@ export function SavedPaperSummaries({ routineId }: { routineId: string }) {
                     선택
                   </label>
                   <PaperClassificationControl routineId={routineId} paper={p} onChanged={load} />
+                  {p.conversation && (
+                    <span
+                      className="briefing-paper-asked-mark"
+                      title={`논문 요약 AI 질의응답 ${p.conversation.turns}회 · 마지막 질문: ${
+                        p.conversation.entries.at(-1)?.question ?? ''
+                      }`}
+                      aria-label={`AI 질의응답 ${p.conversation.turns}회`}
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.7"
+                        aria-hidden="true"
+                      >
+                        <path d="M5 4h14v12H9l-4 4V4Z" />
+                        <path d="M8 8h8M8 12h5" />
+                      </svg>
+                      {p.conversation.turns}
+                    </span>
+                  )}
                 </div>
               }
               item={{

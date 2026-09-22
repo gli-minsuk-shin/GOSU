@@ -122,9 +122,10 @@ async function setup() {
     signal = new AbortController().signal,
     prompt = 'Read approved mail and calendar',
     history: { role: 'assistant' | 'user'; text: string }[] = [],
+    extra: Record<string, unknown> = {},
   ) => {
     const req = Object.assign(
-      Readable.from([JSON.stringify({ routineId: 'r', prompt, history })]),
+      Readable.from([JSON.stringify({ routineId: 'r', prompt, history, ...extra })]),
       {
         method: 'POST',
         url: '/api/briefing-agent/sources/assistant/chat',
@@ -523,3 +524,51 @@ it.each(['cancel', 'revoke'] as const)(
     expect(JSON.stringify(await s.invoke(cancel.signal))).not.toContain('Private late');
   },
 );
+
+it('records a question about a saved paper on that paper, and never loses the answer if it cannot', async () => {
+  const s = await setup();
+  vi.mocked(runRoutineWithGosuLanguage).mockResolvedValue(answer());
+  const noteConversation = vi.fn(async () => ({
+    updatedAt: '2026-09-22T01:00:00.000Z',
+    turns: 1,
+    entries: [
+      { askedAt: '2026-09-22T01:00:00.000Z', question: '이 논문의 가정은?', answer: 'Checked' },
+    ],
+  }));
+  s.service.sharedPaperLibrary = { list: async () => [], save: vi.fn(), noteConversation };
+  const libraryId = 'c'.repeat(64);
+
+  // A chat opened from the 논문 요약 보관함 carries that record's id, so the turn is recorded on it.
+  const saved = await s.invoke(new AbortController().signal, '이 논문의 가정은?', [], {
+    paperReference: { routineId: 'r', historyId: '', paperId: libraryId, title: 'Saved paper' },
+  });
+  // The question is the user's own sentence and the answer is the model's text, not the raw envelope.
+  expect(noteConversation).toHaveBeenCalledExactlyOnceWith(libraryId, {
+    question: '이 논문의 가정은?',
+    answer: 'Checked synthetic sources',
+  });
+  expect(saved.at(-1)).toMatchObject({ type: 'result' });
+  expect(saved.at(-1)?.result?.conversationWarning).toBeUndefined();
+
+  // A paper from a briefing's own history is not in the library, so nothing is recorded for it.
+  noteConversation.mockClear();
+  await s.invoke(new AbortController().signal, '이건 뭐야?', [], {
+    paperReference: {
+      routineId: 'r',
+      historyId: '2026-09-22T00:00:00Z',
+      paperId: 'discovered',
+      title: 'From a briefing',
+    },
+  });
+  expect(noteConversation).not.toHaveBeenCalled();
+
+  // A note that cannot be written is said out loud and the answer still arrives.
+  noteConversation.mockRejectedValueOnce(new Error('paper_library_record_missing'));
+  const failed = await s.invoke(new AbortController().signal, '결론은?', [], {
+    paperReference: { routineId: 'r', historyId: '', paperId: libraryId, title: 'Saved paper' },
+  });
+  const result = failed.at(-1);
+  expect(result).toMatchObject({ type: 'result' });
+  expect(result?.result?.answer).toContain('Checked synthetic sources');
+  expect(result?.result?.conversationWarning).toContain('논문 요약 보관함에 없어');
+});
