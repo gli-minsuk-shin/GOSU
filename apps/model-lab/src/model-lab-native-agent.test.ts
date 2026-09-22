@@ -81,6 +81,83 @@ it('streams scoped native occupancy and invalidates stale occupancy after compac
   expect(search).toHaveBeenCalledOnce();
 });
 
+it('registers the paper conversation tool only when GOSU supplies the bridge', async () => {
+  const paperConversations = vi.fn(async (_input: unknown) => ({
+    conversations: [{ historyId: 'history-1', paperId: 'paper-1', title: 'Warm start', turns: 3 }],
+  }));
+  const transport = nativeTransport(async (emitter, handler) => {
+    const receipt = await handler(paperCall({}), delivery());
+    expect(receipt.success).toBe(true);
+    expect(receipt.contentItems[0]?.text).toContain('Warm start');
+    complete(emitter);
+  });
+  await runNativeModelLabAgent(
+    { ...input(), paperConversations },
+    { createTransport: () => transport },
+  );
+  expect(toolNames(transport)).toContain('read_paper_conversations');
+  expect(paperConversations).toHaveBeenCalledOnce();
+  expect(paperConversations.mock.calls[0]?.[0]).toEqual({});
+
+  const withoutBridge = nativeTransport(async (emitter) => complete(emitter));
+  await runNativeModelLabAgent(input(), { createTransport: () => withoutBridge });
+  expect(toolNames(withoutBridge)).not.toContain('read_paper_conversations');
+});
+
+it('refuses paper conversation arguments Model Lab never declared, without reaching the bridge', async () => {
+  const paperConversations = vi.fn(async (_input: unknown) => ({ conversations: [] }));
+  const transport = nativeTransport(async (emitter, handler) => {
+    const receipt = await handler(
+      paperCall({ historyId: 'history-1', paperId: 'paper-1', query: 'everything else' }),
+      delivery(),
+    );
+    expect(receipt.success).toBe(false);
+    expect(receipt.contentItems[0]?.text).toContain('paper_conversation_request_invalid');
+    complete(emitter);
+  });
+  await runNativeModelLabAgent(
+    { ...input(), paperConversations },
+    { createTransport: () => transport },
+  );
+  expect(paperConversations).not.toHaveBeenCalled();
+});
+
+it('tells the assistant what a refused paper read actually needs from the user', async () => {
+  const paperConversations = vi.fn(async (_input: unknown) => {
+    throw new Error('assistant_papers_permission_required');
+  });
+  const transport = nativeTransport(async (emitter, handler) => {
+    const receipt = await handler(paperCall({}), delivery());
+    expect(receipt.success).toBe(false);
+    const body = JSON.parse(receipt.contentItems[0]!.text!) as { error: string; hint: string };
+    expect(body.error).toBe('assistant_papers_permission_required');
+    expect(body.hint).toContain('Briefing Lab');
+    complete(emitter);
+  });
+  await runNativeModelLabAgent(
+    { ...input(), paperConversations },
+    { createTransport: () => transport },
+  );
+});
+
+function paperCall(
+  arguments_: Readonly<Record<string, string>>,
+): Parameters<CodexDynamicToolHandler>[0] {
+  return {
+    threadId: 'thread-1',
+    turnId: 'turn-1',
+    callId: 'papers',
+    namespace: null,
+    tool: 'read_paper_conversations',
+    arguments: arguments_,
+  };
+}
+
+function toolNames(transport: ReturnType<typeof nativeTransport>) {
+  const started = transport.startThread.mock.calls[0]?.[0];
+  return (started?.dynamicTools ?? []).map((tool) => ('name' in tool ? tool.name : ''));
+}
+
 function request(): ModelLabQuestionRequest {
   return {
     projectModels: [sparkvskLearnedWarmPath, tropicLambdaPathCompiler],

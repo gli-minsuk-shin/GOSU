@@ -369,6 +369,14 @@ describe('Model Assistant server prompt boundary', () => {
     ).toBe('future-effort');
   });
 
+  it('mentions the paper conversation bridge only when the app opened it', () => {
+    const closed = buildModelCopilotInstructions({});
+    const open = buildModelCopilotInstructions({}, { paperConversations: true });
+    expect(closed).not.toContain('read_paper_conversations');
+    expect(open).toContain('read_paper_conversations');
+    expect(open).toContain('논문 요약');
+  });
+
   it('keeps shared agent instructions out of native user evidence while preserving the exact question', () => {
     const request = {
       ...questionRequest(),

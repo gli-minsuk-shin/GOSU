@@ -47,7 +47,7 @@ export const MODEL_LAB_AGENT_STEP_SCHEMA = {
 export type ModelLabAgentProgress = Readonly<{
   step: number;
   phase: 'thinking' | 'tool_started' | 'tool_completed' | 'final' | 'editing';
-  tool?: ModelLabAgentToolName | 'search_conversation';
+  tool?: ModelLabAgentToolName | 'search_conversation' | 'read_paper_conversations';
   success?: boolean;
 }>;
 

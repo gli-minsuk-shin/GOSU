@@ -43,6 +43,7 @@ import { PROJECT_CHAT_IPC_CHANNELS } from '../shared/project-chat-channels';
 import { MODEL_LAB_OPEN_CHANNEL, OpenProjectModelLabSchema } from '../shared/model-lab-contracts';
 import { ModelLabDesktopHost } from '../../../model-lab/model-lab-desktop-host';
 import { createModelCopilotMiddleware } from '../../../model-lab/model-copilot-server';
+import { modelLabBackendContext } from '../../../model-lab/model-lab-backend-context';
 import { SSH_IPC_CHANNELS } from '../shared/ssh-channels';
 import { SshEventSchema } from '../shared/ssh-contracts';
 import {
@@ -1154,6 +1155,21 @@ if (!primaryInstance) {
         applicationLanguage,
         undefined,
         async () => (modelRoutingStore ? modelRoutingStore.get() : undefined),
+        // The 논문 요약 AI conversations for Model Lab's assistant. Read only, under the Briefing
+        // permission the user already granted for papers: Model Lab adds no permission of its own.
+        async (input, signal) => {
+          if (!briefingLabHost) throw new Error('assistant_papers_permission_required');
+          const reads = await briefingLabHost.reads();
+          const projectId = modelLabBackendContext.getStore()?.projectId;
+          const project = projectId
+            ? (await workspace.snapshot()).projects.find((item) => item.id === projectId)
+            : undefined;
+          return reads.paperConversations(
+            input,
+            `Model Lab AI(${project?.name ?? 'GOSU'})`,
+            signal,
+          );
+        },
       ),
     });
     await modelLabHost
