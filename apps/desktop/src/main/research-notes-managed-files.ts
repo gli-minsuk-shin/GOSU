@@ -1223,6 +1223,43 @@ export class ResearchNotesManagedFiles {
     }
   }
 
+  /**
+   * Every project folder in this vault that carries a marker claiming `projectId`, with the marker
+   * as it was read. A folder found here is in the vault that is open, whatever vault id its marker
+   * records: the id was the vault's identity at the time, and that identity has changed on its own
+   * before (a folder's inode moves when iCloud evicts and re-materializes it, when a volume is
+   * remounted, or when a backup is restored) and changed again when it became the canonical path.
+   * Location is the stronger proof, so the caller matches on `projectId` and not on `vaultId`.
+   */
+  async projectFoldersClaiming(projectId: string) {
+    const gosuRoot = resolve(this.vaultRoot, 'GOSU');
+    assertInside(this.vaultRoot, gosuRoot);
+    if ((await existingKind(gosuRoot)) !== 'directory') return [];
+    const entries = (await readdir(gosuRoot, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+    const claims: { folderName: string; ownership: ResearchNotesOwnership }[] = [];
+    for (const folderName of entries) {
+      const ownership = await this.readOwnership(folderName).catch(() => null);
+      if (ownership?.projectId === projectId) claims.push({ folderName, ownership });
+    }
+    return claims;
+  }
+
+  /**
+   * Rewrite one folder's marker after the vault's identity changed underneath it. Only the vault
+   * fields move; the project and binding this folder belongs to are never rewritten here, so this
+   * cannot transfer a folder from one project to another.
+   */
+  async adoptOwnership(folderName: string, vaultId: string) {
+    const marker = await this.readOwnership(folderName);
+    if (!marker) throw new Error('research_notes_folder_ownership_changed');
+    const adopted = { ...marker, vaultId };
+    await this.writeOwnership(folderName, adopted);
+    return adopted;
+  }
+
   private async writeOwnership(folderName: string, ownership: ResearchNotesOwnership) {
     const marker = resolve(this.vaultRoot, this.projectRelativeRoot(folderName), MARKER_FILE);
     await writeAtomic(marker, `${JSON.stringify(ownership, null, 2)}\n`, this.directorySync);

@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -209,4 +210,25 @@ describe('VaultAccess atomic state', () => {
     expect(access.current()).toEqual(second);
     expect(access.matchesGrant(first!.id)).toBe(false);
   });
+});
+
+it('accepts a grant written under the previous identity everywhere, not only in the UI check', async () => {
+  // 0.58.147 taught `matchesGrant` to accept the id written before it, and left `requireGrant`
+  // comparing only the current one. The screen therefore said the grant was active while every
+  // read behind it failed with `vault_grant_stale`.
+  const root = await temporaryVault('legacy-grant');
+  const vault = new VaultAccess();
+  const selection = await vault.connect(root, false);
+  const stat = await lstat(await realpath(root));
+  const legacy = createHash('sha256')
+    .update(`${await realpath(root)}\0${stat.dev}:${stat.ino}`)
+    .digest('hex');
+  expect(legacy).not.toBe(selection.id);
+
+  expect(vault.matchesGrant(legacy)).toBe(true);
+  await expect(vault.validateGrant(legacy)).resolves.toBeUndefined();
+  await expect(vault.listForAgent(legacy)).resolves.toMatchObject({ notes: expect.any(Array) });
+  // An id that belongs to no identity of this vault is still refused.
+  expect(vault.matchesGrant('0'.repeat(64))).toBe(false);
+  await expect(vault.validateGrant('0'.repeat(64))).rejects.toThrow('vault_grant_stale');
 });

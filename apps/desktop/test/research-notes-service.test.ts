@@ -1,5 +1,15 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -153,6 +163,87 @@ afterEach(async () => {
 });
 
 describe('ResearchNotesService project workspaces', () => {
+  it('adopts the project folder it already owns when the vault id changed, instead of forking a second one', async () => {
+    // The vault's id was its device and inode until 0.58.147 and is the canonical path from
+    // 0.58.147 on. macOS moves an inode by itself (iCloud eviction, a remount, a restore), and each
+    // move made every stored id a stranger: GOSU created "<name>--<id>" beside the user's notes and
+    // wrote into the empty copy, or refused the project outright.
+    const { root, storage, service, vault } = await fixture();
+    const first = await service.current({ projectId: PROJECT_ID });
+    expect(first).toMatchObject({ projectId: PROJECT_ID, status: 'ready' });
+    const folderName = storage.loadProjectLink(PROJECT_ID)!.folderName;
+    const markerPath = join(root, 'GOSU', folderName, '.gosu-project.json');
+    const written = join(root, 'GOSU', folderName, 'Literature Review.md');
+    await writeFile(written, 'The work the user actually did.', 'utf8');
+
+    // Age both records to an identity this vault no longer has, exactly as an inode change did.
+    const stale = 'f'.repeat(64);
+    const marker = JSON.parse(await readFile(markerPath, 'utf8')) as { vaultId: string };
+    await writeFile(markerPath, JSON.stringify({ ...marker, vaultId: stale }, null, 2), 'utf8');
+    storage.saveProjectLink({ ...storage.loadProjectLink(PROJECT_ID)!, vaultId: stale });
+
+    const reopened = await service.current({ projectId: PROJECT_ID });
+
+    // The same folder, not a second one, and the notes in it are untouched.
+    expect(reopened).toMatchObject({ projectId: PROJECT_ID, status: 'ready' });
+    expect(storage.loadProjectLink(PROJECT_ID)?.folderName).toBe(folderName);
+    expect(
+      (await readdir(join(root, 'GOSU'))).filter((name) => name.startsWith(folderName)),
+    ).toEqual([folderName]);
+    expect(await readFile(written, 'utf8')).toBe('The work the user actually did.');
+    // Both records now carry this vault's id, so nothing has to be forgiven a second time.
+    expect(storage.loadProjectLink(PROJECT_ID)?.vaultId).toBe(vault.current()?.id);
+    expect((JSON.parse(await readFile(markerPath, 'utf8')) as { vaultId: string }).vaultId).toBe(
+      vault.current()?.id,
+    );
+  });
+
+  it('adopts a folder this project owns under another name rather than adding one beside it', async () => {
+    const { root, storage, service, vault } = await fixture();
+    await service.current({ projectId: PROJECT_ID });
+    const link = storage.loadProjectLink(PROJECT_ID)!;
+    const forked = `${link.folderName} (old copy)`;
+    // The fork an earlier identity change left behind, with the work in it, and the wanted name
+    // taken by a folder that is not this project's. The stored link names neither, which is what a
+    // link written before the folder was renamed looks like.
+    await rename(join(root, 'GOSU', link.folderName), join(root, 'GOSU', forked));
+    await mkdir(join(root, 'GOSU', link.folderName), { recursive: true });
+    await writeFile(join(root, 'GOSU', link.folderName, 'Not ours.md'), 'other', 'utf8');
+    storage.saveProjectLink({ ...link, vaultId: 'f'.repeat(64), folderName: 'gone' });
+
+    const reopened = await service.current({ projectId: PROJECT_ID });
+    expect(reopened).toMatchObject({ status: 'ready' });
+    // The folder it owns, adopted; no third folder added for the same project.
+    expect(storage.loadProjectLink(PROJECT_ID)?.folderName).toBe(forked);
+    expect((await readdir(join(root, 'GOSU'))).sort()).toEqual([link.folderName, forked].sort());
+  });
+
+  it('refuses to guess when two folders claim the same project, and changes neither', async () => {
+    const { root, storage, service } = await fixture();
+    await service.current({ projectId: PROJECT_ID });
+    const link = storage.loadProjectLink(PROJECT_ID)!;
+    const forked = `${link.folderName}--11111111`;
+    // Two folders, both claiming this project, one holding the user's recent work. Picking either
+    // silently would hide the other behind it.
+    await cp(join(root, 'GOSU', link.folderName), join(root, 'GOSU', forked), { recursive: true });
+    await writeFile(join(root, 'GOSU', forked, 'Literature Review.md'), 'the newer work', 'utf8');
+    await rename(join(root, 'GOSU', link.folderName), join(root, 'GOSU', `${link.folderName} old`));
+    await mkdir(join(root, 'GOSU', link.folderName), { recursive: true });
+    await writeFile(join(root, 'GOSU', link.folderName, 'Not ours.md'), 'other', 'utf8');
+    storage.saveProjectLink({ ...link, vaultId: 'f'.repeat(64), folderName: 'gone' });
+
+    await expect(service.current({ projectId: PROJECT_ID })).rejects.toMatchObject({
+      code: 'research_notes_folder_ambiguous',
+    });
+    // Neither copy was written to, renamed or hidden.
+    expect(await readFile(join(root, 'GOSU', forked, 'Literature Review.md'), 'utf8')).toBe(
+      'the newer work',
+    );
+    expect(await readdir(join(root, 'GOSU'))).toEqual(
+      expect.arrayContaining([forked, `${link.folderName} old`]),
+    );
+  });
+
   it('reconnects the saved vault when a project opens before startup has, and explains a vault it cannot reopen', async () => {
     // Startup restores the vault late and only once. A project opened in that window got `null`,
     // which the screen shows as "Connect an Obsidian Vault": the setting looked deleted.

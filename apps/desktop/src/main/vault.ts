@@ -240,7 +240,11 @@ export class VaultAccess {
 
   private requireGrant(expectedVaultId: string) {
     const state = this.requireState();
-    if (state.selection.id !== expectedVaultId) throw new Error('vault_grant_stale');
+    // The same rule as `matchesGrant`, on purpose. Until 0.58.151 this compared only the current
+    // id, so a grant saved under the previous formula passed the check the UI ran and failed every
+    // read behind it.
+    if (state.selection.id !== expectedVaultId && state.legacyId !== expectedVaultId)
+      throw new Error('vault_grant_stale');
     return state;
   }
 

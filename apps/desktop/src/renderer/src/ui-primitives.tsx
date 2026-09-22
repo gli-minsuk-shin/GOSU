@@ -196,6 +196,8 @@ export function describeError(error: unknown) {
       'The selected Obsidian Vault changed. GOSU kept the existing project notes untouched.',
     research_notes_folder_conflict:
       'That Obsidian project folder already exists and cannot be safely replaced.',
+    research_notes_folder_ambiguous:
+      'More than one folder in this Obsidian Vault claims this project, so GOSU will not guess which one holds your notes. Nothing was changed. Open the Vault, keep the folder you want and move or rename the other, then reopen Research Notes.',
     research_notes_folder_unavailable:
       'This project’s Obsidian folder is unavailable. Existing notes were not changed.',
     research_notes_note_not_found:

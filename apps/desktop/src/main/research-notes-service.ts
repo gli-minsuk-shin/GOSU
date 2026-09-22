@@ -1309,7 +1309,17 @@ export class ResearchNotesService {
   private async ensureProject(project: ProjectRecord, replaceVault = false) {
     const selection = this.dependencies.vault.current();
     if (!selection) throw new ResearchNotesServiceError('research_notes_vault_not_selected');
+    const writer = new ResearchNotesManagedFiles(selection.root);
     let link = this.dependencies.storage.loadProjectLink(project.id);
+    // A stored id that is not this vault's does not mean the user chose another vault. The id was
+    // the vault's identity when the link was written, and that identity has moved on its own: a
+    // folder's inode changes when iCloud evicts and re-materializes it, when a volume is remounted
+    // or when a backup is restored, and in 0.58.147 the id became the canonical path. Each of those
+    // once made GOSU treat every existing project as a stranger and fork a second folder beside the
+    // user's notes. Adopt instead, by what the folder says it belongs to.
+    if (!replaceVault && link && link.vaultId !== selection.id) {
+      link = await this.adoptLinkIntoVault(project, link, selection, writer);
+    }
     if (link && link.vaultId === selection.id) {
       link = await this.reconcileName(project, link).catch(() =>
         this.dependencies.storage.loadProjectLink(project.id),
@@ -1319,15 +1329,17 @@ export class ResearchNotesService {
     }
     if (replaceVault || link?.vaultId !== selection.id) link = null;
 
-    const writer = new ResearchNotesManagedFiles(selection.root);
     await this.dependencies.vault.validateGrant(selection.id);
     const desired = safeResearchNotesFolderName(project.name);
     let folderName = desired;
     const desiredKind = await writer.folderKind(desired);
     if (desiredKind !== 'missing') {
       const marker = desiredKind === 'directory' ? await writer.readOwnership(desired) : null;
-      if (marker?.projectId === project.id && marker.vaultId === selection.id) {
+      // `marker.vaultId` is deliberately not compared: this folder is inside the vault that is
+      // open, which is a stronger fact about where it lives than the id it recorded.
+      if (marker?.projectId === project.id) {
         folderName = desired;
+        if (marker.vaultId !== selection.id) await writer.adoptOwnership(desired, selection.id);
         link = ResearchNotesProjectLinkSchema.parse({
           schemaVersion: 1,
           projectId: project.id,
@@ -1344,6 +1356,11 @@ export class ResearchNotesService {
           updatedAt: this.now().toISOString(),
         });
       } else {
+        // The wanted name is taken by something that is not this project. Before adding a second
+        // folder for this project, look for one it already owns under another name — a fork from an
+        // earlier identity change is exactly that.
+        const adopted = await this.adoptExistingFolder(project, selection, writer);
+        if (adopted) return adopted;
         folderName = `${desired}--${project.id.slice(0, 8)}`;
         if ((await writer.folderKind(folderName)) !== 'missing') {
           throw new ResearchNotesServiceError('research_notes_folder_conflict');
@@ -1375,6 +1392,68 @@ export class ResearchNotesService {
     await this.dependencies.vault.validateGrant(selection.id);
     this.dependencies.storage.saveProjectLink(link);
     return { link, created: true } as const;
+  }
+
+  /**
+   * The stored link names a folder by name. If that folder is in this vault and its marker says it
+   * belongs to this project, the link describes this vault and only its recorded id is out of date:
+   * write the current one back, once, so every later comparison is exact. Anything else leaves the
+   * link alone for the discovery path below to resolve.
+   */
+  private async adoptLinkIntoVault(
+    project: ProjectRecord,
+    link: ResearchNotesProjectLink,
+    selection: { id: string; name: string; root: string },
+    writer: ResearchNotesManagedFiles,
+  ): Promise<ResearchNotesProjectLink | null> {
+    const marker = await writer.readOwnership(link.folderName).catch(() => null);
+    if (marker?.projectId !== project.id || marker.bindingId !== link.bindingId) return null;
+    if (marker.vaultId !== selection.id) await writer.adoptOwnership(link.folderName, selection.id);
+    const adopted = ResearchNotesProjectLinkSchema.parse({
+      ...link,
+      vaultId: selection.id,
+      vaultName: selection.name,
+      updatedAt: this.now().toISOString(),
+    });
+    this.dependencies.storage.saveProjectLink(adopted);
+    return adopted;
+  }
+
+  /**
+   * A folder this project already owns under a name the project no longer asks for. One is adopted.
+   * Two or more is the fork an earlier identity change left behind, and GOSU does not guess which
+   * one holds the user's work: it names them and changes nothing, so neither copy is written to or
+   * hidden behind the other.
+   */
+  private async adoptExistingFolder(
+    project: ProjectRecord,
+    selection: { id: string; name: string; root: string },
+    writer: ResearchNotesManagedFiles,
+  ) {
+    const claims = await writer.projectFoldersClaiming(project.id);
+    if (claims.length === 0) return null;
+    if (claims.length > 1) throw new ResearchNotesServiceError('research_notes_folder_ambiguous');
+    const claim = claims[0]!;
+    if (claim.ownership.vaultId !== selection.id)
+      await writer.adoptOwnership(claim.folderName, selection.id);
+    const timestamp = this.now().toISOString();
+    const link = ResearchNotesProjectLinkSchema.parse({
+      schemaVersion: 1,
+      projectId: project.id,
+      bindingId: claim.ownership.bindingId,
+      vaultId: selection.id,
+      vaultName: selection.name,
+      projectName: project.name,
+      folderName: claim.folderName,
+      desiredFolderName: claim.folderName,
+      status: 'ready',
+      attentionCode: null,
+      lastLiteratureSyncAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    this.dependencies.storage.saveProjectLink(link);
+    return { link, created: false } as const;
   }
 
   private async reconcileName(project: ProjectRecord, link: ResearchNotesProjectLink) {
@@ -1734,7 +1813,13 @@ export class ResearchNotesService {
   private requireVault(expectedVaultId: string) {
     const selection = this.dependencies.vault.current();
     if (!selection) throw new ResearchNotesServiceError('research_notes_vault_not_selected');
-    if (selection.id !== expectedVaultId) {
+    // An id written under an earlier identity of this same vault is this vault, which is the one
+    // question `matchesGrant` answers. Comparing only the current id told the user their Vault had
+    // changed when nothing about it had.
+    if (
+      selection.id !== expectedVaultId &&
+      !this.dependencies.vault.matchesGrant(expectedVaultId)
+    ) {
       throw new ResearchNotesServiceError('research_notes_vault_changed');
     }
     return selection;

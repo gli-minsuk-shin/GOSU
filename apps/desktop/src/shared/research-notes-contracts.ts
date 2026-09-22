@@ -93,6 +93,7 @@ export const RESEARCH_NOTES_IPC_ERROR_CODES = [
   'research_notes_vault_unreadable',
   'research_notes_vault_changed',
   'research_notes_folder_conflict',
+  'research_notes_folder_ambiguous',
   'research_notes_folder_unavailable',
   'research_notes_note_not_found',
   'research_notes_record_not_found',

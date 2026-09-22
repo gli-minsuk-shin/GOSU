@@ -874,6 +874,10 @@ const pairs: readonly (readonly [string, string])[] = [
     '해당 Obsidian 프로젝트 폴더가 이미 존재하여 안전하게 교체할 수 없습니다.',
   ],
   [
+    'More than one folder in this Obsidian Vault claims this project, so GOSU will not guess which one holds your notes. Nothing was changed. Open the Vault, keep the folder you want and move or rename the other, then reopen Research Notes.',
+    '이 Obsidian Vault에서 같은 프로젝트를 가리키는 폴더가 둘 이상이라, 어느 쪽에 노트가 있는지 GOSU가 추측하지 않습니다. 아무것도 변경하지 않았습니다. Vault를 열어 남길 폴더를 정하고 나머지는 옮기거나 이름을 바꾼 뒤 연구 노트를 다시 열어주세요.',
+  ],
+  [
     'This project’s Obsidian folder is unavailable. Existing notes were not changed.',
     '프로젝트의 Obsidian 폴더를 사용할 수 없습니다. 기존 노트는 변경하지 않았습니다.',
   ],
