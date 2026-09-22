@@ -13,6 +13,18 @@ export function isDesktopNavigation(event: MessageEvent) {
 }
 
 /**
+ * Settings -> Agent: whether a chat opens its suggested questions by itself. It rides on the
+ * navigation message, which the shell sends on load and again whenever the setting changes. A
+ * message without the field leaves the current value alone, so an older shell keeps the old
+ * behaviour, and Briefing Lab on its own always shows them.
+ */
+export function desktopChatAutoSuggestions(event: MessageEvent) {
+  if (!isDesktopNavigation(event)) return null;
+  const value = (event.data as { chatAutoSuggestions?: unknown }).chatAutoSuggestions;
+  return typeof value === 'boolean' ? value : null;
+}
+
+/**
  * ⇧⌘Enter (⇧Ctrl+Enter elsewhere): run a new briefing now. Not while an IME is composing. Only used
  * when Briefing Lab runs on its own: inside GOSU the chord is a setting (Settings → Shortcuts), the
  * main process catches it before any page, and the shell sends `gosu-briefing-run-now`.

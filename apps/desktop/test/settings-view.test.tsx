@@ -437,6 +437,15 @@ describe('separated application Settings', () => {
     expect(html).toContain('experiments are limited to 120 seconds');
     expect(html).toContain('Raw shells, inline Python');
   });
+  it('offers the chat suggested-questions setting in the Agent tab', () => {
+    // The user asked for it here, next to the other app-wide AI settings, not in a chat menu.
+    const html = renderSettings('agent');
+    expect(html).toContain('AI 대화 추천 질문');
+    expect(html).toContain('AI 대화를 열 때 추천 질문을 자동으로 보여주기');
+    expect(html).toContain('chat-suggestion-switch');
+    expect(html).toContain('추천 질문은 화면에 적힌 문장이므로');
+  });
+
   it('replaces optional providers with consistent Codex and Claude connection cards', () => {
     const html = renderSettings('agent');
     expect(html).toContain('AI CONNECTIONS');

@@ -10,6 +10,7 @@ import type { SettingsProposal } from './assistant-settings-proposal';
  */
 export function RetainedBriefingChats({
   globalMode = false,
+  autoSuggestions = true,
   paperReference,
   routines,
   selectedId,
@@ -20,6 +21,7 @@ export function RetainedBriefingChats({
 }: {
   routines: readonly BriefingRoutine[];
   globalMode?: boolean;
+  autoSuggestions?: boolean;
   paperReference?: PaperChatReference | undefined;
   selectedId: string | undefined;
   visible: boolean;
@@ -47,6 +49,7 @@ export function RetainedBriefingChats({
             >
               <BriefingChat
                 globalMode={globalMode && active}
+                autoSuggestions={autoSuggestions}
                 paperReference={
                   paperReference?.routineId === routine.id ? paperReference : undefined
                 }

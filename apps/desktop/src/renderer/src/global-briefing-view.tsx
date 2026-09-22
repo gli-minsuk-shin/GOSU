@@ -22,6 +22,7 @@ export function GlobalBriefingView({
   onWorkspaceChanged,
   calendarTarget,
   briefingTarget,
+  chatAutoSuggestions = true,
 }: {
   onAiActivity?: (scope: string, event: AiActivityMessage) => void;
   onAiReset?: (scope: string, prefix?: string) => void;
@@ -38,6 +39,8 @@ export function GlobalBriefingView({
   onAgentSettings?: () => void;
   onOpenItem?: (target: BriefingItemTarget) => void;
   onWorkspaceChanged?: () => void;
+  /** Settings -> Agent: whether a chat in the frame opens its suggested questions by itself. */
+  chatAutoSuggestions?: boolean;
   calendarTarget?: { id: string; start: string; requestId: number; routineId?: string } | null;
   briefingTarget?: BriefingNotificationTarget | undefined;
 }) {
@@ -112,6 +115,7 @@ export function GlobalBriefingView({
           type: 'gosu-briefing-navigation',
           view,
           runShortcut,
+          chatAutoSuggestions,
           configuration: configuration.current,
           ...(view === 'calendar' && calendarTarget ? { calendarTarget } : {}),
           ...(view === 'history' && briefingTarget ? { briefingTarget } : {}),
@@ -119,7 +123,15 @@ export function GlobalBriefingView({
         new URL(url).origin,
       );
   };
-  useEffect(navigate, [url, view, navigationRevision, calendarTarget, briefingTarget, runShortcut]);
+  useEffect(navigate, [
+    url,
+    view,
+    navigationRevision,
+    calendarTarget,
+    briefingTarget,
+    runShortcut,
+    chatAutoSuggestions,
+  ]);
   // The main process catches the chord wherever the focus is (page or frame) and the app shell counts
   // it only while the briefing feed shows; here it becomes the frame's "run now".
   useEffect(() => {
@@ -253,6 +265,7 @@ export function GlobalBriefingView({
                   {
                     type: 'gosu-briefing-navigation',
                     view: 'settings',
+                    chatAutoSuggestions,
                     configuration: configuration.current,
                     restore: true,
                   },

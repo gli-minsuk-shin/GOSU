@@ -39,6 +39,7 @@ import {
 import { AgentSettingsSection } from './agent-settings-section';
 import { AiDefaultSettings } from './ai-default-settings';
 import { ModelRoutingSettings, type useModelRouting } from './model-routing-settings';
+import { ChatSuggestionSettings } from './chat-suggestion-settings';
 import { ApprovalPolicySettings } from './approval-policy-settings';
 import { ShortcutSettings } from './shortcut-settings';
 import { BoardSettingsForm } from './board-settings-form';
@@ -751,6 +752,10 @@ export function SettingsView({
                 onRefresh={onRefreshModels}
               />
             )}
+            <ChatSuggestionSettings
+              autoSuggestions={preferences.chatAutoSuggestions}
+              onChange={(chatAutoSuggestions) => onChange({ ...preferences, chatAutoSuggestions })}
+            />
             <AiDefaultSettings
               fallbackOnly={Boolean(modelRouting)}
               selection={preferences.defaultAiSelection}

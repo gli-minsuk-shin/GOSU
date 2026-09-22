@@ -1,6 +1,6 @@
 import { StrictMode, useState, useEffect, useRef } from 'react';
 import { parseBriefingWorkspace } from '@gosu/briefing-core';
-import { isDesktopNavigation, isGosuEmbedded } from './desktop-bridge';
+import { desktopChatAutoSuggestions, isDesktopNavigation, isGosuEmbedded } from './desktop-bridge';
 import { shouldImportDesktopConfiguration } from './desktop-bootstrap';
 import type { BriefingWorkspace } from '@gosu/briefing-core';
 import { BriefingApp } from './briefing-app';
@@ -10,7 +10,18 @@ import { ConnectionRecovery } from './connection-recovery';
 
 function App() {
   const [imported, setImported] = useState(false);
+  const [autoSuggestions, setAutoSuggestions] = useState(true);
   const bootstrapped = useRef(false);
+  // Its own listener: the configuration import below is gated, and the setting must arrive whether
+  // or not this frame imports a workspace.
+  useEffect(() => {
+    const receive = (event: MessageEvent) => {
+      const value = desktopChatAutoSuggestions(event);
+      if (value !== null) setAutoSuggestions(value);
+    };
+    window.addEventListener('message', receive);
+    return () => window.removeEventListener('message', receive);
+  }, []);
   useEffect(() => {
     const receive = (event: MessageEvent) => {
       if (
@@ -55,6 +66,7 @@ function App() {
       <BriefingApp
         workspace={workspace}
         onChange={change}
+        autoSuggestions={autoSuggestions}
         storageError={storageError ?? undefined}
       />
     </>

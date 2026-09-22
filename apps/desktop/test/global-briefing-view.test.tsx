@@ -107,6 +107,39 @@ it('turns a counted "run a new briefing" shortcut into the frame\'s run message 
     ),
   ).toBe(true);
 });
+it('tells the frame whether a chat may open its suggested questions, and again when it changes', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const handlers = new Map<string, Set<(event: never) => void>>(),
+    child = { postMessage: vi.fn() };
+  vi.stubGlobal('window', {
+    gosu: {
+      briefingLab: { open: async () => ({ url: BRIEFING_LAB_URL, configuration: {} }) },
+      app: { getAppShortcuts: async () => ({ briefingRun: null }) },
+    },
+    addEventListener: (type: string, h: (event: never) => void) =>
+      handlers.set(type, (handlers.get(type) ?? new Set()).add(h)),
+    removeEventListener: (type: string, h: (event: never) => void) => handlers.get(type)?.delete(h),
+  });
+  const options = {
+    createNodeMock: (e: { type: unknown }) =>
+      e.type === 'iframe' ? { contentWindow: child } : null,
+  };
+  const flags = () =>
+    child.postMessage.mock.calls
+      .filter(([message]) => message.type === 'gosu-briefing-navigation')
+      .map(([message]) => message.chatAutoSuggestions);
+
+  await act(() => {
+    ui = create(<GlobalBriefingView view="assistant" chatAutoSuggestions={false} />, options);
+  });
+  expect(flags().at(-1)).toBe(false);
+  // Changing the setting has to reach a frame that is already open, without a reload.
+  await act(() => ui.update(<GlobalBriefingView view="assistant" chatAutoSuggestions />));
+  expect(flags().at(-1)).toBe(true);
+  // A caller that says nothing means the suggestions open, as they always did.
+  await act(() => ui.update(<GlobalBriefingView view="assistant" />));
+  expect(flags().at(-1)).toBe(true);
+});
 it('opens Settings → Agent only when the owned Briefing frame asks for it', async () => {
   // Briefing has no model picker: its "AI model" links lead to the one place that decides.
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);

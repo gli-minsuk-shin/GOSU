@@ -164,6 +164,7 @@ export function isNearLatestMessage(
 
 export function BriefingChat({
   globalMode = false,
+  autoSuggestions = true,
   paperReference,
   routine,
   onSettings,
@@ -173,6 +174,8 @@ export function BriefingChat({
 }: {
   routine: BriefingRoutine;
   globalMode?: boolean;
+  /** Settings -> Agent: whether opening this chat also opens its suggested questions. */
+  autoSuggestions?: boolean;
   paperReference?: PaperChatReference | undefined;
   onSettings: (proposal?: SettingsProposal) => void;
   onBusyChange?: (busy: boolean) => void;
@@ -203,7 +206,7 @@ export function BriefingChat({
     [busy, setBusy] = useState(false),
     [elapsed, setElapsed] = useState(0),
     [event, setEvent] = useState<EventDraft | null>(null),
-    [showSuggestions, setShowSuggestions] = useState(true);
+    [showSuggestions, setShowSuggestions] = useState(autoSuggestions);
   const [restored, setRestored] = useState(false);
   /** False once the reader scrolls up, which offers the jump back to the newest message. */
   const [nearLatest, setNearLatest] = useState(true);
@@ -275,10 +278,12 @@ export function BriefingChat({
   }, [busy, onBusyChange]);
   useLayoutEffect(() => {
     if (visible) {
-      setShowSuggestions(true);
+      // The setting only governs what opening the chat does by itself. The suggestions button
+      // still opens them, and a recommendation the user asked for still arrives.
+      if (autoSuggestions) setShowSuggestions(true);
       composer.current?.focus({ preventScroll: true });
     }
-  }, [visible, recommendationRequest]);
+  }, [visible, recommendationRequest, autoSuggestions]);
   useEffect(() => {
     if (!visible || !showSuggestions || typeof document === 'undefined') return;
     const dismissOutside = (event: PointerEvent) => {

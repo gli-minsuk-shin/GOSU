@@ -90,6 +90,7 @@ describe('local user preferences', () => {
       lectureDocumentFeaturesByProjectId: {},
       defaultAiSelection: DEFAULT_AI_SELECTION,
       agentAddOns: { openclaw: 'disabled', hermes: 'disabled', 'claude-code': 'disabled' },
+      chatAutoSuggestions: true,
     });
   });
 
@@ -127,6 +128,7 @@ describe('local user preferences', () => {
         hermes: 'disabled',
         'claude-code': 'disabled',
       },
+      chatAutoSuggestions: true,
     });
   });
 
@@ -168,6 +170,7 @@ describe('local user preferences', () => {
         hermes: 'connect-local',
         'claude-code': 'connect-local',
       },
+      chatAutoSuggestions: false,
     } as const;
     expect(saveUserPreferences(storage, preferences)).toBe(true);
     expect(loadUserPreferences(storage)).toEqual(parseUserPreferences(preferences));
@@ -200,6 +203,7 @@ describe('local user preferences', () => {
       lectureDocumentFeaturesByProjectId: {},
       defaultAiSelection: DEFAULT_AI_SELECTION,
       agentAddOns: { openclaw: 'disabled', hermes: 'disabled', 'claude-code': 'disabled' },
+      chatAutoSuggestions: true,
     });
   });
 
@@ -283,6 +287,7 @@ describe('local user preferences', () => {
         hermes: 'disabled',
         'claude-code': 'disabled',
       },
+      chatAutoSuggestions: true,
     });
   });
 
@@ -495,6 +500,19 @@ describe('local user preferences', () => {
       textSize: 'extra-large',
     });
     expect(root.dataset).toEqual({ appearance: 'dark', textSize: 'extra-large' });
+  });
+
+  it('keeps the suggested questions opening unless they were turned off', () => {
+    // Every version before the setting existed opened them, so a stored preference without the
+    // field must keep doing that; only a stored false turns them off.
+    expect(DEFAULT_USER_PREFERENCES.chatAutoSuggestions).toBe(true);
+    expect(parseUserPreferences({ schemaVersion: 1 }).chatAutoSuggestions).toBe(true);
+    expect(
+      parseUserPreferences({ schemaVersion: 1, chatAutoSuggestions: 'no' }).chatAutoSuggestions,
+    ).toBe(true);
+    expect(
+      parseUserPreferences({ schemaVersion: 1, chatAutoSuggestions: false }).chatAutoSuggestions,
+    ).toBe(false);
   });
 
   it('survives storage access failures', () => {

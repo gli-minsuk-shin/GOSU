@@ -80,6 +80,35 @@ it('dismisses recommendations on composer clicks/typing and outside clicks, pres
   expect(documentListeners.has('pointerdown')).toBe(false);
   expect(windowListeners.has('blur')).toBe(false);
 });
+it('keeps the suggestions closed on open when the setting is off, and still opens them on request', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  vi.mocked(sourceRequest).mockResolvedValue({ messages: [] });
+  const routine = initialRealWorkspace('2026-09-10T00:00:00Z').routines[0]!;
+  const props = { routine, onSettings: vi.fn(), autoSuggestions: false };
+  await act(() => {
+    ui = create(<BriefingChat {...props} />, {
+      createNodeMock: (e) => (e.type === 'textarea' ? { focus: vi.fn() } : null),
+    });
+  });
+  const welcome = () => ui.root.findAllByProps({ className: 'briefing-chat-welcome' }).length;
+
+  // Settings -> Agent turned the automatic panel off, so opening the chat shows no suggestions.
+  expect(welcome()).toBe(0);
+  // Reopening the pane, which is what the user does all day, must not bring them back either.
+  await act(() => ui.update(<BriefingChat {...props} visible={false} />));
+  await act(() => ui.update(<BriefingChat {...props} visible />));
+  expect(welcome()).toBe(0);
+  // The setting is about what happens by itself: the button still works.
+  await act(() =>
+    ui.root.findByProps({ 'aria-label': '추천 질문', type: 'button' }).props.onClick(),
+  );
+  expect(welcome()).toBe(1);
+  // Turning the setting back on opens them the next time the chat is shown.
+  await act(() => ui.update(<BriefingChat {...props} autoSuggestions visible={false} />));
+  await act(() => ui.update(<BriefingChat {...props} autoSuggestions visible />));
+  expect(welcome()).toBe(1);
+  expect(workspaceStream).not.toHaveBeenCalled();
+});
 it('does not reopen dismissed suggestions when a slow history restoration finishes', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   let finish!: (value: unknown) => void;

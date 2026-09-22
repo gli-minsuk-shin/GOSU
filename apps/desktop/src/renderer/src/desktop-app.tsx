@@ -3368,6 +3368,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         <GlobalBriefingView
           onAiActivity={sidebarAi.report}
           onAiReset={sidebarAi.reset}
+          chatAutoSuggestions={preferences.chatAutoSuggestions}
           onWorkspaceChanged={() => {
             void loadWorkspace().catch((error: unknown) => setWorkspaceError(describeError(error)));
           }}

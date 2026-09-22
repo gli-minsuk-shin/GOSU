@@ -779,9 +779,12 @@ export function BriefingApp({
   workspace: suppliedWorkspace,
   onChange,
   storageError,
+  autoSuggestions = true,
 }: {
   workspace: BriefingWorkspace;
   onChange: (workspace: BriefingWorkspace) => void;
+  /** Settings -> Agent: whether a chat opens its suggested questions by itself. */
+  autoSuggestions?: boolean;
   /** Legacy embedding callbacks are ignored; production offers only real collection. */
   onRun?: (routineId: string) => void;
   onReset?: () => void;
@@ -1389,6 +1392,7 @@ export function BriefingApp({
           <div className="briefing-details-scroll" hidden={rightCollapsed}>
             <RetainedBriefingChats
               globalMode={globalAssistant}
+              autoSuggestions={autoSuggestions}
               paperReference={paperReference}
               routines={workspace.routines}
               selectedId={routine?.id}

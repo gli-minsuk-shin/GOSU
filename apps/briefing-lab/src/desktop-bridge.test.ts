@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { isDesktopNavigation, isGosuEmbedded } from './desktop-bridge';
+import { desktopChatAutoSuggestions, isDesktopNavigation, isGosuEmbedded } from './desktop-bridge';
 afterEach(() => vi.unstubAllGlobals());
 it('keeps the embedded History chat in the full-height grid instead of the standalone overlay', () => {
   const css = readFileSync(new URL('./workspace.css', import.meta.url), 'utf8');
@@ -51,4 +51,30 @@ it('accepts only a parent navigation in explicit embedded mode without write com
   ).toBe(false);
   vi.stubGlobal('window', { location: { search: '' }, parent });
   expect(isGosuEmbedded()).toBe(false);
+});
+
+it('reads the suggested-questions setting only from a real navigation message', () => {
+  const parent = {};
+  vi.stubGlobal('window', { location: { search: '?embedded=gosu' }, parent });
+  const navigation = (data: Record<string, unknown>) =>
+    ({ source: parent, origin: 'null', data }) as unknown as MessageEvent;
+  const base = { type: 'gosu-briefing-navigation', view: 'assistant' };
+
+  expect(desktopChatAutoSuggestions(navigation({ ...base, chatAutoSuggestions: false }))).toBe(
+    false,
+  );
+  expect(desktopChatAutoSuggestions(navigation({ ...base, chatAutoSuggestions: true }))).toBe(true);
+  // An older shell sends no field, and a page must not change what it shows on a guess.
+  expect(desktopChatAutoSuggestions(navigation(base))).toBe(null);
+  expect(desktopChatAutoSuggestions(navigation({ ...base, chatAutoSuggestions: 'off' }))).toBe(
+    null,
+  );
+  // Nothing outside the checked navigation message can turn them off.
+  expect(
+    desktopChatAutoSuggestions({
+      source: {},
+      origin: 'https://evil.test',
+      data: { ...base, chatAutoSuggestions: false },
+    } as unknown as MessageEvent),
+  ).toBe(null);
 });

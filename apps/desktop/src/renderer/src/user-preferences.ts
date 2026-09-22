@@ -56,6 +56,8 @@ export type UserPreferences = Readonly<{
   lectureDocumentFeaturesByProjectId: Readonly<Record<string, LectureStudioDocumentFeatures>>;
   defaultAiSelection: DefaultAiSelection;
   agentAddOns: Readonly<Record<AgentAddOnId, AgentAddOnPreference>>;
+  /** Whether an AI chat opens its suggested questions by itself. On by default. */
+  chatAutoSuggestions: boolean;
 }>;
 
 type PreferenceStorage = Pick<Storage, 'getItem' | 'setItem'>;
@@ -77,6 +79,7 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
     hermes: 'disabled',
     'claude-code': 'disabled',
   },
+  chatAutoSuggestions: true,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -211,6 +214,9 @@ export function parseUserPreferences(value: unknown): UserPreferences {
     lectureDocumentFeaturesByProjectId,
     defaultAiSelection: parseDefaultAiSelection(value.defaultAiSelection),
     agentAddOns,
+    // Anything but a stored false means the suggestions open, which is the behaviour every version
+    // before this one had.
+    chatAutoSuggestions: value.chatAutoSuggestions !== false,
   };
 }
 
@@ -234,6 +240,7 @@ function defaultUserPreferences(): UserPreferences {
     lectureDocumentFeaturesByProjectId: {},
     defaultAiSelection: { ...DEFAULT_AI_SELECTION },
     agentAddOns: { ...DEFAULT_USER_PREFERENCES.agentAddOns },
+    chatAutoSuggestions: DEFAULT_USER_PREFERENCES.chatAutoSuggestions,
   };
 }
 

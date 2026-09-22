@@ -13,6 +13,7 @@ import { assistantTodoCreator } from './briefing-assistant-workspace';
 import type { ModelRouting } from '@gosu/contracts';
 import {
   BRIEFING_MODEL_USAGES,
+  briefingChatUsage,
   routedBriefingPreferences,
   type BriefingModelUsage,
 } from './briefing-model-routing';
@@ -3419,7 +3420,7 @@ export class LiveSourceService {
           const assistantPreferences = routedBriefingPreferences(
             profile.preferences,
             policy,
-            'briefingAssistant',
+            briefingChatUsage(policy, Boolean(input.paperReference)),
           );
           await this.workspace.appendConversation(profile, {
             role: 'user',

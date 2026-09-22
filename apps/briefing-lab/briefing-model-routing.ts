@@ -34,6 +34,19 @@ export function routedBriefingPreferences(
 }
 
 /**
+ * Which role a chat turn runs on. A question about one paper is the 논문 요약 AI's work, but only
+ * once the user has given that role a model: while it is unset the turn keeps running on the
+ * assistant's model, the way it did before the role existed. The role's own fallback is the
+ * Briefing model, which is right for summarizing a paper and need not be right for a conversation.
+ */
+export function briefingChatUsage(
+  policy: ModelRouting | undefined,
+  aboutPaper: boolean,
+): BriefingModelUsage {
+  return aboutPaper && policy?.usage.paperSummary ? 'paperSummary' : 'briefingAssistant';
+}
+
+/**
  * Providers Settings → Agent sends Briefing work to. The user picked them there, so what a routine
  * allows for AI may go to them without a second provider approval inside Briefing.
  */
