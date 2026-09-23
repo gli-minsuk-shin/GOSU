@@ -945,9 +945,13 @@ export function BriefingApp({
    *  than cleared: clearing it from an effect would race the papers screen's own mount effect,
    *  which forwards the paper a card asked about. */
   const activePaperChat = paperChat?.routineId === routine?.id ? paperChat : null;
-  /** 논문 요약 lends its conversation the AI 비서's slot. Collapsing the pane hides it without
-   *  ending it, so this stays true while `rightCollapsed` is. */
-  const paperChatOpen = tab === 'papers' && papersOpen;
+  /**
+   * On 논문 요약 the right pane IS the paper conversation, not the AI 비서 borrowing the slot: the
+   * reader opens that screen to talk about papers, and having to summon the chat first was a step
+   * with no purpose. Collapsing the pane hides it without ending it. Leaving the tab hands the slot
+   * back to the assistant, and `papersOpen` keeps the paper chat mounted so returning resumes it.
+   */
+  const paperChatOpen = tab === 'papers';
   const personalRoutines = workspace.routines.filter((item) => item.kind === 'personal');
   const primaryPersonalRoutine = personalRoutines[0] ?? routine;
   const openChatSidebar = () => {
@@ -1450,30 +1454,33 @@ export function BriefingApp({
                 setTab('settings');
               }}
             />
-            {papersOpen && routine && (
+            {(papersOpen || paperChatOpen) && routine && (
               <section
                 className="briefing-paper-chat-panel"
                 aria-label="논문 요약 AI 질의응답"
                 hidden={!paperChatOpen}
               >
                 <header>
-                  <span>논문 요약의 대화</span>
+                  {/* The standing explanation that used to sit under this line is on the line
+                      itself now: it said the same four things on every visit and cost four rows of
+                      a pane whose whole job is showing the conversation. */}
+                  <span title="이 화면의 논문들에 대한 하나의 대화입니다. AI 비서 대화에 섞이지 않습니다. 논문 카드의 「AI 질의응답」을 누르면 그 논문이 다음 질문에 붙습니다. 사용할 모델은 설정 → Agent의 논문 분석·질의응답 AI에서 정합니다.">
+                    논문 요약의 대화
+                  </span>
                   <button
                     type="button"
                     onClick={() => {
-                      setPapersOpen(false);
+                      // The pane belongs to this screen now, so closing it means putting the pane
+                      // away rather than handing the slot back to an assistant the reader did not
+                      // ask for. The conversation itself is untouched.
                       setPaperChat(null);
+                      setRightCollapsed(true);
                     }}
                     aria-label="논문 대화 닫기"
                   >
                     닫기
                   </button>
                 </header>
-                <p className="briefing-muted">
-                  이 화면의 논문들에 대한 하나의 대화입니다. AI 비서 대화에 섞이지 않습니다. 논문
-                  카드의 「AI 질의응답」을 누르면 그 논문이 다음 질문에 붙습니다. 사용할 모델은 설정
-                  → Agent의 논문 분석·질의응답 AI에서 정합니다.
-                </p>
                 <BriefingChat
                   // Keyed by the routine, never by a paper: attaching a different paper must not
                   // remount the chat and throw away the transcript or an unsent draft.

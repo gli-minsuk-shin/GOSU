@@ -146,6 +146,50 @@ it('switches to the global canvas without remounting the chat or losing an unsen
   expect(chat.findByType('textarea').props.value).toBe('Retained draft');
   expect(workspaceStream).not.toHaveBeenCalled();
 });
+it('gives the 논문 요약 screen the right pane, without being asked to open a chat first', async () => {
+  // The reader opens 논문 요약 to talk about papers, so that screen's own conversation is what the
+  // pane holds. It used to hold the AI 비서 until a paper card asked for the other one.
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  vi.stubGlobal('document', { documentElement: { dataset: {} } });
+  vi.stubGlobal('window', {
+    innerWidth: 1280,
+    location: { search: '' },
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    dispatchEvent: vi.fn(),
+  });
+  vi.mocked(sourceRequest).mockResolvedValue({
+    papers: [],
+    feedback: {},
+    history: [],
+    choices: {},
+  });
+  await mount();
+  await click('AI 비서');
+  expect(activeChat().props.papersChat).toBeFalsy();
+
+  await click('논문 요약');
+
+  // The pane is the paper conversation, and the assistant is not the one on screen.
+  const visible = ui.root.findAllByType(BriefingChat).filter((n) => n.props.visible !== false);
+  expect(visible).toHaveLength(1);
+  expect(visible[0]!.props.papersChat).toBe(true);
+  // ...and the collapsed handle says whose chat it is.
+  expect(text()).toContain('논문 요약 AI');
+  // The standing four-line explanation no longer takes rows in the pane. It is not deleted -- the
+  // heading carries it on hover -- so the check is that nothing renders it as text.
+  const paragraphs = ui.root
+    .findAllByType('p')
+    .filter((n) =>
+      JSON.stringify(n.children).includes('이 화면의 논문들에 대한 하나의 대화입니다'),
+    );
+  expect(paragraphs).toHaveLength(0);
+  const heading = ui.root
+    .findAllByType('span')
+    .find((n) => String(n.props.title ?? '').includes('이 화면의 논문들에 대한 하나의 대화입니다'));
+  expect(heading).toBeDefined();
+});
+
 it('never hands a paper to the AI 비서 when one is asked about', async () => {
   // 「AI 질문」 belongs to 논문 요약 AI, which is its own chat. 0.58.152 stopped opening the
   // assistant pane for it but left the wire connected, so every question about a paper still
